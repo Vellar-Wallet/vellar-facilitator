@@ -4,6 +4,34 @@ Newest first. Same convention as the vela-wallet repo: record what was
 decided or discovered, with enough evidence that a future reader can verify
 it.
 
+## 2026-07-31 — DEPLOYED: hosted instance live and settling real payments
+
+`https://vellar-facilitator.onrender.com` — deployed from the render.yaml
+blueprint (sync `3ca4a41`), dedicated sponsor account `GBUCR6H2…` (created
+and friendbot-funded the same day; NOT shared with the wallet backend's
+sponsor — separate blast radius by design).
+
+Proof against the HOSTED instance, not localhost:
+
+- `/health`, `/supported` (advertising the exact scheme, sponsored fees,
+  the bazaar extension, and the new sponsor), `/discovery/*` all verified
+  over the public URL.
+- The full seller→buyer loop ran with `FACILITATOR_URL` pointed at the
+  hosted instance: policy-governed smart account paid, the hosted
+  facilitator verified + settled — tx
+  `1da6f9e6a90b78da898c99dfefba8821b5f632b72f584968fb057fd8a298e039`,
+  Horizon-confirmed `successful: true` with **`fee_account = GBUCR6H2…`**
+  (the hosted instance's own sponsor paid the fees — sponsorship verified
+  empirically, not just configured).
+- The hosted Bazaar auto-cataloged the resource; public
+  `/discovery/search?query=motivational+quote` finds it.
+
+Known free-tier limits (documented, deliberate for the demo stage): service
+sleeps after ~15 min idle (~1 min cold start); no persistent disk, so the
+JSON catalog resets on redeploy/restart — one settled payment re-populates
+it. A paid disk or the DB swap (catalog storage is behind the BazaarCatalog
+class) fixes both before any uptime commitment.
+
 ## 2026-07-31 — Bazaar discovery LIVE-PROVEN end to end (the RFP's highest-value deliverable)
 
 The complete discovery loop ran against live testnet, all through THIS repo's

@@ -70,8 +70,12 @@ See docs/decisions.md._
       (technical-doc.md §6) — load-tested, not just designed. Note:
       `ExactStellarScheme` supports a `feeBumpSigner` decoupling fees from
       sequence numbers — evaluate under load
-- [ ] Hosting deployed under a Vellar-branded subdomain — `render.yaml`
-      blueprint ready (2026-07-31), dashboard deploy + sponsor secret pending
+- [x] Hosting DEPLOYED 2026-07-31: `https://vellar-facilitator.onrender.com`
+      (render.yaml blueprint, dedicated funded sponsor `GBUCR6H2…`).
+      Live-proven: settlement tx `1da6f9e6…` through the hosted instance,
+      fees paid by its own sponsor, resource cataloged on the hosted Bazaar.
+      Vellar-branded subdomain (facilitator.vellar.xyz) still pending —
+      custom-domain CNAME, cosmetic
 - [x] SDK helpers for sellers and buyers — covered by the OFFICIAL packages
       (`declareDiscoveryExtension`, `bazaarResourceServerExtension`,
       `withBazaar`), deliberately not duplicated; our guide documents them
