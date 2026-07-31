@@ -29,44 +29,6 @@ now proceed in parallel, not sequentially.
 - [ ] Invited to submit full Build form (per RFP timeline: interest form →
       invitation → full submission → reviewer evaluation)
 
-## Phase 1 — Facilitator Core (verify + settle)
-
-_Reframed 2026-07-31 after inspecting `@x402/stellar@2.20.0`: Coinbase's
-official packages already implement the Stellar `exact` scheme facilitator
-(`ExactStellarScheme`: re-simulation verify, sponsored settle, fee-ceiling
-config, fee-bump signer for sequence management) and the protocol
-orchestrator (`x402Facilitator` in `@x402/core`: scheme registration,
-lifecycle hooks, /supported). Phase 1 is therefore COMPOSITION of official
-packages with correct config — small — not reimplementation. The genuinely
-novel build is Phase 2 (Bazaar), exactly as the RFP itself weights it._
-
-- [x] Service scaffold: TypeScript + Fastify (matching vela-wallet service
-      conventions), strict tsconfig, vitest — typecheck clean
-- [x] `POST /verify` + `POST /settle`: wire-compatible with the canonical
-      `HTTPFacilitatorClient` body shape (`{ x402Version, paymentPayload,
-      paymentRequirements }`), delegating to `x402Facilitator` — malformed
-      payloads produce a graceful invalid verdict, not a 500 (pinned by test)
-- [x] `GET /supported`: exposes the registered stellar:testnet exact kind
-      with `areFeesSponsored: true` and the sponsor's signer address
-- [x] Fee-ceiling configuration: `MAX_TX_FEE_STROOPS` env, DEFAULT 2,000,000
-      (vs. the package's 50,000 default) — clears the ~140k policy-governed
-      payment cost; a config test pins that the default stays above 140k
-- [x] Unit tests: 11 passing (config validation incl. fee-ceiling bounds;
-      health/supported/verify/settle route behavior)
-- [ ] LIVE smoke: this facilitator verifies + settles a real payment on
-      testnet from the existing vela-wallet spike payer
-      (`scripts/x402-spike/`) — the true end-to-end proof, reusing the
-      already-proven payer side against OUR verify/settle instead of
-      x402.org
-- [ ] Policy-governed payment live-verified through this facilitator
-      (the fee-ceiling regression case, proven for real, not just configured)
-- [ ] Support both classic keypair and Soroban smart-account payers
-      confirmed live (V1 credentials; V2 tracked as a known gap, see
-      Non-Goals)
-- [ ] Wire-level conformance: tested against an unmodified canonical x402
-      client (`HTTPFacilitatorClient` from `@x402/core/http` pointed at
-      this server)
-- [ ] Testnet deployment, frictionless access
 
 ## Phase 2 — Bazaar Discovery
 
