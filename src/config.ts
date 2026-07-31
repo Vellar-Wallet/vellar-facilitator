@@ -5,6 +5,8 @@ export interface FacilitatorConfig {
   rpcUrl: string | undefined;
   sponsorSecretKey: string;
   maxTransactionFeeStroops: number;
+  /** Optional JSON file path for Bazaar catalog persistence across restarts. */
+  catalogFile: string | undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorConfig {
@@ -33,5 +35,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     rpcUrl: env.STELLAR_RPC_URL,
     sponsorSecretKey,
     maxTransactionFeeStroops,
+    catalogFile: env.CATALOG_FILE,
   };
 }

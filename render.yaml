@@ -1,0 +1,33 @@
+# Render Blueprint — Vellar x402 Facilitator (testnet).
+#
+# One web service. The sponsor key funds settlement fees; keep it a dedicated
+# testnet account, never a mainnet key. Set it in the Render dashboard
+# (sync:false keeps it out of git).
+#
+# Free-tier caveat: the service sleeps after ~15 min idle (~1 min cold start).
+# Fine for a testnet demo; upgrade the plan before any uptime commitment.
+
+services:
+  - type: web
+    name: vellar-facilitator
+    runtime: node
+    plan: free
+    buildCommand: "npm install --omit=dev && npm install -g tsx"
+    startCommand: "tsx src/server.ts"
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: STELLAR_NETWORK
+        value: "testnet"
+      - key: STELLAR_RPC_URL
+        value: "https://soroban-testnet.stellar.org"
+      # Raised fee ceiling: policy-governed smart-account payments cost ~140k
+      # stroops; the @x402/stellar default (50k) rejects them.
+      - key: MAX_TX_FEE_STROOPS
+        value: "2000000"
+      # Bazaar catalog persistence (single-instance file store).
+      - key: CATALOG_FILE
+        value: "/var/data/bazaar-catalog.json"
+      - key: SPONSOR_SECRET_KEY
+        sync: false

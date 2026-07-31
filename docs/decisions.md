@@ -4,6 +4,52 @@ Newest first. Same convention as the vela-wallet repo: record what was
 decided or discovered, with enough evidence that a future reader can verify
 it.
 
+## 2026-07-31 — Bazaar discovery LIVE-PROVEN end to end (the RFP's highest-value deliverable)
+
+The complete discovery loop ran against live testnet, all through THIS repo's
+code plus the official packages:
+
+1. **Seller** (`examples/seller.mjs`): Express + `x402ResourceServer` +
+   `bazaarResourceServerExtension`, one paid route (`GET /quote`, 0.1 token)
+   declaring the discovery extension via `declareDiscoveryExtension`. The
+   402's `PAYMENT-REQUIRED` header carried the server-enriched extension
+   (`method: GET` added by enrichment — verified by decoding the header).
+2. **Buyer** (`examples/buyer.mjs`): the policy-governed smart account
+   `CDPUL7TZ…` paid via its ed25519 agent key (V1 credentials), **echoing
+   `required.extensions` into the payment payload** — the echo that feeds
+   Bazaar.
+3. **This facilitator** verified (policy ran in re-simulation) and settled
+   on-chain: tx `a08dc6bffe17f21ed55548f6539e451feff8dd8b3ca2b602be7bfe51226af4b0`.
+4. **Auto-catalog**: the settle hook extracted and cataloged the resource —
+   `GET /discovery/resources` returned it with the full agent-usable call
+   shape (method, queryParams, output example) AND the exact payment
+   requirements; `GET /discovery/search?query=motivational+quote` ranked it
+   first. Catalog persisted across the `CATALOG_FILE` round-trip.
+5. **MCP**: `src/mcp.ts` probed live over raw stdio JSON-RPC — `tools/list`
+   returned both tools; `tools/call x402_search_resources` found the
+   live-cataloged resource through the MCP protocol.
+
+Design decisions locked in by this build (details in code comments/tests):
+
+- **Catalog-on-settle, not on-verify** — a resource enters the public
+  catalog only after a real payment settled for it (spam/poisoning guard);
+  cataloging failures can never affect settlement (hook swallows errors,
+  pinned by test).
+- **Official data model end to end** — `@x402/extensions/bazaar` supplies
+  the types, validation (incl. the route-template poisoning guard, proven
+  by tests for path-traversal and URL-injection payloads), and the
+  canonical `withBazaar` client our wire-conformance tests use unmodified.
+- **Search = deterministic token-scored ranking** (serviceName 4 > tags 3 >
+  description 2 > URL/tool 1, exact-token hits double substring hits),
+  cursor pagination with stale-cursor invalidation. No external search
+  service; embedding-based ranking is a possible later upgrade, documented
+  honestly as such.
+- **Storage = in-memory + optional JSON file** behind the `BazaarCatalog`
+  class; a database can replace the file without touching routes or
+  ingestion. Single-instance honest; multi-instance needs the DB swap.
+
+32 tests green, typecheck clean.
+
 ## 2026-07-31 — LIVE smoke PASS: this facilitator verifies + settles real policy-governed payments on testnet
 
 The facilitator core (commit `d90c9ce`) was proven end to end against live

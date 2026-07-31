@@ -1,0 +1,19 @@
+{
+  "name": "vellar-facilitator-examples",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end x402 + Bazaar examples against the Vellar facilitator (testnet)",
+  "type": "module",
+  "scripts": {
+    "seller": "node seller.mjs",
+    "buyer": "node buyer.mjs"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^16.0.1",
+    "@x402/core": "^2.20.0",
+    "@x402/extensions": "^2.20.0",
+    "@x402/stellar": "^2.20.0",
+    "express": "^5.2.1",
+    "passkey-kit-sdk": "^0.8.0"
+  }
+}

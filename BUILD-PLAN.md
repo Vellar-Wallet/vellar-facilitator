@@ -30,29 +30,55 @@ now proceed in parallel, not sequentially.
       invitation → full submission → reviewer evaluation)
 
 
-## Phase 2 — Bazaar Discovery
+## Phase 2 — Bazaar Discovery — DONE 2026-07-31, live-proven
 
-- [ ] `GET /discovery/resources` (type, payTo, network, extensions, limit,
-      offset filters)
-- [ ] `GET /discovery/search` (natural-language query, cursor pagination)
-- [ ] Automatic catalog registration when a PaymentPayload carries the
-      discovery extension
-- [ ] HTTP endpoints and MCP tools both cataloged as first-class resources
-- [ ] Route-template safety validation
-- [ ] MCP discovery server (agent-facing)
-- [ ] Tests: catalog registration, search relevance/pagination, safety
-      validation edge cases
+_Built on the official `@x402/extensions/bazaar` data model and validators
+(same build-vs-compose rule as Phase 1). Full loop live-verified on testnet:
+seller declares → agent pays (policy-governed smart account) → THIS
+facilitator settles (tx `a08dc6bf…`) → resource auto-catalogs → searchable.
+See docs/decisions.md._
+
+- [x] `GET /discovery/resources` (type, payTo, scheme, network, extensions,
+      limit, offset filters; wire-conformant with the unmodified canonical
+      `withBazaar` client — pinned by test)
+- [x] `GET /discovery/search` — token-scored relevance ranking (serviceName >
+      tags > description > URL/tool), cursor pagination with stale-cursor
+      invalidation
+- [x] Automatic catalog registration on SETTLED payments carrying the
+      discovery extension (catalog-on-settle = spam guard; cataloging can
+      never break settlement — pinned by test)
+- [x] HTTP endpoints and MCP tools both cataloged as first-class resources
+      (type filter distinguishes them)
+- [x] Route-template safety validation via the official extractor (path
+      traversal + URL injection both proven dropped; valid templates
+      honored — 3 dedicated tests)
+- [x] MCP discovery server (`src/mcp.ts`, stdio): `x402_list_resources` +
+      `x402_search_resources`, backed by the canonical withBazaar client —
+      probed live over raw JSON-RPC, found the live-cataloged resource
+- [x] Catalog persistence: optional JSON file (`CATALOG_FILE`), corrupt-file
+      safe; storage behind the class for a future DB swap
+- [x] Tests: 32 total (catalog filters/pagination/search/cursor/persistence,
+      ingestion through a real x402Facilitator, wire conformance)
 
 ## Phase 3 — Production Readiness
 
-- [ ] Mainnet support, configurable pricing
+- [ ] Mainnet support live (config plumbing exists — `STELLAR_NETWORK=pubnet`
+      — but is untested; do NOT flip before the security review)
 - [ ] Public operational telemetry / status dashboard (99%+ uptime target)
 - [ ] Security review completed before any production traffic
 - [ ] Sequence-number management under concurrent/bursty settlement load
-      (technical-doc.md §6) — load-tested, not just designed
-- [ ] Hosting decided and deployed under a Vellar-branded subdomain
-- [ ] SDK helpers for sellers and buyers, published
-- [ ] Developer guide with two end-to-end integration examples
+      (technical-doc.md §6) — load-tested, not just designed. Note:
+      `ExactStellarScheme` supports a `feeBumpSigner` decoupling fees from
+      sequence numbers — evaluate under load
+- [ ] Hosting deployed under a Vellar-branded subdomain — `render.yaml`
+      blueprint ready (2026-07-31), dashboard deploy + sponsor secret pending
+- [x] SDK helpers for sellers and buyers — covered by the OFFICIAL packages
+      (`declareDiscoveryExtension`, `bazaarResourceServerExtension`,
+      `withBazaar`), deliberately not duplicated; our guide documents them
+      (build-vs-compose rule)
+- [x] Developer guide (`docs/guide.md`) with two end-to-end integration
+      examples (`examples/seller.mjs` + `examples/buyer.mjs`) — both
+      live-verified on testnet 2026-07-31
 - [ ] Upstream contribution: `scheme_upto_stellar.md`
 
 ## Phase 4 — Ongoing (post-launch)

@@ -13,10 +13,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@stellar/stellar-sdk": "^16.0.1",
     "@x402/core": "^2.20.0",
+    "@x402/extensions": "^2.20.0",
     "@x402/stellar": "^2.20.0",
-    "fastify": "^5.2.0"
+    "fastify": "^5.2.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
