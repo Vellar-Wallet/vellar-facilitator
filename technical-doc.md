@@ -156,12 +156,29 @@ work:
 
 ## 7. Planned Deliverables (Mapped to RFP Requirements)
 
+**Build-vs-compose note (2026-07-31, verified against `@x402/stellar@2.20.0`
+and `@x402/core@2.20.0`):** Coinbase's official packages already implement
+the Stellar `exact` scheme facilitator core — `ExactStellarScheme`
+(re-simulation verify, sponsored settle, `maxTransactionFeeStroops` config,
+optional fee-bump signer decoupling fee payment from sequence management)
+and `x402Facilitator` (scheme registration, verify/settle orchestration,
+lifecycle hooks, `/supported`). The verify/settle layer of this project is
+therefore a thin, correctly-configured composition of those packages — the
+honest value-add there is configuration (the fee ceiling §2 documents),
+operation (uptime, telemetry, hosting), and conformance testing. The
+genuinely novel engineering in this project is the **Bazaar discovery
+layer**, which exists nowhere in the official packages — consistent with the
+RFP's own weighting of Bazaar as the highest-value deliverable.
+
 **Facilitator (verify + settle):**
 - x402 v2 spec implementation for Stellar via `@x402/stellar`
+  (`ExactStellarScheme` composed through `x402Facilitator` — see
+  build-vs-compose note above)
 - Any SEP-41 token, USDC default
 - Sponsored network fees
 - Classic keypairs and Soroban smart accounts, both supported
-- Fee-ceiling handling for policy-governed payments (§2 — ships fixed)
+- Fee-ceiling handling for policy-governed payments (§2 — ships fixed:
+  default `MAX_TX_FEE_STROOPS=2,000,000` vs. the package default of 50,000)
 - Frictionless testnet access; configurable mainnet pricing
 - Replay resistance, strict payload verification
 - 99%+ uptime target, public operational telemetry dashboard

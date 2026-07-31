@@ -4,55 +4,69 @@ Single source of progress for this repo. See `technical-doc.md` for the full
 spec this plan implements. An item is not done without tests, matching the
 standard set in the Vellar wallet repo.
 
-**Funding gate:** this entire initiative is a candidate SCF RFP Track
-submission (SCF #45). Phase 0 must complete — and the RFP must be submitted
-and, ideally, accepted — before committing to Phase 2+ as a real delivery
-timeline. Building ahead of funding confirmation is a deliberate choice to
-make if you want a stronger submission, not a requirement.
+**Funding gate — overridden 2026-07-31 (user-directed):** the original plan
+was to gate Phase 1+ behind RFP submission/acceptance to avoid unfunded
+build time. Deliberately overridden: building a working prototype
+strengthens the submission itself (RFP reviewers favor teams who show, not
+just tell) and de-risks the delivery timeline if funded. Phase 0 and Phase 1
+now proceed in parallel, not sequentially.
 
 ## Phase 0 — RFP Submission
 
 - [x] Repo created: `Vellar-Wallet/vellar-facilitator` (private)
 - [x] README + Apache-2.0 license
 - [x] technical-doc.md drafted (architecture, RFP requirement mapping, flows)
-- [ ] Interest form: decentralization rationale finalized (draft in
-      technical-doc.md §8, needs sign-off)
-- [ ] Interest form: user privacy / data-handling plan finalized (not yet
-      drafted)
-- [ ] Interest form: maintenance commitment decided — a real, binding
-      number, not aspirational (technical-doc.md §8)
-- [ ] Architecture diagram (RFP's Core Requirements explicitly ask for one;
-      §4–§6 of technical-doc.md can be diagrammed directly)
+- [x] Interest form: decentralization rationale finalized (no custody,
+      independently verifiable, no exclusivity claim)
+- [x] Interest form: user privacy / data-handling plan finalized
+      (operational logs only, 30–90 day retention, no PII/tracking)
+- [x] Interest form: maintenance commitment decided — 24 months, real and
+      binding
+- [x] Architecture diagram — text-based, core payment flow + Bazaar
+      discovery flow
+- [x] Solo vs. team framing addressed head-on
 - [ ] Interest form submitted
 - [ ] Invited to submit full Build form (per RFP timeline: interest form →
       invitation → full submission → reviewer evaluation)
 
 ## Phase 1 — Facilitator Core (verify + settle)
 
-_Do not start until Phase 0's submission is in and, ideally, invited — avoid
-sinking build time before funding signal._
+_Reframed 2026-07-31 after inspecting `@x402/stellar@2.20.0`: Coinbase's
+official packages already implement the Stellar `exact` scheme facilitator
+(`ExactStellarScheme`: re-simulation verify, sponsored settle, fee-ceiling
+config, fee-bump signer for sequence management) and the protocol
+orchestrator (`x402Facilitator` in `@x402/core`: scheme registration,
+lifecycle hooks, /supported). Phase 1 is therefore COMPOSITION of official
+packages with correct config — small — not reimplementation. The genuinely
+novel build is Phase 2 (Bazaar), exactly as the RFP itself weights it._
 
-- [ ] Service scaffold: choose stack (Node/TS to match the rest of Vellar's
-      services, or per `@x402/stellar`'s own conventions), health check,
-      structured logging (reuse `@vellar/service-kit` patterns from
-      vela-wallet if it makes sense to depend on it, or reimplement minimal)
-- [ ] `POST /verify`: accept a PaymentPayload, re-simulate via Soroban RPC,
-      return `{ isValid, invalidReason?, payer }`
-- [ ] `POST /settle`: submit the transaction, sponsor the network fee,
-      return the tx hash and on-chain result
-- [ ] Fee-ceiling configuration: `maxTransactionFeeStroops` set high enough
-      for policy-governed smart-account payments (technical-doc.md §2) —
-      the specific bug this project exists to not repeat
-- [ ] Support both classic keypair and Soroban smart-account payers (V1
-      credentials first; V2 tracked as a known gap, see Non-Goals)
-- [ ] Any SEP-41 token; USDC as the documented default
-- [ ] Replay resistance / strict payload verification
+- [x] Service scaffold: TypeScript + Fastify (matching vela-wallet service
+      conventions), strict tsconfig, vitest — typecheck clean
+- [x] `POST /verify` + `POST /settle`: wire-compatible with the canonical
+      `HTTPFacilitatorClient` body shape (`{ x402Version, paymentPayload,
+      paymentRequirements }`), delegating to `x402Facilitator` — malformed
+      payloads produce a graceful invalid verdict, not a 500 (pinned by test)
+- [x] `GET /supported`: exposes the registered stellar:testnet exact kind
+      with `areFeesSponsored: true` and the sponsor's signer address
+- [x] Fee-ceiling configuration: `MAX_TX_FEE_STROOPS` env, DEFAULT 2,000,000
+      (vs. the package's 50,000 default) — clears the ~140k policy-governed
+      payment cost; a config test pins that the default stays above 140k
+- [x] Unit tests: 11 passing (config validation incl. fee-ceiling bounds;
+      health/supported/verify/settle route behavior)
+- [ ] LIVE smoke: this facilitator verifies + settles a real payment on
+      testnet from the existing vela-wallet spike payer
+      (`scripts/x402-spike/`) — the true end-to-end proof, reusing the
+      already-proven payer side against OUR verify/settle instead of
+      x402.org
+- [ ] Policy-governed payment live-verified through this facilitator
+      (the fee-ceiling regression case, proven for real, not just configured)
+- [ ] Support both classic keypair and Soroban smart-account payers
+      confirmed live (V1 credentials; V2 tracked as a known gap, see
+      Non-Goals)
+- [ ] Wire-level conformance: tested against an unmodified canonical x402
+      client (`HTTPFacilitatorClient` from `@x402/core/http` pointed at
+      this server)
 - [ ] Testnet deployment, frictionless access
-- [ ] Wire-level conformance: tested against at least one unmodified
-      canonical x402 client (not just this project's own test harness)
-- [ ] Unit + integration tests for verify/settle, including the fee-ceiling
-      and credential-type cases specifically (regression coverage for the
-      bugs that motivated this project)
 
 ## Phase 2 — Bazaar Discovery
 
