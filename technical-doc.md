@@ -217,7 +217,24 @@ RFP's own weighting of Bazaar as the highest-value deliverable.
   under a Vellar-branded subdomain (e.g. `facilitator.vellar.xyz`) — exact
   choice not yet made.
 
-## 9. Non-Goals (for now)
+## 9. Planned: Trust-Scored Bazaar (designed 2026-08-01)
+
+The facilitator's privileged position — it sees every settlement — becomes
+a reputation layer: per-resource settlement counts, unique payers, and
+last-settled timestamps accumulate in the catalog (`onAfterSettle`), and
+verify-time trust annotation checks the payment asset's
+contract-verification status plus its live on-chain wasm hash
+(`onBeforeVerify`, warn mode, never blocking). Bazaar search ranks on
+these `trust` fields and gains a verified-only filter, including in the
+MCP tools. Companion on-chain work (an AttestationRegistry contract and a
+VerifiedRecipientPolicy that rejects unverified-contract interactions
+inside `__check_auth`) lives in the Vellar wallet monorepo; this repo's
+boundary stays HTTP status API + public RPC. Full cross-repo design:
+`vela-wallet/docs/design-provenance-gated-spending.md`. Build is gated
+behind the Vellar x Stellar Hackathon and the SCF RFP submission; tracked
+as Phase 5 in BUILD-PLAN.md.
+
+## 10. Non-Goals (for now)
 
 - This is not a Vellar wallet feature and ships no changes to `vellar-sdk`
   or `vellar-dapp`.
