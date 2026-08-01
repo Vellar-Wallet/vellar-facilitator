@@ -10,6 +10,7 @@ import type {
   SearchDiscoveryResourcesParams,
   SearchDiscoveryResourcesResponse,
 } from "@x402/extensions/bazaar";
+import type { TrustedDiscoveryResource } from "./trust.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -22,8 +23,25 @@ const MAX_LIMIT = 100;
  * a single-instance deployment survives restarts. The store is behind this
  * class so a database can replace the file without touching routes/ingestion.
  */
+/** Per-resource settlement ground truth — data only a facilitator has. */
+interface SettlementStats {
+  settlements: number;
+  /** Distinct payer addresses (capped; uniquePayers reports the count). */
+  payers: string[];
+  lastSettled?: string;
+}
+
+interface StoredEntry {
+  resource: DiscoveryResource;
+  stats: SettlementStats;
+}
+
+/** Cap on tracked distinct payers per resource — bounds memory and the
+ * persistence file; the count saturates at the cap. */
+const MAX_TRACKED_PAYERS = 10_000;
+
 export class BazaarCatalog {
-  private readonly entries = new Map<string, DiscoveryResource>();
+  private readonly entries = new Map<string, StoredEntry>();
   private readonly persistPath: string | undefined;
 
   constructor(persistPath?: string) {
@@ -44,7 +62,7 @@ export class BazaarCatalog {
     const key = discovered.resourceUrl;
     const existing = this.entries.get(key);
 
-    const accepts = existing ? [...existing.accepts] : [];
+    const accepts = existing ? [...existing.resource.accepts] : [];
     const reqKey = JSON.stringify({
       scheme: requirements.scheme,
       network: requirements.network,
@@ -77,15 +95,39 @@ export class BazaarCatalog {
       ...(discovered.iconUrl !== undefined ? { iconUrl: discovered.iconUrl } : {}),
       ...(discovered.extensions !== undefined ? { extensions: discovered.extensions } : {}),
     };
-    this.entries.set(key, entry);
+    this.entries.set(key, {
+      resource: entry,
+      stats: existing?.stats ?? { settlements: 0, payers: [] },
+    });
     this.save();
   }
 
-  /** GET /discovery/resources — filtered, offset-paginated listing. */
+  /**
+   * Record one settled payment against a cataloged resource (no-op for
+   * unknown resources — stats exist only for catalog entries). Unique payers
+   * are deduped and capped; the settlement count is unbounded.
+   */
+  recordSettlement(resourceUrl: string, payer?: string): void {
+    const entry = this.entries.get(resourceUrl);
+    if (!entry) return;
+    entry.stats.settlements += 1;
+    entry.stats.lastSettled = new Date().toISOString();
+    if (
+      payer &&
+      entry.stats.payers.length < MAX_TRACKED_PAYERS &&
+      !entry.stats.payers.includes(payer)
+    ) {
+      entry.stats.payers.push(payer);
+    }
+    this.save();
+  }
+
+  /** GET /discovery/resources — filtered, offset-paginated listing. Items are
+   * the wire DiscoveryResource plus an additive `trust` stats block. */
   list(params: ListDiscoveryResourcesParams = {}): DiscoveryResourcesResponse {
     const limit = clampLimit(params.limit);
     const offset = Math.max(0, params.offset ?? 0);
-    const matched = this.filter(params);
+    const matched = this.filter(params).map((entry) => toItem(entry));
     return {
       x402Version: 2,
       items: matched.slice(offset, offset + limit),
@@ -113,13 +155,14 @@ export class BazaarCatalog {
     }
 
     const scored = this.filter(params)
-      .map((resource) => ({ resource, score: scoreResource(resource, tokens) }))
+      .map((entry) => ({ entry, score: scoreResource(entry.resource, tokens) }))
       .filter((s) => s.score > 0)
       .sort(
         (a, b) =>
-          b.score - a.score || b.resource.lastUpdated.localeCompare(a.resource.lastUpdated),
+          b.score - a.score ||
+          b.entry.resource.lastUpdated.localeCompare(a.entry.resource.lastUpdated),
       )
-      .map((s) => s.resource);
+      .map((s) => toItem(s.entry));
 
     const page = scored.slice(offset, offset + limit);
     const nextOffset = offset + page.length;
@@ -141,8 +184,8 @@ export class BazaarCatalog {
       ListDiscoveryResourcesParams,
       "type" | "payTo" | "scheme" | "network" | "extensions"
     >,
-  ): DiscoveryResource[] {
-    return [...this.entries.values()].filter((r) => {
+  ): StoredEntry[] {
+    return [...this.entries.values()].filter(({ resource: r }) => {
       if (params.type && r.type !== params.type) return false;
       if (params.payTo && !r.accepts.some((a) => a.payTo === params.payTo)) return false;
       if (params.scheme && !r.accepts.some((a) => a.scheme === params.scheme)) return false;
@@ -154,8 +197,22 @@ export class BazaarCatalog {
 
   private load(path: string): void {
     try {
-      const raw = JSON.parse(readFileSync(path, "utf8")) as DiscoveryResource[];
-      for (const entry of raw) this.entries.set(entry.resource, entry);
+      const raw = JSON.parse(readFileSync(path, "utf8")) as Array<
+        DiscoveryResource | StoredEntry
+      >;
+      for (const item of raw) {
+        if ("stats" in item && typeof item.resource === "object") {
+          // Current format: { resource, stats }.
+          this.entries.set(item.resource.resource, item);
+        } else {
+          // Pre-trust format: a bare DiscoveryResource — migrate with zero stats.
+          const resource = item as DiscoveryResource;
+          this.entries.set(resource.resource, {
+            resource,
+            stats: { settlements: 0, payers: [] },
+          });
+        }
+      }
     } catch {
       // Missing or unreadable file: start empty. Corrupt persistence must
       // never prevent the facilitator from starting.
@@ -172,6 +229,19 @@ export class BazaarCatalog {
       console.error("[catalog] persist failed:", err);
     }
   }
+}
+
+/** Wire item: the resource plus its additive trust-stats block. Verification
+ * verdicts are added later by the trust annotator (trust.ts). */
+function toItem(entry: StoredEntry): TrustedDiscoveryResource {
+  return {
+    ...entry.resource,
+    trust: {
+      settlements: entry.stats.settlements,
+      uniquePayers: entry.stats.payers.length,
+      ...(entry.stats.lastSettled ? { lastSettled: entry.stats.lastSettled } : {}),
+    },
+  };
 }
 
 function clampLimit(limit: number | undefined): number {

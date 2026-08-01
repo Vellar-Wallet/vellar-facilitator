@@ -7,6 +7,9 @@ export interface FacilitatorConfig {
   maxTransactionFeeStroops: number;
   /** Optional JSON file path for Bazaar catalog persistence across restarts. */
   catalogFile: string | undefined;
+  /** Base URL of the Vellar verification API (e.g. https://…/verification) for
+   * the Bazaar trust layer. Unset ⇒ verification verdicts are "unknown". */
+  verificationApiUrl: string | undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorConfig {
@@ -36,5 +39,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     sponsorSecretKey,
     maxTransactionFeeStroops,
     catalogFile: env.CATALOG_FILE,
+    verificationApiUrl: env.VERIFICATION_API_URL,
   };
 }

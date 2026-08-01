@@ -85,25 +85,33 @@ See docs/decisions.md._
       live-verified on testnet 2026-07-31
 - [ ] Upstream contribution: `scheme_upto_stellar.md`
 
-## Phase 5 — Trust layer (designed 2026-08-01; build gated behind hackathon + RFP submission)
+## Phase 5 — Trust layer — BUILT 2026-08-01 (gate overridden user-directed, same day as design)
 
 _Part of the cross-repo "Provenance-Gated Agent Spending + Trust-Scored
 Bazaar" initiative — full design in
 `vela-wallet/docs/design-provenance-gated-spending.md` (public). This repo's
 slice only; the contracts + attestor worker live in the wallet monorepo.
 Boundary rule unchanged: this repo consumes verification over its public
-HTTP status API + public RPC — no cross-repo code dependency._
+HTTP history API + public RPC — no cross-repo code dependency._
 
-- [ ] `onAfterSettle` settlement stats: per-resource settlement count,
-      unique payers, last-settled → catalog `trust` block
-- [ ] `onBeforeVerify` trust annotation (warn mode): asset contract's
-      verification status + live on-chain wasm hash check → verify
-      response extensions
-- [ ] Bazaar ranking: `trust` as a search-scoring factor; verified-only
-      filter on list/search + the MCP tools
-- [ ] Tests: stats accumulation, ranking effect, filter behavior,
-      annotation degrade-to-neutral on verification-API failure (must
-      never block verify)
+- [x] Settlement stats: `onAfterSettle` records per-resource settlement
+      count, unique payers (deduped, capped 10k), last-settled → additive
+      `trust` block on catalog items; persistence format migrated
+      backwards-compatibly
+- [x] Trust annotation at read time (deviation from the designed
+      `onBeforeVerify` placement, deliberate: discovery responses are where
+      agents consume trust, and read-time annotation caches per-asset (5min
+      TTL) instead of paying a lookup per payment): verification-API status
+      + live on-chain wasm-hash cross-check (TOCTOU downgrade on drift;
+      uncertainty never downgrades; API outage ⇒ "unknown", never blocks)
+- [x] Bazaar ranking: search reranks verified > unknown > unverified
+      (stable within relevance bands); `verified_only=true` filter on
+      list/search; MCP tools gain a `verified_only` param (client-side
+      filter on the additive trust field — zero wire deviation from the
+      canonical bazaar client)
+- [x] Tests: 15 new (resolver verdicts/caching/TOCTOU/degrade, annotation
+      precedence, filter/rerank, stats accumulation/dedupe/survival) — 47
+      total green, typecheck clean
 
 ## Phase 4 — Ongoing (post-launch)
 

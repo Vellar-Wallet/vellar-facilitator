@@ -29,6 +29,9 @@ export function registerBazaar(facilitator: x402Facilitator, catalog: BazaarCata
       const discovered = extractDiscoveryInfo(paymentPayload, requirements);
       if (!discovered) return;
       catalog.upsertFromPayment(discovered, requirements);
+      // Settlement ground truth (trust layer): count the settlement and the
+      // distinct payer against the cataloged resource.
+      catalog.recordSettlement(discovered.resourceUrl, result.payer);
     } catch (err) {
       console.error("[bazaar] cataloging failed (settlement unaffected):", err);
     }

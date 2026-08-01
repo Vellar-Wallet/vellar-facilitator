@@ -15,6 +15,7 @@ const testConfig = {
   sponsorSecretKey: Keypair.random().secret(),
   maxTransactionFeeStroops: 2_000_000,
   catalogFile: undefined,
+  verificationApiUrl: undefined,
 };
 
 function requirements(): PaymentRequirements {

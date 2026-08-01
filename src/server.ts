@@ -4,6 +4,12 @@ import { loadConfig } from "./config.js";
 import { buildFacilitator } from "./facilitator.js";
 import { BazaarCatalog } from "./catalog.js";
 import { registerBazaar } from "./bazaar.js";
+import {
+  annotateTrust,
+  filterVerifiedOnly,
+  rerankVerifiedFirst,
+  type TrustResolver,
+} from "./trust.js";
 
 interface FacilitatorRequestBody {
   x402Version?: number;
@@ -19,6 +25,8 @@ interface ListQuery {
   extensions?: string;
   limit?: string;
   offset?: string;
+  /** Trust-layer filter: "true" keeps only verification-verified entries. */
+  verified_only?: string;
 }
 
 interface SearchQuery extends Omit<ListQuery, "offset"> {
@@ -29,6 +37,7 @@ interface SearchQuery extends Omit<ListQuery, "offset"> {
 export function buildServer(
   facilitator: ReturnType<typeof buildFacilitator>,
   catalog: BazaarCatalog,
+  trust?: TrustResolver,
 ) {
   const app = Fastify({ logger: true });
   registerBazaar(facilitator, catalog);
@@ -59,7 +68,7 @@ export function buildServer(
 
   app.get<{ Querystring: ListQuery }>("/discovery/resources", async (request) => {
     const q = request.query;
-    return catalog.list({
+    const response = catalog.list({
       ...(q.type !== undefined ? { type: q.type } : {}),
       ...(q.payTo !== undefined ? { payTo: q.payTo } : {}),
       ...(q.scheme !== undefined ? { scheme: q.scheme } : {}),
@@ -68,6 +77,10 @@ export function buildServer(
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.offset !== undefined ? { offset: Number(q.offset) } : {}),
     });
+    if (!trust) return response;
+    let items = await annotateTrust(response.items, trust);
+    if (q.verified_only === "true") items = filterVerifiedOnly(items);
+    return { ...response, items };
   });
 
   app.get<{ Querystring: SearchQuery }>("/discovery/search", async (request, reply) => {
@@ -77,7 +90,7 @@ export function buildServer(
         .status(400)
         .send({ error: "invalid_query", detail: "the `query` parameter is required" });
     }
-    return catalog.search({
+    const response = catalog.search({
       query: q.query,
       ...(q.type !== undefined ? { type: q.type } : {}),
       ...(q.payTo !== undefined ? { payTo: q.payTo } : {}),
@@ -87,6 +100,14 @@ export function buildServer(
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
     });
+    if (!trust) return response;
+    // Annotate, then verified-first within the relevance ranking (stable), or
+    // hard-filter when the caller asked for verified_only.
+    let resources = await annotateTrust(response.resources, trust);
+    resources = q.verified_only === "true"
+      ? filterVerifiedOnly(resources)
+      : rerankVerifiedFirst(resources);
+    return { ...response, resources };
   });
 
   return app;
@@ -96,7 +117,12 @@ const isDirectRun = process.argv[1]?.endsWith("server.ts") || process.argv[1]?.e
 if (isDirectRun) {
   const config = loadConfig();
   const catalog = new BazaarCatalog(config.catalogFile);
-  const app = buildServer(buildFacilitator(config), catalog);
+  const { createTrustResolver } = await import("./trust.js");
+  const trust = createTrustResolver({
+    verificationApiUrl: config.verificationApiUrl,
+    rpcUrl: config.rpcUrl ?? "https://soroban-testnet.stellar.org",
+  });
+  const app = buildServer(buildFacilitator(config), catalog, trust);
   app.listen({ port: config.port, host: config.host }).catch((err) => {
     app.log.error(err);
     process.exit(1);

@@ -29,7 +29,25 @@ const sharedFilters = {
   payTo: z.string().optional().describe("Filter by payment recipient address"),
   network: z.string().optional().describe("Filter by network, e.g. stellar:testnet"),
   limit: z.number().int().min(1).max(100).optional().describe("Max results per page"),
+  verified_only: z
+    .boolean()
+    .optional()
+    .describe(
+      "Only return resources whose payment assets have VERIFIED source provenance " +
+        "(reproducible-build verification; verified means provenance, not audited/safe)",
+    ),
 };
+
+/** Trust-layer client-side filter: keeps wire compatibility with the canonical
+ * bazaar client (which has no verified_only param) by filtering on the
+ * additive `trust.verification` field the facilitator annotates. */
+function applyVerifiedOnly<T extends { trust?: { verification?: string } }>(
+  items: T[],
+  verifiedOnly: boolean | undefined,
+): T[] {
+  if (!verifiedOnly) return items;
+  return items.filter((item) => item.trust?.verification === "verified");
+}
 
 server.registerTool(
   "x402_list_resources",
@@ -43,9 +61,13 @@ server.registerTool(
       offset: z.number().int().min(0).optional().describe("Pagination offset"),
     },
   },
-  async (params) => {
+  async ({ verified_only, ...params }) => {
     const result = await bazaar.listResources(compact(params));
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    const items = applyVerifiedOnly(
+      result.items as Array<(typeof result.items)[number] & { trust?: { verification?: string } }>,
+      verified_only,
+    );
+    return { content: [{ type: "text", text: JSON.stringify({ ...result, items }, null, 2) }] };
   },
 );
 
@@ -62,9 +84,17 @@ server.registerTool(
       cursor: z.string().optional().describe("Continuation cursor from a previous search"),
     },
   },
-  async (params) => {
+  async ({ verified_only, ...params }) => {
     const result = await bazaar.search(compact(params) as { query: string });
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    const resources = applyVerifiedOnly(
+      result.resources as Array<
+        (typeof result.resources)[number] & { trust?: { verification?: string } }
+      >,
+      verified_only,
+    );
+    return {
+      content: [{ type: "text", text: JSON.stringify({ ...result, resources }, null, 2) }],
+    };
   },
 );
 
