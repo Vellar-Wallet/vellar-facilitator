@@ -1,246 +1,254 @@
 # Vellar Facilitator — Technical Document
 
-Candidate SCF RFP Track submission (SCF #45, "X402 Facilitator with Bazaar
-(Discovery) Support"). Governs this repo only. Not part of the Vellar wallet
-product — see [vela-wallet's technical-doc.md §18](https://github.com/Vellar-Wallet/vellar-dapp/blob/main/technical-doc.md)
-for the decision record on why this exists as a separate initiative.
+SCF #45 RFP Track submission — "X402 Facilitator with Bazaar (Discovery)
+Support." This document governs this repo (`vellar-facilitator`). It is
+separate infrastructure from the Vellar wallet product; the two share x402
+domain expertise, not code.
 
-Status: **pre-build.** Nothing described below is implemented yet. This
-document exists to scope the work before writing code, and to give SCF
-reviewers (and future collaborators) a single source of truth.
-
----
+**Status: built and live on testnet.** The facilitator, Bazaar discovery, the
+MCP server, and the provenance/trust layer are implemented, tested, and
+deployed at `https://vellar-facilitator.onrender.com`, with on-chain
+settlements to show for it (§8). This document describes the working
+architecture and the path to mainnet that the SCF Build Award funds.
 
 ## 1. What This Is
 
 An x402 protocol facilitator for Stellar: a hosted service that verifies and
 settles HTTP-402 payments on behalf of resource servers (sellers), so sellers
-never need to touch Soroban RPC, auth-entry construction, or fee sponsorship
-directly. Paired with a Bazaar discovery layer so agents can find payable
-resources without hardcoded integrations.
+never touch Soroban RPC, auth-entry construction, or fee sponsorship directly.
+Paired with a **Bazaar discovery layer** so agents can find payable resources
+without hardcoded integrations, and a **trust layer** that ranks discovery
+results by real settlement data and on-chain source-verification status.
 
-Three success outcomes, per the RFP:
+The RFP's three success outcomes, and where each stands:
 
-1. A reliable facilitator on both Stellar testnet and mainnet.
-2. Permissive open-source licensing (Apache-2.0, matching Vellar's other
-   repos).
-3. A functional Bazaar discovery system — the RFP's own "highest-value
-   deliverable."
+1. A reliable facilitator on Stellar testnet and mainnet — **testnet live;
+   mainnet is the funded final milestone.**
+2. Permissive open-source licensing — **done (Apache-2.0), repo public.**
+3. A functional Bazaar discovery system, the RFP's highest-value deliverable —
+   **built and live-proven** (§5, §8).
 
 ## 2. Why Vellar, Specifically
 
-Vellar's wallet product (a separate repo, [vellar-dapp](https://github.com/Vellar-Wallet/vellar-dapp))
-already built and live-tested the **payer side** of x402 on Stellar: a
-Soroban smart account autonomously paying x402-protected resources under an
-on-chain spending policy, settled through both the hosted Coinbase
-facilitator and a self-hosted one. That work surfaced two concrete,
-facilitator-side defects this RFP exists to fund a fix for — not
-hypothetical risks, things we hit and diagnosed empirically:
+Vellar's wallet product (a separate repo) built and live-tested the **payer**
+side of x402 on Stellar first: a Soroban smart account autonomously paying
+x402-protected resources under an on-chain spending policy, settled through
+both the hosted Coinbase facilitator and a self-hosted one. That work surfaced
+two concrete, facilitator-side defects — not hypothetical risks, things we hit
+and diagnosed empirically, with transaction hashes:
 
 **Fee-ceiling rejection under policy-governed payments.** A Soroban
 smart-account payment gated by an on-chain spending policy runs that policy
 inside `__check_auth`, which raises the simulation-derived resource fee well
 above a plain transfer (~139,500 stroops vs ~22,000 in our testing). The
 Coinbase-hosted facilitator's default `maxTransactionFeeStroops` (50,000)
-rejects these as `invalid_exact_stellar_payload_fee_exceeds_maximum` — a
-valid, policy-approved payment refused for being a smart account with
-programmable spending controls. We reproduced this, confirmed it's a
-facilitator constructor option (not a protocol limit), and settled the same
-payment through a self-hosted facilitator with the ceiling raised. This
-facilitator ships with that fixed from day one, not discovered in
-production.
+rejects these as `invalid_exact_stellar_payload_fee_exceeds_maximum` — a valid,
+policy-approved payment refused for being a smart account with programmable
+spending controls. We reproduced it, confirmed it is a facilitator constructor
+option (not a protocol limit), and settled the same payment through a
+facilitator with the ceiling raised. **This facilitator ships with that fixed:
+`MAX_TX_FEE_STROOPS` defaults to 2,000,000.** Measured live: a stacked
+double-policy payment charges 53,535 stroops of fee — above the 50,000 ceiling
+other facilitators sponsor, which is why that class of payment settles here and
+not there.
 
-**V1 vs. V2 (CAP-0071-02) credential handling.** We confirmed empirically
-that both deployed facilitators we tested (Coinbase's and OpenZeppelin's)
-accept type-1 (`sorobanCredentialsAddress`) auth-entry credentials and
-reject type-2 (address-bound). We also confirmed passkey-kit 0.14 cannot
-emit type-1 credentials at all — a real gap blocking passkey-signed x402
-payments across the ecosystem, not just for Vellar. This facilitator's
-conformance work starts from an already-mapped compatibility matrix instead
-of discovering it from scratch.
-
-Full findings, with transaction hashes: `vela-wallet/docs/decisions.md`,
-entries dated 2026-07-25 and 2026-07-26.
+**V1 vs. V2 (CAP-0071-02) credential handling.** We confirmed empirically that
+both deployed facilitators we tested accept type-1 (`sorobanCredentialsAddress`)
+auth-entry credentials and reject type-2 (address-bound). We also confirmed
+passkey-kit 0.14 cannot emit type-1 credentials — a real gap blocking
+passkey-signed x402 payments across the ecosystem, not just for Vellar. This
+facilitator's conformance work starts from an already-mapped compatibility
+matrix, and closing the V2 gap (so passkey-signed payments settle) is a funded
+deliverable of this proposal.
 
 ## 3. Relationship to the Vellar Wallet Product
 
-This facilitator and the Vellar wallet are **related by shared x402
-expertise, not shared code, release cycle, or ownership.**
+Related by shared x402 expertise, not shared code, release cycle, or ownership.
 
-| | Vellar wallet (vellar-dapp, vellar-sdk) | Vellar facilitator (this repo) |
-|---|---|---|
-| Role in x402 | Payer — signs and pays | Verify/settle — trusted third party |
+| | Vellar wallet (payer side) | Vellar facilitator (this repo) |
+| --- | --- | --- |
+| Role in x402 | Signs and pays | Verify/settle — trusted relay |
 | Who uses it | Vellar wallet users | Any seller/agent on Stellar, Vellar or not |
 | Chain interaction | Signs auth entries | Re-simulates, submits, sponsors fees |
-| Funding | Product revenue / SCF Build Award (separate) | This RFP, if awarded |
-| Uptime obligation | Standard app SLAs | 99%+ target, public telemetry (RFP requirement) |
+| Uptime obligation | Standard app SLAs | 99%+ target, public telemetry |
 
-The facilitator's existence has no bearing on Vellar wallet functionality —
-`wallet.x402.fetch()` in `vellar-sdk` already works against any compliant
-facilitator, third-party or this one.
+The facilitator's existence has no bearing on Vellar wallet functionality — the
+wallet's x402 client already works against any compliant facilitator,
+third-party or this one. Equally, this facilitator serves any x402 client, not
+only Vellar wallets.
 
 ## 4. Core Payment Flow
 
-Actors: a **buyer** (a wallet or autonomous agent), a **seller's** API/resource
-server, this **facilitator**.
+Actors: a buyer (a wallet or autonomous agent), a seller's resource server,
+this facilitator.
 
-1. **Buyer hits a paid endpoint.** e.g. `GET api.example.com/premium-data`.
-   Seller responds `402 Payment Required` with payment requirements: amount,
-   asset (any SEP-41 token, USDC default), `payTo` address, network
-   (`stellar:testnet` / `stellar:mainnet`).
+1. **Buyer hits a paid endpoint.** Seller responds `402 Payment Required` with
+   payment requirements: amount, asset (any SEP-41 token, USDC default),
+   `payTo` address, network (`stellar:testnet` / `stellar:mainnet`).
 2. **Buyer builds and signs a payment.** Constructs the SEP-41
-   `transfer(from, to, amount)` as a Soroban auth entry, signed with either a
-   classic keypair or a smart-account signer. Retries the request with a
-   `PAYMENT-SIGNATURE` header carrying the signed payload.
-3. **Seller calls this facilitator's `/verify`.** The seller never touches
-   Soroban directly — it forwards the payload here. If the payer is a
-   policy-governed smart account, `__check_auth` runs the policy contract
-   during re-simulation, which is why `maxTransactionFeeStroops` must
-   accommodate policy-sized fees (§2), not default to a plain-transfer
-   ceiling.
-4. **Facilitator re-simulates and returns a verdict.** Re-simulation (never
-   trusting the signature blindly) is what makes verification trustworthy —
-   a policy's on-chain logic runs for real. Under budget → valid. Over
-   budget → the policy contract panics, `__check_auth` fails, `/verify`
-   returns `isValid:false`.
+   `transfer(from, to, amount)` as a Soroban auth entry, signed with a classic
+   keypair or a smart-account signer, and retries with a `PAYMENT-SIGNATURE`
+   header carrying the signed payload.
+3. **Seller calls `/verify`.** The seller never touches Soroban directly. If
+   the payer is a policy-governed smart account, `__check_auth` runs the policy
+   contract during re-simulation — which is why the fee ceiling must accommodate
+   policy-sized fees (§2).
+4. **Facilitator re-simulates and returns a verdict.** Re-simulation, never
+   trusting the signature blindly, is what makes verification trustworthy: a
+   policy's on-chain logic runs for real. Under budget → valid. Over budget →
+   the policy panics, `__check_auth` fails, `/verify` returns `isValid:false`.
 5. **Seller calls `/settle`.** Facilitator submits to Soroban RPC, sponsoring
-   the fee itself — buyers hold only the payment asset, no XLM required (a
-   hard RFP requirement, and consistent with how Vellar's own wallet-service
-   already sponsors submission for its users).
-6. **Settlement confirms on-chain; seller unlocks the resource.**
-   Facilitator returns the tx hash; seller serves the actual response.
+   the fee from its own account — buyers hold only the payment asset, no XLM.
+6. **Settlement confirms on-chain; seller unlocks the resource.** Facilitator
+   returns the tx hash; seller serves the response.
 
 ## 5. Bazaar Discovery Flow
 
-A separate, additive concern: instead of an agent needing to already know a
-resource's URL, it can discover payable resources through this facilitator.
+Instead of an agent needing a resource's URL in advance, it discovers payable
+resources through this facilitator.
 
-1. **Seller registers a resource implicitly.** When a seller's
-   `PaymentPayload` carries the discovery extension, the facilitator
-   auto-catalogs it as a side effect of normal x402 traffic — no separate
-   registration step.
-2. **An agent searches.** `GET /discovery/search?q=<natural language>` or
+1. **Sellers register implicitly.** When a settled payment carries the official
+   `bazaar` discovery extension, the facilitator auto-catalogs the resource — a
+   side effect of normal traffic, no separate registration step.
+   Catalog-on-settle keeps unpaid spam out; route templates and service
+   metadata are validated/sanitized (catalog-poisoning guard).
+2. **An agent searches.** `GET /discovery/search?query=<natural language>` or
    `GET /discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=`.
-3. **Facilitator returns matches** — endpoint, price, asset, and whether the
-   resource is a plain HTTP API or an MCP tool (both are first-class, per
-   the RFP).
+3. **Facilitator returns matches** — endpoint, how to call it, price, asset,
+   and whether the resource is an HTTP API or an MCP tool (both first-class).
 4. **Agent pays via §4.**
 
 An **MCP discovery server** wraps this so an LLM tool-use loop can call
-"find a Stellar resource that does X" as an MCP tool, not just raw HTTP.
+`x402_search_resources` / `x402_list_resources` as MCP tools, not just raw HTTP.
+Both are wire-compatible with the canonical `@x402/extensions` bazaar client.
 
-## 6. Why Stellar Changes the Design
+## 6. Trust Layer
 
-Not a port of an EVM-style facilitator. Specific Stellar/Soroban mechanics
-that shape this facilitator, all encountered firsthand during the payer-side
-work:
+The facilitator sees every settlement, so it can rank discovery results by
+ground truth rather than self-reported data:
 
-- **Auth entries, not pre-signed transactions.** The facilitator typically
-  rebuilds the transaction around the buyer's signed auth entry rather than
-  relaying a fully-formed signed tx — confirmed empirically (source/fee
-  account on working settlements were the facilitator's own, never the
-  buyer's).
-- **Ledger-based expiration** (~60s / 12 ledgers default), not a
-  block-number or wall-clock deadline — retry/timeout logic must account
-  for this.
+- **Settlement stats.** Per-resource settlement count, unique payers, and
+  last-settled timestamp accumulate on every successful settle.
+- **Verification annotation.** At read time, each result's payment asset is
+  checked against Vellar's contract-verification status API plus a live
+  on-chain wasm-hash cross-check that catches contracts upgraded since
+  verification (a time-of-check/time-of-use guard). Verdict: verified /
+  unverified / unknown. A verification-API outage degrades to "unknown" and
+  never blocks discovery.
+- **Ranking + filter.** Search ranks verified results first (stably, within
+  relevance bands); `verified_only=true` hard-filters, on both HTTP and the MCP
+  tools.
+
+Companion on-chain enforcement (an attestation registry and a
+verified-recipient policy that rejects unverified-contract interactions inside
+`__check_auth`) lives in the Vellar wallet monorepo and is consumed here only
+over the public verification HTTP API and public RPC — no cross-repo code
+dependency. **Honesty bar: verified means reproducible, attributable source
+provenance, NOT audited, benign, or safe.**
+
+## 7. Why Stellar Changes the Design
+
+Not a port of an EVM-style facilitator. Stellar/Soroban mechanics that shape
+it, all encountered firsthand:
+
+- **Auth entries, not pre-signed transactions.** The facilitator rebuilds the
+  transaction around the buyer's signed auth entry rather than relaying a
+  fully-formed signed tx — confirmed empirically (source/fee account on working
+  settlements were the facilitator's own, never the buyer's).
+- **Ledger-based expiration** (~60s / 12 ledgers), not a block number or
+  wall-clock deadline — retry/timeout logic must account for it.
 - **Two account types, one protocol.** Classic G-address keypairs (cheap to
-  verify) and C-address smart accounts (can carry policy logic, but cost
-  more resource fee — §2) must both work.
+  verify) and C-address smart accounts (can carry policy logic, costing more
+  resource fee — §2) both work.
 - **Trustlines** for classic accounts holding non-native SEP-41 assets — a
-  buyer without a trustline to the seller's asset cannot receive it, a
   concept with no EVM analogue.
 - **Sequence-number contention under bursty agent traffic.** A facilitator
-  sponsoring and submitting many concurrent agent payments needs real
-  sequence-number management — a different operational surface than a
-  single-user wallet backend.
+  sponsoring and submitting many concurrent payments needs real sequence-number
+  management; the composed scheme supports a fee-bump signer that decouples fee
+  payment from sequence numbers. Load-hardening this path is a funded
+  deliverable.
 
-## 7. Planned Deliverables (Mapped to RFP Requirements)
+## 8. What's Built (verified on testnet)
 
-**Build-vs-compose note (2026-07-31, verified against `@x402/stellar@2.20.0`
-and `@x402/core@2.20.0`):** Coinbase's official packages already implement
-the Stellar `exact` scheme facilitator core — `ExactStellarScheme`
-(re-simulation verify, sponsored settle, `maxTransactionFeeStroops` config,
-optional fee-bump signer decoupling fee payment from sequence management)
-and `x402Facilitator` (scheme registration, verify/settle orchestration,
-lifecycle hooks, `/supported`). The verify/settle layer of this project is
-therefore a thin, correctly-configured composition of those packages — the
-honest value-add there is configuration (the fee ceiling §2 documents),
-operation (uptime, telemetry, hosting), and conformance testing. The
-genuinely novel engineering in this project is the **Bazaar discovery
-layer**, which exists nowhere in the official packages — consistent with the
+Build-vs-compose: verified against `@x402/stellar@2.20.0` and
+`@x402/core@2.20.0`, Coinbase's official packages already implement the Stellar
+exact-scheme facilitator core — `ExactStellarScheme` (re-simulation verify,
+sponsored settle, `maxTransactionFeeStroops`, optional fee-bump signer) and
+`x402Facilitator` (scheme registration, verify/settle orchestration, lifecycle
+hooks, `/supported`). The verify/settle layer here is therefore a thin,
+correctly-configured composition of those packages — the value-add is
+configuration (the fee ceiling), operation (uptime, telemetry, hosting), and
+conformance testing. The genuinely novel engineering is **Bazaar discovery and
+the trust layer**, which exist nowhere in the official packages — matching the
 RFP's own weighting of Bazaar as the highest-value deliverable.
 
-**Facilitator (verify + settle):**
-- x402 v2 spec implementation for Stellar via `@x402/stellar`
-  (`ExactStellarScheme` composed through `x402Facilitator` — see
-  build-vs-compose note above)
-- Any SEP-41 token, USDC default
-- Sponsored network fees
-- Classic keypairs and Soroban smart accounts, both supported
-- Fee-ceiling handling for policy-governed payments (§2 — ships fixed:
-  default `MAX_TX_FEE_STROOPS=2,000,000` vs. the package default of 50,000)
-- Frictionless testnet access; configurable mainnet pricing
-- Replay resistance, strict payload verification
-- 99%+ uptime target, public operational telemetry dashboard
+Implemented, tested, and live:
 
-**Bazaar discovery:**
-- `GET /discovery/resources`, `GET /discovery/search` (§5)
-- Automatic catalog registration from the discovery extension
-- HTTP endpoints and MCP tools as first-class resources
-- Route-template safety validation
+- **Facilitator:** `/verify`, `/settle`, `/supported`. Any SEP-41 token (USDC
+  default), classic keypairs and Soroban smart accounts, sponsored fees, raised
+  fee ceiling for policy-governed payments, replay resistance via ledger-bounded
+  auth entries. Wire-conformance tested against unmodified canonical clients.
+- **Bazaar:** `/discovery/resources`, `/discovery/search`, auto-cataloging on
+  settle, route-template safety guard, catalog persistence.
+- **Trust layer:** settlement stats, verification annotation with the live
+  wasm-hash TOCTOU check, verified-first ranking, `verified_only` filter.
+- **MCP discovery server** (stdio): `x402_list_resources`,
+  `x402_search_resources`, `verified_only` support.
+- **Developer guide + two runnable end-to-end examples** (seller + buyer).
+- **Deployed:** `https://vellar-facilitator.onrender.com`, dedicated funded
+  sponsor account, `render.yaml` blueprint.
 
-**Additional:**
-- MCP discovery server for agent integration
-- Upstream contribution: `scheme_upto_stellar.md`
-- SDK helpers for sellers and buyers
-- Developer guide, two end-to-end integration examples
-- Security review before production
-- Regular community status updates
+Proof (Stellar testnet):
 
-## 8. Open Questions (need resolution before/during build)
+- Payment settled through the hosted facilitator: tx
+  `1da6f9e6a90b78da898c99dfefba8821b5f632b72f584968fb057fd8a298e039` — fees paid
+  by the facilitator's own sponsor (Horizon-confirmed), resource auto-cataloged
+  and searchable.
+- Provenance-gated payment settled: tx
+  `8bde387b82f8ba03484d0d6eb5838923e61ede6b7db483c97981b2fe7c5a6faf`. The full
+  loop is proven: with the contract attested the agent payment settles; after
+  revoke the identical payment is rejected inside `__check_auth` and no funds
+  move.
 
-- **Decentralization rationale.** The facilitator is a semi-trusted
-  verify/settle relay — inherent to x402's current design, not a Vellar
-  choice. Draft position: it holds no user funds or private keys;
-  verification is re-simulation-based and independently reproducible by
-  anyone running the same open-source code; Vellar is not positioned as the
-  only facilitator on Stellar, and the design should not assume single-point
-  trust. Needs sign-off before the RFP submission goes in.
-- **User privacy / data handling.** What gets logged (payment requirements
-  served, verify/settle requests) vs. what must not be (no PII beyond
-  what's already on-chain). Not yet decided.
-- **Maintenance commitment.** The RFP implies a multi-year support window.
-  This is a real, binding obligation for whoever operates the facilitator —
-  needs an explicit, realistic commitment before submission, not an
-  aspirational one.
-- **Hosting.** Same pattern as `vellar-backend` (Render, or equivalent),
-  under a Vellar-branded subdomain (e.g. `facilitator.vellar.xyz`) — exact
-  choice not yet made.
+## 9. Path to Mainnet (what the Build Award funds)
 
-## 9. Planned: Trust-Scored Bazaar (designed 2026-08-01)
+The testnet system exists; the grant funds productionization and mainnet
+launch. Three milestones (final = mainnet, per SCF):
 
-The facilitator's privileged position — it sees every settlement — becomes
-a reputation layer: per-resource settlement counts, unique payers, and
-last-settled timestamps accumulate in the catalog (`onAfterSettle`), and
-verify-time trust annotation checks the payment asset's
-contract-verification status plus its live on-chain wasm hash
-(`onBeforeVerify`, warn mode, never blocking). Bazaar search ranks on
-these `trust` fields and gains a verified-only filter, including in the
-MCP tools. Companion on-chain work (an AttestationRegistry contract and a
-VerifiedRecipientPolicy that rejects unverified-contract interactions
-inside `__check_auth`) lives in the Vellar wallet monorepo; this repo's
-boundary stays HTTP status API + public RPC. Full cross-repo design:
-`vela-wallet/docs/design-provenance-gated-spending.md`. Build is gated
-behind the Vellar x Stellar Hackathon and the SCF RFP submission; tracked
-as Phase 5 in BUILD-PLAN.md.
+1. **Production hardening.** DB-backed Bazaar catalog (replacing the file store,
+   multi-instance ready); operational telemetry + public status dashboard
+   toward the 99%+ target; load-hardening + sequence-number management under
+   concurrent settlement using the fee-bump path.
+2. **Upstream + provenance.** `scheme_upto_stellar.md` (the "upto" metered
+   scheme spec + implementation) contributed upstream; V2 (CAP-0071-02)
+   credential support so passkey-signed x402 payments settle; the provenance
+   attestor and agent-key mint/revoke UX productionized.
+3. **Mainnet launch.** Facilitator + the three Soroban contracts (attestation
+   registry, verified-recipient policy, spending-limit policy) deployed to
+   pubnet after a security audit (SCF audit credits) with findings remediated;
+   proven uptime; mainnet USDC / multi-asset support; professional user testing.
 
-## 10. Non-Goals (for now)
+Mainnet-specific engineering: pubnet RPC + real USDC SAC configuration
+(network plumbing exists via `STELLAR_NETWORK=pubnet`, currently untested),
+mainnet fee/pricing configuration, sponsor-account funding and monitoring, and
+the higher uptime/observability bar production traffic demands.
 
-- This is not a Vellar wallet feature and ships no changes to `vellar-sdk`
-  or `vellar-dapp`.
-- Not committing to passkey-signed (V2 credential) support until upstream
-  facilitator PRs land — this facilitator can choose to support V1 first and
-  add V2 when the ecosystem does, same constraint documented in
-  `vela-wallet/technical-doc.md` §17.5.
-- No claim of exclusivity — other Stellar facilitators existing and
-  competing is a healthy, expected outcome, not a threat to this project.
+## 10. Operating Commitments
+
+- **Decentralization.** The facilitator is a semi-trusted verify/settle relay,
+  inherent to x402's current design. It holds no user funds or private keys; a
+  compromised facilitator can refuse or misreport a payment but cannot steal
+  funds. Verification is re-simulation-based and independently reproducible by
+  anyone running the same open-source code. No exclusivity claim — competing
+  Stellar facilitators are a healthy outcome, not a threat.
+- **Privacy.** Operational logs only (requests, errors, latency) for a bounded
+  retention window; no PII, no buyer-identity tracking. Wallet addresses and
+  amounts are already public on-chain once settled.
+- **Maintenance.** Spec conformance as `@x402/stellar` and the x402 protocol
+  evolve, uptime/telemetry, security patching, and regular community status
+  updates through the award window and beyond.
+
+## 11. Non-Goals
+
+- Not a Vellar wallet feature; ships no changes to the wallet SDK or app.
+- No claim of exclusivity — see §10.
