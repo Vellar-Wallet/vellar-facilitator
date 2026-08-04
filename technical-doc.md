@@ -223,7 +223,7 @@ launch. Three milestones (final = mainnet, per SCF):
    scheme spec + implementation) contributed upstream; V2 (CAP-0071-02)
    credential support so passkey-signed x402 payments settle; the provenance
    attestor and agent-key mint/revoke UX productionized.
-3. **Mainnet launch.** Facilitator + the three Soroban contracts (attestation
+3. **Mainnet launch.** Facilitator + its three provenance contracts (attestation
    registry, verified-recipient policy, spending-limit policy) deployed to
    pubnet after a security audit (SCF audit credits) with findings remediated;
    proven uptime; mainnet USDC / multi-asset support; professional user testing.
