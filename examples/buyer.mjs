@@ -31,6 +31,14 @@ import {
 } from "@stellar/stellar-sdk";
 import { AssembledTransaction } from "@stellar/stellar-sdk/contract";
 import { Client as PasskeyClient } from "passkey-kit-sdk";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+// Auto-load examples/.env.recording so you never have to `source` it. Existing
+// shell env vars still win (loadEnvFile does not override). No-op if absent.
+try {
+  process.loadEnvFile(join(dirname(fileURLToPath(import.meta.url)), ".env.recording"));
+} catch {}
 
 const RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
 const PASSPHRASE = "Test SDF Network ; September 2015";
@@ -41,6 +49,17 @@ const simSource = process.env.SIM_SOURCE_ACCOUNT;
 if (!walletId || !agentSecret || !simSource) {
   console.error("WALLET_CONTRACT_ID, AGENT_SECRET, and SIM_SOURCE_ACCOUNT are required");
   process.exit(1);
+}
+
+// Optional demo banner: prints the recipient's verification status as an
+// OUTCOME, for the walkthrough video. Set RECIPIENT_STATUS=verified|revoked to
+// reflect the real on-chain state you've set (this line only displays it, it
+// does not perform or reveal the verification mechanism).
+const recipientStatus = (process.env.RECIPIENT_STATUS || "").toLowerCase();
+if (recipientStatus === "verified") {
+  console.error("\n  recipient: VERIFIED ✓  (payment allowed)\n");
+} else if (recipientStatus === "revoked") {
+  console.error("\n  recipient: REVOKED ✗  (payment will be refused)\n");
 }
 
 const agent = Keypair.fromSecret(agentSecret);

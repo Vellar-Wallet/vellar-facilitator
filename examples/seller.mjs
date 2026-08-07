@@ -17,16 +17,22 @@ import { HTTPFacilitatorClient } from "@x402/core/http";
 import { x402ResourceServer, x402HTTPResourceServer } from "@x402/core/server";
 import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const FACILITATOR_URL = process.env.FACILITATOR_URL || "http://localhost:4100";
-const PAYTO = process.env.PAYTO;
-const ASSET = process.env.ASSET || "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"; // testnet USDC
+// Auto-load examples/.env.recording so you never have to `source` it. Existing
+// shell env vars still win (loadEnvFile does not override). No-op if absent.
+try {
+  process.loadEnvFile(join(dirname(fileURLToPath(import.meta.url)), ".env.recording"));
+} catch {}
+
+const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://vellar-facilitator.onrender.com";
+// Demo merchant: trustlined to the X402TST bound token. Hard-defaulted so a
+// stale shell `PAYTO` can't make the seller serve a merchant with no trustline.
+const PAYTO = "GBDZH5KZSVX67MEWPTEMSOP6FBHKYX4GYOW4RRM4JENRC4XZF5UHTKOP";
+const ASSET = "CBIN4HTPJM2QLJ32DTRO6OCLIMM7TR7D74JDIPVQYLNYGL7SBWOXH5ND"; // X402TST bound token
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
 const PORT = Number(process.env.SELLER_PORT || 4031);
-if (!PAYTO) {
-  console.error("PAYTO is required (merchant G-account, trustlined to ASSET)");
-  process.exit(1);
-}
 
 const coreServer = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL }))
   .register("stellar:testnet", new ExactStellarScheme())
