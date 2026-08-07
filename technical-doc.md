@@ -195,15 +195,28 @@ Implemented, tested, and live:
 - **MCP discovery server** (stdio): `x402_list_resources`,
   `x402_search_resources`, `verified_only` support.
 - **Developer guide + two runnable end-to-end examples** (seller + buyer).
+  Both default to the hosted facilitator and a funded demo merchant, so they
+  run with zero required configuration.
 - **Deployed:** `https://vellar-facilitator.onrender.com`, dedicated funded
   sponsor account, `render.yaml` blueprint.
+
+Hosted-demo caveats, stated plainly. The instance runs on a free tier that
+sleeps when idle (~1 min cold start on first request). The Bazaar catalog is
+the documented single-instance JSON file store on ephemeral disk — a restart
+or redeploy clears it, so `/discovery/*` can legitimately return an empty
+catalog until the next settled payment re-seeds it (running the bundled
+examples end to end does this). Trust verdicts require `VERIFICATION_API_URL`
+to be configured on the instance; unset, every result reads `unknown` — the
+documented degrade mode (§6), not a fault. The DB-backed catalog and the real
+uptime bar are precisely the funded milestone-1 work (§9).
 
 Proof (Stellar testnet):
 
 - Payment settled through the hosted facilitator: tx
   `1da6f9e6a90b78da898c99dfefba8821b5f632b72f584968fb057fd8a298e039` — fees paid
   by the facilitator's own sponsor (Horizon-confirmed), resource auto-cataloged
-  and searchable.
+  and searchable at the time of settlement (see the catalog-persistence caveat
+  above).
 - Provenance-gated payment settled: tx
   `8bde387b82f8ba03484d0d6eb5838923e61ede6b7db483c97981b2fe7c5a6faf`. The full
   loop is proven: with the contract attested the agent payment settles; after
