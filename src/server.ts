@@ -10,6 +10,7 @@ import {
   rerankVerifiedFirst,
   type TrustResolver,
 } from "./trust.js";
+import { createSpendPolicy, type SpendPolicy } from "./policy.js";
 
 interface FacilitatorRequestBody {
   x402Version?: number;
@@ -38,6 +39,7 @@ export function buildServer(
   facilitator: ReturnType<typeof buildFacilitator>,
   catalog: BazaarCatalog,
   trust?: TrustResolver,
+  policy?: SpendPolicy,
 ) {
   const app = Fastify({ logger: true });
   registerBazaar(facilitator, catalog);
@@ -62,6 +64,27 @@ export function buildServer(
       return reply
         .status(400)
         .send({ error: "invalid_body", detail: "paymentPayload and paymentRequirements are required" });
+    }
+    // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
+    // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
+    // testnet it logs what would have tripped and proceeds (fail-open).
+    if (policy && paymentRequirements.payTo) {
+      const verdict = policy.checkSettle(paymentRequirements.payTo);
+      if (!verdict.allowed) {
+        request.log.warn(
+          { payTo: paymentRequirements.payTo, reason: verdict.reason },
+          "[policy] settle refused",
+        );
+        return reply
+          .status(503)
+          .send({ error: "settlement_refused", reason: verdict.reason });
+      }
+      if (verdict.wouldReject) {
+        request.log.warn(
+          { payTo: paymentRequirements.payTo, wouldReject: verdict.wouldReject },
+          "[policy] settle would be refused on pubnet",
+        );
+      }
     }
     return facilitator.settle(paymentPayload, paymentRequirements);
   });
@@ -126,7 +149,17 @@ if (isDirectRun) {
     verificationApiUrl: config.verificationApiUrl,
     rpcUrl: config.rpcUrl ?? "https://soroban-testnet.stellar.org",
   });
-  const app = buildServer(buildFacilitator(config), catalog, trust);
+  // Per-settle spend is estimated at the fee ceiling (worst case) since the real
+  // simulated fee is not exposed on the verify response — over-counting fails safe.
+  const policy = createSpendPolicy({
+    network: config.network,
+    rateMax: config.spend.rateMax,
+    rateWindowMs: config.spend.rateWindowMs,
+    spendCeilingStroops: config.spend.ceilingStroops,
+    spendWindowMs: config.spend.windowMs,
+    perSettleEstimateStroops: config.maxTransactionFeeStroops,
+  });
+  const app = buildServer(buildFacilitator(config), catalog, trust, policy);
   app.listen({ port: config.port, host: config.host }).catch((err) => {
     app.log.error(err);
     process.exit(1);

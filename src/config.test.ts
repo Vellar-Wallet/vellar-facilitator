@@ -38,6 +38,32 @@ describe("loadConfig", () => {
     expect(config.maxTransactionFeeStroops).toBe(500_000);
   });
 
+  it("defaults spend-policy limits and honors overrides", () => {
+    const def = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+    expect(def.spend).toEqual({
+      rateMax: 30,
+      rateWindowMs: 60_000,
+      ceilingStroops: 50_000_000,
+      windowMs: 60_000,
+    });
+    const over = loadConfig({
+      SPONSOR_SECRET_KEY: SECRET,
+      SETTLE_RATE_MAX: "10",
+      SPEND_CEILING_STROOPS: "1000000",
+    });
+    expect(over.spend.rateMax).toBe(10);
+    expect(over.spend.ceilingStroops).toBe(1_000_000);
+  });
+
+  it("rejects a non-positive spend limit", () => {
+    expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SETTLE_RATE_MAX: "0" })).toThrow(
+      /SETTLE_RATE_MAX/,
+    );
+    expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SPEND_CEILING_STROOPS: "-1" })).toThrow(
+      /SPEND_CEILING_STROOPS/,
+    );
+  });
+
   it("rejects a non-integer or non-positive fee ceiling", () => {
     expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, MAX_TX_FEE_STROOPS: "abc" })).toThrow(
       /MAX_TX_FEE_STROOPS/,

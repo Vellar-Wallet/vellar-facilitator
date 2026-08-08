@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
+import { createSpendPolicy } from "./policy.js";
 
 const testConfig = {
   port: 0,
@@ -16,6 +17,7 @@ const testConfig = {
   maxTransactionFeeStroops: 2_000_000,
   catalogFile: undefined,
   verificationApiUrl: undefined,
+  spend: { rateMax: 30, rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000 },
 };
 
 function requirements(): PaymentRequirements {
@@ -115,6 +117,70 @@ describe("facilitator server", () => {
     const res = await app.inject({ method: "GET", url: "/discovery/search" });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("invalid_query");
+  });
+});
+
+describe("Fix 1 — spend policy on /settle", () => {
+  function settleBody() {
+    return {
+      x402Version: 2,
+      paymentPayload: {
+        x402Version: 2,
+        scheme: "exact",
+        network: "stellar:testnet",
+        payload: { transaction: "not-a-real-transaction" },
+      },
+      paymentRequirements: requirements(),
+    };
+  }
+
+  it("returns 503 settlement_refused once the per-payTo rate limit trips on pubnet", async () => {
+    // Pubnet policy, rateMax 2 so the 3rd settle from one payTo is refused.
+    const policy = createSpendPolicy({
+      network: "stellar:pubnet",
+      rateMax: 2,
+      rateWindowMs: 60_000,
+      spendCeilingStroops: 50_000_000,
+      spendWindowMs: 60_000,
+      perSettleEstimateStroops: 2_000_000,
+    });
+    const app = buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    await app.ready();
+    try {
+      // First two are allowed through to the facilitator (which fails on the
+      // fake XDR, but the POLICY let them proceed — not a 503).
+      for (let i = 0; i < 2; i++) {
+        const ok = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+        expect(ok.statusCode).not.toBe(503);
+      }
+      const blocked = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      expect(blocked.statusCode).toBe(503);
+      expect(blocked.json().error).toBe("settlement_refused");
+      expect(blocked.json().reason).toBe("rate_limited_payto");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("never returns 503 on testnet (fail-open), even past the limit", async () => {
+    const policy = createSpendPolicy({
+      network: "stellar:testnet",
+      rateMax: 1,
+      rateWindowMs: 60_000,
+      spendCeilingStroops: 1,
+      spendWindowMs: 60_000,
+      perSettleEstimateStroops: 2_000_000,
+    });
+    const app = buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    await app.ready();
+    try {
+      for (let i = 0; i < 4; i++) {
+        const res = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+        expect(res.statusCode).not.toBe(503);
+      }
+    } finally {
+      await app.close();
+    }
   });
 });
 
