@@ -16,6 +16,11 @@ import type { TrustedDiscoveryResource } from "./trust.js";
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
+/** Cap on tracked distinct payers per resource — bounds memory and the
+ * persistence file; the count saturates at the cap. Declared here because both
+ * the write path and the load-time schema enforce it. */
+const MAX_TRACKED_PAYERS = 10_000;
+
 // Fix 4 (F1) — description is the one discovery field extractDiscoveryInfo does
 // NOT bound (serviceName/tags/iconUrl/routeTemplate are sanitized upstream), and
 // the raw extensions object is passed through wholesale. We defang both on the
@@ -167,10 +172,17 @@ const storedResourceSchema = z.object({
   extensions: z.unknown().optional(),
 });
 
+// Stats come from the persistence file, which is a trust boundary (F6): whoever
+// can write CATALOG_FILE controls them, and we cannot re-derive settlement
+// history from anywhere else — that is inherent to file-backed persistence and
+// is documented as such. What we CAN do is refuse implausible values so a
+// crafted file cannot exhaust memory or render nonsense: settlements must be a
+// non-negative integer, and the payer list is capped at the same bound the write
+// path enforces.
 const statsSchema = z
   .object({
-    settlements: z.number(),
-    payers: z.array(z.string()),
+    settlements: z.number().int().nonnegative(),
+    payers: z.array(z.string()).max(MAX_TRACKED_PAYERS),
     lastSettled: z.string().optional(),
   })
   .optional();
@@ -258,9 +270,6 @@ interface StoredEntry {
   verifiedOwner: boolean;
 }
 
-/** Cap on tracked distinct payers per resource — bounds memory and the
- * persistence file; the count saturates at the cap. */
-const MAX_TRACKED_PAYERS = 10_000;
 
 export class BazaarCatalog {
   private readonly entries = new Map<string, StoredEntry>();
