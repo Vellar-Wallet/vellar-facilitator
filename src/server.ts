@@ -145,7 +145,7 @@ export async function buildServer(
     // ceiling (the fail-closed backstop), not just the per-payTo limit. A missing
     // payTo maps to a single shared bucket so it can't get free settles.
     if (policy) {
-      const payToKey = paymentRequirements.payTo || "<no-payto>";
+      const payToKey = policyBucketKey(paymentRequirements.payTo);
       const verdict = policy.checkSettle(payToKey);
       if (!verdict.allowed) {
         request.log.warn(
@@ -225,6 +225,22 @@ export async function buildServer(
   });
 
   return app;
+}
+
+/**
+ * Re-audit: derive the spend-policy bucket key from a client-supplied payTo.
+ * payTo is attacker-controlled and was previously used raw, so a JSON object or
+ * a multi-kilobyte string (up to the body limit) minted a fresh bucket on every
+ * request — defeating the per-payTo rate limit and growing the policy Map with
+ * attacker-chosen keys. Anything that is not a plausibly-shaped Stellar address
+ * string collapses into one shared bucket, which cannot earn free settles.
+ */
+const MAX_PAYTO_KEY_LEN = 128;
+function policyBucketKey(payTo: unknown): string {
+  if (typeof payTo !== "string") return "<no-payto>";
+  const trimmed = payTo.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_PAYTO_KEY_LEN) return "<no-payto>";
+  return trimmed;
 }
 
 /**

@@ -184,6 +184,41 @@ describe("Fix 1 — spend policy on /settle", () => {
     }
   });
 
+  // Re-audit: payTo is the policy's bucket key but was never type- or
+  // length-validated. A JSON object, or a huge string up to the 32 KB body
+  // limit, minted a fresh bucket per request — defeating the per-payTo limit
+  // and letting the policy Map grow with attacker-controlled keys.
+  it("normalizes non-string and oversized payTo into the shared bucket", async () => {
+    const policy = createSpendPolicy({
+      network: "stellar:pubnet",
+      rateMax: 2,
+      rateWindowMs: 60_000,
+      spendCeilingStroops: 1_000_000_000,
+      spendWindowMs: 60_000,
+      perSettleEstimateStroops: 1,
+    });
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    await app.ready();
+    try {
+      const withPayTo = (payTo: unknown) => {
+        const b = settleBody();
+        (b.paymentRequirements as unknown as { payTo: unknown }).payTo = payTo;
+        return b;
+      };
+      // Each request carries a DIFFERENT non-string/oversized payTo. If these
+      // were honored as distinct keys, every one would get a fresh bucket and
+      // none would ever be rate-limited.
+      await app.inject({ method: "POST", url: "/settle", payload: withPayTo({ a: 1 }) });
+      await app.inject({ method: "POST", url: "/settle", payload: withPayTo(["x"]) });
+      const third = await app.inject({ method: "POST", url: "/settle", payload: withPayTo("Z".repeat(5000)) });
+      expect(third.statusCode).toBe(503);
+      expect(third.json().reason).toBe("rate_limited_payto");
+      expect(policy.trackedPayTos()).toBe(1); // all collapsed into one bucket
+    } finally {
+      await app.close();
+    }
+  });
+
   it("does not let an empty payTo bypass the spend policy on pubnet (audit D3)", async () => {
     // Global spend ceiling that admits exactly one settle; a client sending an
     // empty payTo must NOT skip the ceiling and drain the sponsor.
