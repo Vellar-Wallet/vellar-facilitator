@@ -243,6 +243,13 @@ function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): Disc
 /** Per-resource settlement ground truth — data only a facilitator has. */
 interface SettlementStats {
   settlements: number;
+  /**
+   * Settlements this PROCESS actually witnessed. Deliberately NOT loaded from
+   * CATALOG_FILE — it starts at zero on every load, so a tampered file cannot
+   * inflate it. `settlements` may include a persisted base that no longer has
+   * any independent source of truth; this number always has one.
+   */
+  observed: number;
   /** Distinct payer addresses (capped; uniquePayers reports the count). */
   payers: string[];
   lastSettled?: string;
@@ -400,7 +407,7 @@ export class BazaarCatalog {
     const boundPayTo = existing ? existing.boundPayTo : [requirements.payTo];
     this.entries.set(key, {
       resource: entry,
-      stats: existing?.stats ?? { settlements: 0, payers: [] },
+      stats: existing?.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo,
       verifiedOwner: existing?.verifiedOwner ?? false,
     });
@@ -417,6 +424,7 @@ export class BazaarCatalog {
     const entry = this.entries.get(resourceUrl);
     if (!entry) return;
     entry.stats.settlements += 1;
+    entry.stats.observed += 1;
     entry.stats.lastSettled = new Date().toISOString();
     if (
       payer &&
@@ -527,9 +535,11 @@ export class BazaarCatalog {
         ? {
             settlements: parsedStats.settlements,
             payers: parsedStats.payers,
+            // Never read from the file: this counts only what we witness.
+            observed: 0,
             ...(parsedStats.lastSettled !== undefined ? { lastSettled: parsedStats.lastSettled } : {}),
           }
-        : { settlements: 0, payers: [] };
+        : { settlements: 0, payers: [], observed: 0 };
       const stored: StoredEntry = {
         resource: sanitizeStoredResource(parsed.data.resource),
         stats,
@@ -568,7 +578,7 @@ export class BazaarCatalog {
     }
     return {
       resource: { ...stored.resource, accepts: kept },
-      stats: stored.stats ?? { settlements: 0, payers: [] },
+      stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo: [ownerPayTo],
       // Never trust a stored verified flag — a crafted file could forge it.
       // Layer 2 re-verifies from the resource on the next settlement.
@@ -596,6 +606,13 @@ function toItem(entry: StoredEntry): TrustedDiscoveryResource {
     trust: {
       settlements: entry.stats.settlements,
       uniquePayers: entry.stats.payers.length,
+      // Forged stats cannot be *rejected* — settlement history has no
+      // independent source — so they are DISCLOSED instead. observedSettlements
+      // counts only what this process saw; statsSource says whether any part of
+      // `settlements` was inherited from disk and is therefore unverifiable.
+      observedSettlements: entry.stats.observed,
+      statsSource:
+        entry.stats.settlements === entry.stats.observed ? ("observed" as const) : ("persisted" as const),
       ...(entry.stats.lastSettled ? { lastSettled: entry.stats.lastSettled } : {}),
     },
   };

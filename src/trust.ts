@@ -45,6 +45,18 @@ export type TrustedDiscoveryResource = DiscoveryResource & {
     acceptsVerification?: TrustVerification[];
     /** Whether the resource owner passed Layer 2 402-challenge verification. */
     ownerVerified?: boolean;
+    /**
+     * Settlements this process actually witnessed. `settlements` may include a
+     * base loaded from CATALOG_FILE, which has no independent source of truth
+     * and is therefore unverifiable; this number cannot be forged by editing
+     * that file. A consumer that needs a trustworthy count should use this one.
+     */
+    observedSettlements?: number;
+    /**
+     * "observed" when every counted settlement was witnessed by this process;
+     * "persisted" when some of `settlements` was inherited from disk.
+     */
+    statsSource?: "observed" | "persisted";
   };
 };
 
@@ -294,6 +306,13 @@ export async function annotateTrust(
           settlements: item.trust?.settlements ?? 0,
           uniquePayers: item.trust?.uniquePayers ?? 0,
           ...(item.trust?.lastSettled ? { lastSettled: item.trust.lastSettled } : {}),
+          // Carry the stats-provenance disclosure through annotation — dropping
+          // it here would silently remove the only trustworthy settlement signal
+          // from exactly the endpoints agents consume.
+          ...(item.trust?.observedSettlements !== undefined
+            ? { observedSettlements: item.trust.observedSettlements }
+            : {}),
+          ...(item.trust?.statsSource !== undefined ? { statsSource: item.trust.statsSource } : {}),
           verification,
           acceptsVerification,
           ownerVerified,

@@ -69,6 +69,23 @@ describe("Fix 0 Layer 3 — per-accepts trust annotation", () => {
     expect(annotated!.trust?.acceptsVerification).toEqual(["verified"]);
   });
 
+  it("preserves stats provenance through annotation", async () => {
+    // annotateTrust rebuilds the trust block; it must not drop the fields that
+    // disclose whether settlement counts came from disk.
+    const withStats = {
+      ...item(["CV"]),
+      trust: {
+        settlements: 9999,
+        uniquePayers: 3,
+        observedSettlements: 0,
+        statsSource: "persisted" as const,
+      },
+    };
+    const [annotated] = await annotateTrust([withStats], resolver({ CV: "verified" }), () => true);
+    expect(annotated!.trust?.observedSettlements).toBe(0);
+    expect(annotated!.trust?.statsSource).toBe("persisted");
+  });
+
   it("defaults ownerVerified to false when no owner-check is supplied (safe default)", async () => {
     const [annotated] = await annotateTrust([item(["CV"])], resolver({ CV: "verified" }));
     // Without an owner check, we cannot assert ownership → never show verified.
