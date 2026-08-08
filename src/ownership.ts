@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 
 // Fix 0 Layer 2 — resource-URL ownership verification via the resource's own
 // HTTP 402 challenge. This is the actual ownership control (Layer 1 TOFU is only
@@ -49,7 +49,16 @@ export interface VettedAddress {
  * TLS still validates against the original hostname (SNI/cert are unchanged —
  * we override resolution, not identity), so pinning costs no certificate safety.
  */
-function pinnedDispatcher(vetted: VettedAddress): Agent {
+/**
+ * The fetch used when the caller injects none. MUST come from the same undici
+ * copy as `pinnedDispatcher` (see the note in verifyResourceOwnership).
+ * Exported so tests can exercise the REAL dispatch path rather than a mock —
+ * mocking fetch is exactly what hid the undici-version incompatibility.
+ */
+export const defaultFetch = undiciFetch as unknown as typeof fetch;
+
+/** Exported for tests: builds the IP-pinning dispatcher. */
+export function pinnedDispatcher(vetted: VettedAddress): Agent {
   const family = vetted.family === 6 ? 6 : 4;
   // Node calls the lookup with all:true (expects an array) or all:false/absent
   // (expects address+family). Handle both so the pin holds either way. Cast at
@@ -125,7 +134,14 @@ export async function verifyResourceOwnership(
   settledPayTo: string,
   opts: VerifyOptions = {},
 ): Promise<OwnershipVerdict> {
-  const fetchFn = opts.fetchFn ?? fetch;
+  // MUST be undici's own fetch, not the global one. The pinned dispatcher is an
+  // undici@8 Agent; Node's global fetch is a DIFFERENT bundled undici (6.x on
+  // Node 22, 7.x on Node 25) whose handler interface undici@8 rejects with
+  // UND_ERR_INVALID_ARG ("invalid onRequestStart method") before any socket is
+  // opened. Mixing them made every verification throw and degrade to
+  // "unverifiable" — silently disabling the entire Layer 2 control. Dispatcher
+  // and fetch must come from the same undici copy.
+  const fetchFn = opts.fetchFn ?? (undiciFetch as unknown as typeof fetch);
   const lookupFn = opts.lookupFn ?? defaultLookup;
   const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;

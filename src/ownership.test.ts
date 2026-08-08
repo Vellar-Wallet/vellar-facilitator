@@ -1,5 +1,13 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
-import { verifyResourceOwnership, assertPublicHttpsUrl, isBlockedAddress } from "./ownership.js";
+import {
+  verifyResourceOwnership,
+  assertPublicHttpsUrl,
+  isBlockedAddress,
+  pinnedDispatcher,
+  defaultFetch,
+} from "./ownership.js";
 
 // Fix 0 Layer 2 — 402-challenge ownership verification and its SSRF guard.
 // verifyResourceOwnership fetches the resource URL, expects a 402 whose
@@ -111,6 +119,39 @@ describe("verifyResourceOwnership — DNS-rebinding pin (D2)", () => {
     // The address the guard vetted is the one the connection is pinned to —
     // fetch cannot re-resolve to something internal.
     expect(pinned).toBe("93.184.216.34");
+  });
+});
+
+// REGRESSION GUARD. The D2 pinning fix silently disabled Layer 2: the pinned
+// dispatcher is an undici@8 Agent, but the module defaulted to Node's GLOBAL
+// fetch (a different bundled undici), which rejects it with UND_ERR_INVALID_ARG
+// before opening a socket — so every verification returned "unverifiable".
+// Every existing test mocked fetch, so all 22 passed against a dead control.
+// This test uses the REAL default fetch and a REAL socket, so a future
+// version/implementation mismatch fails loudly instead of silently.
+describe("pinned dispatch actually works with the default fetch (D2 regression guard)", () => {
+  it("completes a real request through the pinned dispatcher", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200);
+      res.end("REACHED");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      // Ask for a hostname that does not resolve, but pin to our live server:
+      // if the pin works AND the dispatcher is compatible with defaultFetch,
+      // the request completes. If the undici copies mismatch, this throws.
+      const dispatcher = pinnedDispatcher({ address: "127.0.0.1", family: 4 });
+      const res = await defaultFetch(`http://pinned.invalid:${port}/`, {
+        dispatcher,
+      } as unknown as RequestInit);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("REACHED");
+      await (dispatcher as { close: () => Promise<void> }).close();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 
