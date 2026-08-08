@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 
 const SECRET = "SBJP6HHFTABK2GXVVFAKY6C4B7DDNB5PIEQXKUNL2ZAOBPWFOUOSTLVNMA";
@@ -66,12 +66,31 @@ describe("loadConfig", () => {
   it("defaults sponsor balance floors and honors overrides", () => {
     const def = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
     expect(def.balance).toEqual({
-      softFloorStroops: 100_000_000,
-      hardFloorStroops: 20_000_000,
+      softFloorStroops: 250_000_000, // 25 XLM warn
+      hardFloorStroops: 100_000_000, // 10 XLM refuse — must exceed the 5 XLM window ceiling
       intervalMs: 60_000,
     });
     const over = loadConfig({ SPONSOR_SECRET_KEY: SECRET, SPONSOR_HARD_FLOOR_STROOPS: "5000000" });
     expect(over.balance.hardFloorStroops).toBe(5_000_000);
+  });
+
+  // Re-audit: the sponsor hard floor must exceed the maximum XLM one spend
+  // window can drain, or the balance check (which is up to one interval stale)
+  // can read "above floor" and then be drained straight through it.
+  it("ships defaults where the hard floor outlasts a full spend window", () => {
+    const c = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+    expect(c.balance.hardFloorStroops).toBeGreaterThan(c.spend.ceilingStroops);
+  });
+
+  it("warns when an operator configures a floor a spend window can breach", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    loadConfig({
+      SPONSOR_SECRET_KEY: SECRET,
+      SPEND_CEILING_STROOPS: "50000000", // 5 XLM per window
+      SPONSOR_HARD_FLOOR_STROOPS: "20000000", // 2 XLM — cannot hold
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/hard floor.*spend ceiling|cannot hold/i));
+    warn.mockRestore();
   });
 
   it("rejects a non-positive spend limit", () => {

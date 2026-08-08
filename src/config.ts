@@ -70,12 +70,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     windowMs: positiveIntEnv(env.SPEND_WINDOW_MS, 60_000, "SPEND_WINDOW_MS"),
   };
 
+  // Balance floors. INVARIANT: the hard floor must exceed the maximum XLM a
+  // single spend window can drain, because the balance verdict is up to one
+  // check-interval stale. Otherwise the guard can read "above floor" and then be
+  // drained straight through it before the next check — a floor that cannot
+  // hold. Defaults: 25 XLM warn / 10 XLM refuse, against a 5 XLM window ceiling.
   const balance = {
-    // 10 XLM / 2 XLM. NOTE (Fix 3): review before pubnet — placeholder floors.
-    softFloorStroops: positiveIntEnv(env.SPONSOR_SOFT_FLOOR_STROOPS, 100_000_000, "SPONSOR_SOFT_FLOOR_STROOPS"),
-    hardFloorStroops: positiveIntEnv(env.SPONSOR_HARD_FLOOR_STROOPS, 20_000_000, "SPONSOR_HARD_FLOOR_STROOPS"),
+    softFloorStroops: positiveIntEnv(env.SPONSOR_SOFT_FLOOR_STROOPS, 250_000_000, "SPONSOR_SOFT_FLOOR_STROOPS"),
+    hardFloorStroops: positiveIntEnv(env.SPONSOR_HARD_FLOOR_STROOPS, 100_000_000, "SPONSOR_HARD_FLOOR_STROOPS"),
     intervalMs: positiveIntEnv(env.SPONSOR_BALANCE_INTERVAL_MS, 60_000, "SPONSOR_BALANCE_INTERVAL_MS"),
   };
+  if (balance.hardFloorStroops <= spend.ceilingStroops) {
+    console.warn(
+      `[config] sponsor hard floor (${balance.hardFloorStroops} stroops) does not exceed the spend ceiling ` +
+        `(${spend.ceilingStroops} stroops per window): the floor CANNOT HOLD — a single window can drain the ` +
+        `sponsor through it before the next balance check. Raise SPONSOR_HARD_FLOOR_STROOPS above ` +
+        `SPEND_CEILING_STROOPS, or lower the ceiling.`,
+    );
+  }
 
   return {
     port: Number(env.PORT ?? 4100),
