@@ -1,4 +1,8 @@
 import Fastify from "fastify";
+import rateLimit from "@fastify/rate-limit";
+import helmet from "@fastify/helmet";
+import cors from "@fastify/cors";
+import { TransactionBuilder } from "@stellar/stellar-sdk";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator } from "./facilitator.js";
@@ -35,14 +39,42 @@ interface SearchQuery extends Omit<ListQuery, "offset"> {
   cursor?: string;
 }
 
-export function buildServer(
+export interface HardeningOptions {
+  /** Per-IP requests/minute (default 60). /health is always exempt. */
+  rateMaxPerMinute?: number;
+  /** Max body bytes for /verify and /settle (default 32 KiB). */
+  bodyLimitBytes?: number;
+}
+
+const DEFAULT_RATE_MAX = 60;
+const DEFAULT_BODY_LIMIT = 32 * 1024;
+
+export async function buildServer(
   facilitator: ReturnType<typeof buildFacilitator>,
   catalog: BazaarCatalog,
   trust?: TrustResolver,
   policy?: SpendPolicy,
+  hardening: HardeningOptions = {},
 ) {
-  const app = Fastify({ logger: true });
+  const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
+  // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
+  // default), sized for real signed settlement XDR with headroom.
+  const app = Fastify({ logger: true, bodyLimit });
   registerBazaar(facilitator, catalog);
+
+  // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
+  // limiting. /health is exempt so the Render health check cannot be throttled.
+  // These are AWAITED before any route is defined so rate-limit's onRoute hook
+  // attaches to them — a void/deferred register installs the hook too late for
+  // synchronously-added routes.
+  await app.register(helmet);
+  await app.register(cors, { methods: ["GET", "POST"] });
+  await app.register(rateLimit, {
+    global: true,
+    max: hardening.rateMaxPerMinute ?? DEFAULT_RATE_MAX,
+    timeWindow: "1 minute",
+    allowList: (req) => req.url === "/health",
+  });
 
   app.get("/health", async () => ({ status: "ok", service: "vellar-facilitator" }));
 
@@ -54,6 +86,15 @@ export function buildServer(
       return reply
         .status(400)
         .send({ error: "invalid_body", detail: "paymentPayload and paymentRequirements are required" });
+    }
+    // Fix 2: shed obviously-malformed payloads at the route, before spending an
+    // RPC simulation. /verify is the free amplification path (an invalid payload
+    // still costs one simulation upstream), so reject anything whose transaction
+    // isn't parseable XDR without a network round-trip.
+    if (!isParseableTransactionXdr(paymentPayload)) {
+      return reply
+        .status(400)
+        .send({ error: "invalid_payload", detail: "payload.transaction is not a parseable transaction envelope" });
     }
     return facilitator.verify(paymentPayload, paymentRequirements);
   });
@@ -140,6 +181,24 @@ export function buildServer(
   return app;
 }
 
+/**
+ * Fix 2: cheap structural check that `payload.transaction` is a base64 Stellar
+ * transaction envelope, without a network round-trip. Parses XDR only — it does
+ * NOT validate signatures, sequence, or fees (that is the scheme's re-simulation
+ * job). A malformed/garbage string is rejected here so it never reaches an RPC
+ * simulation. The passphrase is irrelevant to XDR structure, so any value works.
+ */
+function isParseableTransactionXdr(payload: PaymentPayload): boolean {
+  const tx = (payload as { payload?: { transaction?: unknown } }).payload?.transaction;
+  if (typeof tx !== "string" || tx.length === 0) return false;
+  try {
+    TransactionBuilder.fromXDR(tx, "Test SDF Network ; September 2015");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const isDirectRun = process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js");
 if (isDirectRun) {
   const config = loadConfig();
@@ -159,7 +218,7 @@ if (isDirectRun) {
     spendWindowMs: config.spend.windowMs,
     perSettleEstimateStroops: config.maxTransactionFeeStroops,
   });
-  const app = buildServer(buildFacilitator(config), catalog, trust, policy);
+  const app = await buildServer(buildFacilitator(config), catalog, trust, policy);
   app.listen({ port: config.port, host: config.host }).catch((err) => {
     app.log.error(err);
     process.exit(1);

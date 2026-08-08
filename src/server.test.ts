@@ -46,9 +46,10 @@ function discovered(over: Partial<DiscoveredResource> = {}): DiscoveredResource 
 
 describe("facilitator server", () => {
   const catalog = new BazaarCatalog();
-  const app = buildServer(buildFacilitator(testConfig), catalog);
+  let app: Awaited<ReturnType<typeof buildServer>>;
 
   beforeAll(async () => {
+    app = await buildServer(buildFacilitator(testConfig), catalog);
     await app.ready();
   });
 
@@ -144,7 +145,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 2_000_000,
     });
-    const app = buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
     await app.ready();
     try {
       // First two are allowed through to the facilitator (which fails on the
@@ -171,7 +172,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 2_000_000,
     });
-    const app = buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
     await app.ready();
     try {
       for (let i = 0; i < 4; i++) {
@@ -186,10 +187,11 @@ describe("Fix 1 — spend policy on /settle", () => {
 
 describe("discovery wire conformance (canonical withBazaar client, unmodified)", () => {
   const catalog = new BazaarCatalog();
-  const app = buildServer(buildFacilitator(testConfig), catalog);
+  let app: Awaited<ReturnType<typeof buildServer>>;
   let bazaar: ReturnType<typeof withBazaar<HTTPFacilitatorClient>>["extensions"]["bazaar"];
 
   beforeAll(async () => {
+    app = await buildServer(buildFacilitator(testConfig), catalog);
     catalog.upsertFromPayment(discovered(), requirements());
     catalog.upsertFromPayment(
       discovered({
