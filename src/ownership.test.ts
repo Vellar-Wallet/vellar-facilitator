@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { verifyResourceOwnership, assertPublicHttpsUrl } from "./ownership.js";
+import { verifyResourceOwnership, assertPublicHttpsUrl, isBlockedAddress } from "./ownership.js";
 
 // Fix 0 Layer 2 — 402-challenge ownership verification and its SSRF guard.
 // verifyResourceOwnership fetches the resource URL, expects a 402 whose
@@ -30,6 +30,39 @@ describe("assertPublicHttpsUrl — SSRF guard", () => {
   });
   it("accepts a public address", async () => {
     await expect(assertPublicHttpsUrl("https://example.com/x", fakeLookup("93.184.216.34"))).resolves.toBeUndefined();
+  });
+
+  // D1/D12 (audit) — literal IP hosts skip DNS and go straight to the range
+  // check. The hex-normalized IPv4-mapped and IPv4-compatible IPv6 forms that
+  // Node's URL parser emits for [::ffff:127.0.0.1] etc. must be blocked.
+  it("blocks a hex IPv4-mapped IPv6 loopback literal (::ffff:7f00:1)", () => {
+    expect(isBlockedAddress("::ffff:7f00:1")).toBe(true); // 127.0.0.1
+  });
+  it("blocks a hex IPv4-mapped IPv6 metadata literal (::ffff:a9fe:a9fe)", () => {
+    expect(isBlockedAddress("::ffff:a9fe:a9fe")).toBe(true); // 169.254.169.254
+  });
+  it("blocks a hex IPv4-mapped IPv6 RFC1918 literal (::ffff:c0a8:1)", () => {
+    expect(isBlockedAddress("::ffff:c0a8:1")).toBe(true); // 192.168.0.1
+  });
+  it("blocks a fully-expanded IPv4-mapped loopback (0:0:0:0:0:ffff:127.0.0.1)", () => {
+    expect(isBlockedAddress("0:0:0:0:0:ffff:127.0.0.1")).toBe(true);
+  });
+  it("blocks an IPv4-compatible IPv6 loopback literal (::7f00:1)", () => {
+    expect(isBlockedAddress("::7f00:1")).toBe(true); // ::127.0.0.1
+  });
+  it("blocks site-local fec0::/10", () => {
+    expect(isBlockedAddress("fec0::1")).toBe(true);
+  });
+  it("blocks link-local fe80::/10 in non-fe80-prefixed form (febf::1)", () => {
+    expect(isBlockedAddress("febf::1")).toBe(true);
+  });
+  it("still allows a genuine public IPv6 (2606:2800::1)", () => {
+    expect(isBlockedAddress("2606:2800::1")).toBe(false);
+  });
+  it("rejects a URL whose literal host is a mapped loopback", async () => {
+    await expect(assertPublicHttpsUrl("https://[::ffff:7f00:1]/x", fakeLookup("93.184.216.34"))).rejects.toThrow(
+      /private|loopback|blocked/i,
+    );
   });
 });
 

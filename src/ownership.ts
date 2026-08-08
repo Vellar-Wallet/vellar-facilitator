@@ -179,13 +179,73 @@ function isBlockedIpv4(ip: string): boolean {
   return false;
 }
 
+/**
+ * Range-check an IPv6 address by its 16 BYTES, not by string form — a textual
+ * regex (the previous approach) missed the hex-normalized forms Node's URL
+ * parser emits (::ffff:7f00:1 for [::ffff:127.0.0.1]), IPv4-compatible (::a.b.c.d),
+ * fully-expanded, and site-local variants. Parsing to bytes classifies every
+ * form uniformly. (Audit D1 critical / D12.)
+ */
 function isBlockedIpv6(ip: string): boolean {
-  const addr = ip.toLowerCase();
-  if (addr === "::1" || addr === "::") return true; // loopback / unspecified
-  if (addr.startsWith("fe80")) return true; // link-local fe80::/10
-  if (addr.startsWith("fc") || addr.startsWith("fd")) return true; // ULA fc00::/7
-  // IPv4-mapped (::ffff:a.b.c.d) — check the embedded v4.
-  const mapped = addr.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return isBlockedIpv4(mapped[1]!);
+  const bytes = parseIpv6ToBytes(ip);
+  if (!bytes) return true; // unparseable → refuse
+
+  // Loopback ::1 and unspecified ::
+  const allZeroExceptLast = bytes.slice(0, 15).every((b) => b === 0);
+  if (allZeroExceptLast && (bytes[15] === 1 || bytes[15] === 0)) return true;
+
+  // Link-local fe80::/10 and site-local fec0::/10 → high 10 bits 1111 1110 11/10.
+  // fe80::/10 covers 0xfe80–0xfebf; fec0::/10 covers 0xfec0–0xfeff.
+  if (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) return true; // fe80::/10
+  if (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0xc0) return true; // fec0::/10 (deprecated, still blocked)
+
+  // Unique-local fc00::/7 (fc00–fdff).
+  if ((bytes[0]! & 0xfe) === 0xfc) return true;
+
+  // IPv4-mapped ::ffff:a.b.c.d  → bytes 10,11 == 0xff, first 10 zero.
+  const mappedPrefix = bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  // IPv4-compatible ::a.b.c.d (deprecated) → first 12 bytes zero, last 4 non-trivial.
+  const compatPrefix = bytes.slice(0, 12).every((b) => b === 0) && !(bytes[12] === 0 && bytes[13] === 0 && bytes[14] === 0 && bytes[15]! <= 1);
+  if (mappedPrefix || compatPrefix) {
+    const v4 = `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+    return isBlockedIpv4(v4);
+  }
   return false;
+}
+
+/** Parse an IPv6 string (including ::ffff:1.2.3.4 mixed form) into 16 bytes, or
+ * null if it isn't a valid IPv6 literal. */
+function parseIpv6ToBytes(ip: string): number[] | null {
+  let s = ip.toLowerCase().trim();
+  // Strip an IPv6 zone id (fe80::1%eth0) — the scope never changes the range.
+  const pct = s.indexOf("%");
+  if (pct !== -1) s = s.slice(0, pct);
+
+  // Expand a trailing embedded IPv4 (::ffff:1.2.3.4 or ::1.2.3.4) into two hextets.
+  const v4match = s.match(/(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4match) {
+    const octs = v4match[2]!.split(".").map(Number);
+    if (octs.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return null;
+    const h1 = ((octs[0]! << 8) | octs[1]!).toString(16);
+    const h2 = ((octs[2]! << 8) | octs[3]!).toString(16);
+    s = `${v4match[1]}${h1}:${h2}`;
+  }
+
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : [];
+  const hextets: string[] =
+    halves.length === 2
+      ? [...head, ...Array(8 - head.length - tail.length).fill("0"), ...tail]
+      : head;
+  if (hextets.length !== 8) return null;
+
+  const bytes: number[] = [];
+  for (const h of hextets) {
+    if (!/^[0-9a-f]{1,4}$/.test(h)) return null;
+    const n = parseInt(h, 16);
+    bytes.push((n >> 8) & 0xff, n & 0xff);
+  }
+  return bytes;
 }
