@@ -144,9 +144,11 @@ export async function buildServer(
     // truthy, or a client sending an empty payTo would skip the global spend
     // ceiling (the fail-closed backstop), not just the per-payTo limit. A missing
     // payTo maps to a single shared bucket so it can't get free settles.
+    let reservation: number | undefined;
     if (policy) {
       const payToKey = policyBucketKey(paymentRequirements.payTo);
       const verdict = policy.checkSettle(payToKey);
+      reservation = verdict.reservation;
       if (!verdict.allowed) {
         request.log.warn(
           { payTo: payToKey, reason: verdict.reason },
@@ -163,15 +165,27 @@ export async function buildServer(
         );
       }
     }
-    const result = await facilitator.settle(paymentPayload, paymentRequirements);
-    // Re-audit: release the spend reservation when the settlement never reached
-    // the chain. @x402/stellar returns an empty `transaction` when it failed
-    // before submission (verification/signing/send), meaning ZERO sponsor XLM was
-    // spent — so that reservation must not keep occupying the global ceiling. A
-    // non-empty hash means it was submitted and fees were charged, even if the
+    // Final audit (HIGH): facilitator.settle can THROW, not just return
+    // success:false — @x402/core throws for an unregistered x402Version/scheme/
+    // network, and @x402/stellar re-throws when `accepted` is absent. Those paths
+    // spend ZERO sponsor XLM, but without this try/catch the reservation stayed
+    // held and cheap junk could still exhaust the global ceiling and lock out all
+    // real settlement. Prevalidation does not cover it: one static valid XDR is
+    // reused for every request.
+    let result;
+    try {
+      result = await facilitator.settle(paymentPayload, paymentRequirements);
+    } catch (err) {
+      policy?.refundUnspent(reservation);
+      throw err;
+    }
+    // Release the reservation when the settlement never reached the chain.
+    // @x402/stellar returns an empty `transaction` when it failed before
+    // submission (verification/signing/send), meaning ZERO sponsor XLM was spent.
+    // A non-empty hash means it was submitted and fees were charged, even if the
     // transaction then failed, so that reservation correctly stands.
     if (policy && result.success === false && !result.transaction) {
-      policy.refundUnspent();
+      policy.refundUnspent(reservation);
     }
     return result;
   });

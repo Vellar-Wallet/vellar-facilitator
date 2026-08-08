@@ -53,6 +53,8 @@ export interface SettleVerdict {
   reason?: SettleRejectReason;
   /** On testnet, the reason that WOULD have refused this settle (observability). */
   wouldReject?: SettleRejectReason;
+  /** Identifies THIS reservation so refundUnspent releases only it. */
+  reservation?: number;
 }
 
 type Clock = () => number;
@@ -67,7 +69,9 @@ export class SpendPolicy {
   private readonly cfg: SpendPolicyConfig;
   private readonly now: Clock;
   private readonly perPayTo = new Map<string, number[]>();
-  private globalSpend: Array<{ at: number; stroops: number }> = [];
+  private globalSpend: Array<{ at: number; stroops: number; id: number }> = [];
+  /** Monotonic reservation id so a refund can only release its OWN entry. */
+  private nextReservationId = 1;
 
   constructor(cfg: SpendPolicyConfig, now: Clock = Date.now) {
     this.cfg = cfg;
@@ -96,11 +100,11 @@ export class SpendPolicy {
     if (tripped) {
       if (this.enforced) return { allowed: false, reason: tripped };
       // Fail-open (testnet): allow, but still reserve and flag.
-      this.reserve(payTo, t);
-      return { allowed: true, wouldReject: tripped };
+      const tok = this.reserve(payTo, t);
+      return { allowed: true, wouldReject: tripped, reservation: tok };
     }
-    this.reserve(payTo, t);
-    return { allowed: true };
+    const tok = this.reserve(payTo, t);
+    return { allowed: true, reservation: tok };
   }
 
   /** Which limit (if any) this settle would cross, without mutating state. */
@@ -117,12 +121,14 @@ export class SpendPolicy {
   }
 
   /** Count this settle in both rolling windows. */
-  private reserve(payTo: string, t: number): void {
+  private reserve(payTo: string, t: number): number {
     const recent = prune(this.perPayTo.get(payTo) ?? [], t - this.cfg.rateWindowMs);
     recent.push(t);
     this.perPayTo.set(payTo, recent);
-    this.globalSpend.push({ at: t, stroops: this.cfg.perSettleEstimateStroops });
+    const id = this.nextReservationId++;
+    this.globalSpend.push({ at: t, stroops: this.cfg.perSettleEstimateStroops, id });
     this.evictElapsed(t);
+    return id;
   }
 
   /**
@@ -158,8 +164,9 @@ export class SpendPolicy {
    * Only the global spend reservation is released; the per-payTo RATE count is
    * deliberately kept, so failed attempts still count against flood limits.
    */
-  refundUnspent(): void {
-    const idx = this.globalSpend.findIndex((e) => e.stroops === this.cfg.perSettleEstimateStroops);
+  refundUnspent(token?: number): void {
+    if (token === undefined) return;
+    const idx = this.globalSpend.findIndex((e) => e.id === token);
     if (idx !== -1) this.globalSpend.splice(idx, 1);
   }
 }

@@ -219,16 +219,57 @@ describe("Fix 1 — spend policy on /settle", () => {
     }
   });
 
-  it("does not let an empty payTo bypass the spend policy on pubnet (audit D3)", async () => {
-    // Global spend ceiling that admits exactly one settle; a client sending an
-    // empty payTo must NOT skip the ceiling and drain the sponsor.
+  // Final audit (HIGH): the refund only ran on the normal-return path. A /settle
+  // that makes facilitator.settle() THROW (unregistered x402Version/scheme, or a
+  // payload with no `accepted` key) escapes to Fastify as a 500 with the
+  // reservation still held — so junk still exhausts the ceiling at zero cost and
+  // no sponsor XLM is spent. Prevalidation does not help: one static valid XDR
+  // is reused for every request.
+  it("refunds the reservation when facilitator.settle throws (zero-cost outage)", async () => {
     const policy = createSpendPolicy({
       network: "stellar:pubnet",
       rateMax: 1000,
       rateWindowMs: 60_000,
-      spendCeilingStroops: 2_000_000, // 1 settle at the estimate, then refuse
+      spendCeilingStroops: 1_500_000, // 3 slots at 500k
       spendWindowMs: 60_000,
-      perSettleEstimateStroops: 2_000_000,
+      perSettleEstimateStroops: 500_000,
+    });
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    await app.ready();
+    try {
+      // Structurally valid XDR, but an x402Version with no registered facilitator
+      // => x402Facilitator.settle THROWS before any network work.
+      const thrower = () => {
+        const b = settleBody();
+        (b.paymentPayload as unknown as { x402Version: number }).x402Version = 999;
+        return b;
+      };
+      for (let i = 0; i < 5; i++) {
+        await app.inject({ method: "POST", url: "/settle", payload: thrower() });
+      }
+      // Those cost the sponsor nothing, so they must not have consumed budget.
+      const real = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      if (real.statusCode === 503) {
+        expect(real.json().reason).not.toBe("spend_ceiling");
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not let an empty payTo bypass the spend policy on pubnet (audit D3)", async () => {
+    // An empty payTo must still be SUBJECT to the policy, not skip it. Asserted
+    // via the per-payTo RATE limit rather than the spend ceiling: spend
+    // reservations are refunded when a settle costs nothing (these test payloads
+    // never reach the chain), but the rate count is deliberately NOT refunded, so
+    // it is the durable evidence that the "<no-payto>" bucket is being enforced.
+    const policy = createSpendPolicy({
+      network: "stellar:pubnet",
+      rateMax: 2,
+      rateWindowMs: 60_000,
+      spendCeilingStroops: 1_000_000_000, // ample: isolate the rate dimension
+      spendWindowMs: 60_000,
+      perSettleEstimateStroops: 1,
     });
     const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
     await app.ready();
@@ -238,13 +279,13 @@ describe("Fix 1 — spend policy on /settle", () => {
         (b.paymentRequirements as { payTo: string }).payTo = "";
         return b;
       };
-      // First empty-payTo settle is admitted by the ceiling; the second must 503,
-      // proving the global backstop is enforced even without a payTo.
-      const first = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
-      expect(first.statusCode).not.toBe(503);
-      const second = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
-      expect(second.statusCode).toBe(503);
-      expect(second.json().reason).toBe("spend_ceiling");
+      await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      // Third exceeds rateMax for the shared no-payTo bucket → the policy ran.
+      const third = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      expect(third.statusCode).toBe(503);
+      expect(third.json().reason).toBe("rate_limited_payto");
+      expect(policy.trackedPayTos()).toBe(1); // all collapsed into one bucket
     } finally {
       await app.close();
     }
