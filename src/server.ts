@@ -121,6 +121,14 @@ export async function buildServer(
         .status(400)
         .send({ error: "invalid_body", detail: "paymentPayload and paymentRequirements are required" });
     }
+    // Re-audit: shed unsubmittable payloads BEFORE reserving spend budget,
+    // symmetric with /verify. Junk costs the sponsor no XLM, so it must not be
+    // able to consume the global ceiling and refuse real settlement.
+    if (!isParseableTransactionXdr(paymentPayload)) {
+      return reply
+        .status(400)
+        .send({ error: "invalid_payload", detail: "payload.transaction is not a parseable transaction envelope" });
+    }
     // Fix 3: refuse settle when the sponsor is below the hard balance floor —
     // fees would fail on-chain anyway. Discovery is unaffected. A failed/absent
     // balance check leaves settle allowed (fail open).
@@ -155,7 +163,17 @@ export async function buildServer(
         );
       }
     }
-    return facilitator.settle(paymentPayload, paymentRequirements);
+    const result = await facilitator.settle(paymentPayload, paymentRequirements);
+    // Re-audit: release the spend reservation when the settlement never reached
+    // the chain. @x402/stellar returns an empty `transaction` when it failed
+    // before submission (verification/signing/send), meaning ZERO sponsor XLM was
+    // spent — so that reservation must not keep occupying the global ceiling. A
+    // non-empty hash means it was submitted and fees were charged, even if the
+    // transaction then failed, so that reservation correctly stands.
+    if (policy && result.success === false && !result.transaction) {
+      policy.refundUnspent();
+    }
+    return result;
   });
 
   app.get<{ Querystring: ListQuery }>("/discovery/resources", async (request) => {

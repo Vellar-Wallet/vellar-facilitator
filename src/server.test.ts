@@ -22,6 +22,12 @@ const testConfig = {
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
 };
 
+// A structurally VALID transaction envelope. /settle now shreds unparseable XDR
+// at the route (so junk can't consume the spend ceiling), so tests that need to
+// reach the balance guard / spend policy must carry real XDR.
+const VALID_TX_XDR =
+  "AAAAAgAAAAARUqIOOVQYwBn0s32MhGQwyoTHPy7SzjfXdweAw6b/4gAAAGQAAAAAAAAAAgAAAAEAAAAAAAAAAAAAAABqdyAuAAAAAAAAAAEAAAAAAAAAAQAAAADrmp8rY1JU7CL78HNaROud45MqVmrrbxOCVuWSEz0eRwAAAAAAAAAAAJiWgAAAAAAAAAAA";
+
 function requirements(): PaymentRequirements {
   return {
     scheme: "exact",
@@ -131,11 +137,52 @@ describe("Fix 1 — spend policy on /settle", () => {
         x402Version: 2,
         scheme: "exact",
         network: "stellar:testnet",
-        payload: { transaction: "not-a-real-transaction" },
+        payload: { transaction: VALID_TX_XDR },
       },
       paymentRequirements: requirements(),
     };
   }
+
+  // Re-audit: a garbage payload costs the sponsor NOTHING on-chain, but the
+  // spend estimate was reserved before settlement and never refunded — so cheap
+  // junk requests could exhaust the global ceiling and refuse all real
+  // settlement for a full window (a settlement-outage DoS).
+  it("does not let unsubmittable payloads exhaust the spend ceiling", async () => {
+    const policy = createSpendPolicy({
+      network: "stellar:pubnet",
+      rateMax: 1000,
+      rateWindowMs: 60_000,
+      spendCeilingStroops: 2_000_000, // room for ~4 settles at the estimate
+      spendWindowMs: 60_000,
+      perSettleEstimateStroops: 500_000,
+    });
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    await app.ready();
+    try {
+      const junk = () => ({
+        x402Version: 2,
+        paymentPayload: {
+          x402Version: 2,
+          scheme: "exact",
+          network: "stellar:testnet",
+          payload: { transaction: "GARBAGE-NOT-XDR" },
+        },
+        paymentRequirements: requirements(),
+      });
+      // Fire far more junk than the ceiling would nominally allow.
+      for (let i = 0; i < 12; i++) {
+        await app.inject({ method: "POST", url: "/settle", payload: junk() });
+      }
+      // A real settle attempt must NOT be refused for spend_ceiling — the junk
+      // spent no sponsor XLM, so it must not have consumed the budget.
+      const real = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      if (real.statusCode === 503) {
+        expect(real.json().reason).not.toBe("spend_ceiling");
+      }
+    } finally {
+      await app.close();
+    }
+  });
 
   it("does not let an empty payTo bypass the spend policy on pubnet (audit D3)", async () => {
     // Global spend ceiling that admits exactly one settle; a client sending an
@@ -226,7 +273,7 @@ describe("Fix 3 — sponsor balance guard on /settle", () => {
         x402Version: 2,
         scheme: "exact",
         network: "stellar:testnet",
-        payload: { transaction: "not-a-real-transaction" },
+        payload: { transaction: VALID_TX_XDR },
       },
       paymentRequirements: requirements(),
     };

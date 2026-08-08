@@ -143,6 +143,21 @@ export class SpendPolicy {
   trackedPayTos(): number {
     return this.perPayTo.size;
   }
+
+  /**
+   * Release a reservation made by checkSettle when the settlement turned out to
+   * spend NOTHING on-chain (it never reached submission). Without this, a
+   * request carrying an unsubmittable payload — which costs the sponsor zero XLM
+   * — still consumed a slice of the global ceiling, so cheap junk could exhaust
+   * the budget and refuse all real settlement for a whole window.
+   *
+   * Only the global spend reservation is released; the per-payTo RATE count is
+   * deliberately kept, so failed attempts still count against flood limits.
+   */
+  refundUnspent(): void {
+    const idx = this.globalSpend.findIndex((e) => e.stroops === this.cfg.perSettleEstimateStroops);
+    if (idx !== -1) this.globalSpend.splice(idx, 1);
+  }
 }
 
 function prune(times: number[], cutoff: number): number[] {
