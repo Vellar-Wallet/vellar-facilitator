@@ -1,4 +1,5 @@
 import { rpc, xdr } from "@stellar/stellar-sdk";
+import { z } from "zod";
 import type { DiscoveryResource } from "@x402/extensions/bazaar";
 
 // The trust layer (BUILD-PLAN Phase 5): verification-provenance annotation for
@@ -72,17 +73,72 @@ export interface TrustResolverOptions {
    * skipped and the API verdict stands. */
   rpcUrl?: string | undefined;
   cacheTtlMs?: number;
+  /** Fix 5: abort the verification-API fetch after this many ms (default 3000).
+   * A slow/hostile API degrades to "unknown", never hangs discovery. */
+  timeoutMs?: number;
+  /** Fix 5: reject a verification-API response larger than this many bytes
+   * (default 64 KiB), by Content-Length when present and by body length. */
+  maxResponseBytes?: number;
   /** Injected for tests. */
   fetchFn?: typeof fetch;
   rpcServer?: Pick<rpc.Server, "getContractData">;
 }
 
-interface HistoryResponse {
-  records?: Array<{ status?: string; outputHash?: string }>;
+// Fix 5 (F4): the verification API is a trust root — validate its response with
+// a schema instead of blind-casting, so an unexpected shape degrades to
+// "unknown" rather than forging a verdict.
+//
+// KNOWN GAP: there is no timestamp field in the response, so `records[0]` is
+// still assumed to be the newest run. Closing this requires the API to expose a
+// per-record timestamp; flagged in the report for the API owner. Ordering is NOT
+// papered over here — we sort by timestamp only if one appears.
+const historyRecordSchema = z
+  .object({
+    status: z.string().optional(),
+    outputHash: z.string().optional(),
+    // Optional timestamp: if the API starts sending one, we sort by it. Accepts
+    // a few common field names without failing when absent.
+    timestamp: z.union([z.string(), z.number()]).optional(),
+    verifiedAt: z.union([z.string(), z.number()]).optional(),
+    createdAt: z.union([z.string(), z.number()]).optional(),
+  })
+  .passthrough();
+
+// `records` is REQUIRED: a body without it doesn't match the API contract and
+// degrades to "unknown" (schema reject), distinct from a valid empty-history
+// response {records: []} which legitimately means "nothing verified" →
+// unverified. This separates "API spoke gibberish" from "API says not verified".
+const historyResponseSchema = z.object({
+  records: z.array(historyRecordSchema),
+});
+
+type HistoryRecord = z.infer<typeof historyRecordSchema>;
+
+/** Pick the newest record. Uses a timestamp field if the API provides one;
+ * otherwise falls back to records[0] (the documented, flagged assumption). */
+function newestRecord(records: HistoryRecord[]): HistoryRecord | undefined {
+  if (records.length === 0) return undefined;
+  const stamped = records
+    .map((r) => ({ r, t: recordTimestamp(r) }))
+    .filter((x): x is { r: HistoryRecord; t: number } => x.t !== undefined);
+  if (stamped.length === records.length) {
+    return stamped.sort((a, b) => b.t - a.t)[0]!.r;
+  }
+  // No usable timestamps on all records → fall back to array order (records[0]).
+  return records[0];
+}
+
+function recordTimestamp(r: HistoryRecord): number | undefined {
+  const raw = r.timestamp ?? r.verifiedAt ?? r.createdAt;
+  if (raw === undefined) return undefined;
+  const t = typeof raw === "number" ? raw : Date.parse(raw);
+  return Number.isFinite(t) ? t : undefined;
 }
 
 export function createTrustResolver(options: TrustResolverOptions): TrustResolver {
   const cacheTtlMs = options.cacheTtlMs ?? 5 * 60_000;
+  const timeoutMs = options.timeoutMs ?? 3_000;
+  const maxResponseBytes = options.maxResponseBytes ?? 64 * 1024;
   const fetchFn = options.fetchFn ?? fetch;
   const rpcServer =
     options.rpcServer ?? (options.rpcUrl ? new rpc.Server(options.rpcUrl) : undefined);
@@ -112,10 +168,30 @@ export function createTrustResolver(options: TrustResolverOptions): TrustResolve
       let verdict: TrustVerification;
       try {
         const base = options.verificationApiUrl.replace(/\/$/, "");
-        const res = await fetchFn(`${base}/${contractId}`);
-        if (!res.ok) throw new Error(`verification API HTTP ${res.status}`);
-        const body = (await res.json()) as HistoryResponse;
-        const latest = body.records?.[0];
+        // Fix 5: bounded fetch — AbortController timeout + response-size cap.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let body: unknown;
+        try {
+          const res = await fetchFn(`${base}/${contractId}`, { signal: controller.signal });
+          if (!res.ok) throw new Error(`verification API HTTP ${res.status}`);
+          const declaredLen = Number(res.headers?.get?.("content-length") ?? "");
+          if (Number.isFinite(declaredLen) && declaredLen > maxResponseBytes) {
+            throw new Error(`verification API response too large (${declaredLen} bytes)`);
+          }
+          const text = await res.text();
+          if (text.length > maxResponseBytes) {
+            throw new Error(`verification API response too large (${text.length} bytes)`);
+          }
+          body = JSON.parse(text);
+        } finally {
+          clearTimeout(timer);
+        }
+
+        // Fix 5: validate the shape; an unexpected response degrades to unknown.
+        const parsed = historyResponseSchema.safeParse(body);
+        if (!parsed.success) throw new Error("verification API response shape invalid");
+        const latest = newestRecord(parsed.data.records ?? []);
 
         if (latest?.status !== "verified") {
           verdict = "unverified";

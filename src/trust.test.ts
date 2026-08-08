@@ -15,10 +15,13 @@ import {
 const VERIFIED_HASH = "ab".repeat(32);
 
 function historyResponse(status: string, outputHash?: string) {
+  const body = { records: [{ status, ...(outputHash ? { outputHash } : {}) }] };
   return {
     ok: true,
-    json: async () => ({ records: [{ status, ...(outputHash ? { outputHash } : {}) }] }),
-  } as Response;
+    headers: { get: () => null },
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
 }
 
 function fixedResolver(map: Record<string, "verified" | "unverified" | "unknown">): TrustResolver {
@@ -58,7 +61,11 @@ describe("createTrustResolver", () => {
     const fetchFn = vi.fn(async () => historyResponse("verified", VERIFIED_HASH));
     const resolver = createTrustResolver({ verificationApiUrl: "http://v/verification", fetchFn });
     expect(await resolver.assetStatus("CASSET")).toBe("verified");
-    expect(fetchFn).toHaveBeenCalledWith("http://v/verification/CASSET");
+    // Fix 5: fetch now carries an AbortSignal for the timeout.
+    expect(fetchFn).toHaveBeenCalledWith(
+      "http://v/verification/CASSET",
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it("maps failed / empty history to unverified", async () => {
@@ -70,7 +77,15 @@ describe("createTrustResolver", () => {
 
     const empty = createTrustResolver({
       verificationApiUrl: "http://v",
-      fetchFn: vi.fn(async () => ({ ok: true, json: async () => ({ records: [] }) }) as Response),
+      fetchFn: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            headers: { get: () => null },
+            json: async () => ({ records: [] }),
+            text: async () => JSON.stringify({ records: [] }),
+          }) as unknown as Response,
+      ),
     });
     expect(await empty.assetStatus("CB")).toBe("unverified");
   });
