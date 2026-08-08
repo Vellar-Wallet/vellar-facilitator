@@ -226,6 +226,27 @@ describe("mutation guards (audit: these all went undetected)", () => {
     expect(init.redirect).toBe("manual");
   });
 
+  // Prompt (Fix 0): "the SSRF guard rejects ... redirects into private ranges".
+  // We never follow ANY redirect, which is strictly stronger, but the
+  // private-range case is named explicitly so it is asserted explicitly.
+  it("does not follow a redirect pointing into a private range", async () => {
+    const fetchFn = vi.fn(async () => ({
+      status: 302,
+      headers: {
+        get: (k: string) =>
+          k.toLowerCase() === "location" ? "http://169.254.169.254/latest/meta-data/" : null,
+      },
+      body: null,
+      text: async () => "",
+    }) as unknown as Response);
+    const v = await verifyResourceOwnership("https://example.com/quote", "GLEGIT", {
+      fetchFn,
+      lookupFn: fakeLookup("93.184.216.34"),
+    });
+    expect(v).toBe("unverifiable");
+    expect(fetchFn, "the redirect must never be followed").toHaveBeenCalledTimes(1);
+  });
+
   // MUTATION AD: the abort callback emptied, so the timeout never fires.
   it("actually aborts the fetch when the timeout elapses", async () => {
     let sawAbort = false;

@@ -88,12 +88,27 @@ describe("Fix 2 — production defaults are actually applied", () => {
 });
 
 describe("Fix 2 — security headers", () => {
-  it("sets helmet headers on responses", async () => {
+  // Prompt (Fix 2): "security headers present on all routes" — previously
+  // asserted on /health only, which a per-route regression would not catch.
+  it("sets helmet headers on every route, not just /health", async () => {
     const app = await server();
-    const res = await app.inject({ method: "GET", url: "/health" });
-    // helmet sets these by default.
-    expect(res.headers["x-content-type-options"]).toBe("nosniff");
-    expect(res.headers["x-frame-options"]).toBeDefined();
+    const routes: Array<["GET" | "POST", string]> = [
+      ["GET", "/health"],
+      ["GET", "/supported"],
+      ["GET", "/discovery/resources"],
+      ["GET", "/discovery/search?query=x"],
+      ["POST", "/verify"],
+      ["POST", "/settle"],
+    ];
+    for (const [method, url] of routes) {
+      const res = await app.inject(
+        method === "POST"
+          ? { method, url, headers: { "content-type": "application/json" }, payload: {} }
+          : { method, url },
+      );
+      expect(res.headers["x-content-type-options"], `${method} ${url}`).toBe("nosniff");
+      expect(res.headers["x-frame-options"], `${method} ${url}`).toBeDefined();
+    }
   });
 });
 

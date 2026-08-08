@@ -257,6 +257,21 @@ describe("Fix 1 — spend policy on /settle", () => {
     }
   });
 
+  // Prompt (Fix 1): "unset config preserves current behavior" — with no policy
+  // passed, /settle must behave exactly as it did before Fix 1: never refused.
+  it("preserves prior behavior when no spend policy is configured", async () => {
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    await app.ready();
+    try {
+      for (let i = 0; i < 8; i++) {
+        const res = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+        expect(res.statusCode).not.toBe(503);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("does not let an empty payTo bypass the spend policy on pubnet (audit D3)", async () => {
     // An empty payTo must still be SUBJECT to the policy, not skip it. Asserted
     // via the per-payTo RATE limit rather than the spend ceiling: spend

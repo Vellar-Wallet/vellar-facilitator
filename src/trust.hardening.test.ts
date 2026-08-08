@@ -112,6 +112,43 @@ describe("Fix 5 — trust resolver hardening", () => {
     expect(await resolver.assetStatus("CASSET")).toBe("unknown");
   });
 
+  // Prompt (Fix 5): "out-of-order records selecting the true latest". newestRecord()
+  // sorts by timestamp only when EVERY record carries one, and otherwise falls
+  // back to records[0]. Both branches were shipped untested.
+  it("selects the true latest when records are out of order and all carry timestamps", async () => {
+    const body = {
+      records: [
+        { status: "failed", timestamp: "2026-08-01T00:00:00Z" }, // older, listed first
+        { status: "verified", timestamp: "2026-08-05T00:00:00Z" }, // newest
+      ],
+    };
+    const resolver = createTrustResolver({
+      verificationApiUrl: "https://v/verification",
+      fetchFn: vi.fn(async () => jsonResponse(body)),
+    });
+    expect(await resolver.assetStatus("CASSET")).toBe("verified");
+  });
+
+  it("falls back to records[0] when no record carries a timestamp", async () => {
+    const resolver = createTrustResolver({
+      verificationApiUrl: "https://v/verification",
+      fetchFn: vi.fn(async () => jsonResponse({ records: [{ status: "verified" }, { status: "failed" }] })),
+    });
+    expect(await resolver.assetStatus("CB")).toBe("verified");
+  });
+
+  it("falls back to records[0] when only SOME records carry a timestamp", async () => {
+    // Partial timestamps must not be trusted for ordering.
+    const body = {
+      records: [{ status: "verified" }, { status: "failed", timestamp: "2026-08-09T00:00:00Z" }],
+    };
+    const resolver = createTrustResolver({
+      verificationApiUrl: "https://v/verification",
+      fetchFn: vi.fn(async () => jsonResponse(body)),
+    });
+    expect(await resolver.assetStatus("CC")).toBe("verified");
+  });
+
   it("still maps a well-formed verified record to verified", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ records: [{ status: "verified", outputHash: VERIFIED_HASH }] }));
     const resolver = createTrustResolver({ verificationApiUrl: "https://v/verification", fetchFn });
