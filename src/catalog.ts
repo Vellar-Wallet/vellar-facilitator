@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { z } from "zod";
 import type { PaymentRequirements } from "@x402/core/types";
 import type {
   DiscoveredResource,
@@ -14,6 +15,87 @@ import type { TrustedDiscoveryResource } from "./trust.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+// Fix 4 (F1) — description is the one discovery field extractDiscoveryInfo does
+// NOT bound (serviceName/tags/iconUrl/routeTemplate are sanitized upstream), and
+// the raw extensions object is passed through wholesale. We defang both on the
+// way into storage, and again on load, so a crafted CATALOG_FILE cannot bypass
+// it. Control chars (\p{Cc}) and Unicode bidi/format chars (\p{Cf}) are stripped
+// — the latter defeats RTL-override / homoglyph impersonation in agent context.
+const MAX_DESCRIPTION_LEN = 256;
+const CONTROL_AND_FORMAT = /[\p{Cc}\p{Cf}]/gu;
+
+/** Clamp + strip a free-text description; returns undefined for empty/non-string. */
+function sanitizeDescription(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(CONTROL_AND_FORMAT, "").slice(0, MAX_DESCRIPTION_LEN);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+/** Allowlist the extensions object to only the `bazaar` key (the one the
+ * discovery flow and search actually consume). Everything else is dropped so it
+ * can never reach an agent's context. */
+function sanitizeExtensions(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const src = value as Record<string, unknown>;
+  if (!("bazaar" in src)) return undefined;
+  return { bazaar: src.bazaar };
+}
+
+// Fix 4/F6 — load-time schema. A crafted CATALOG_FILE is a trust boundary: the
+// ingestion sanitizer never ran on it. Validate each entry's structure, drop the
+// malformed rather than blind-casting, and (via sanitizeStoredResource below)
+// strip any forged `trust` field and re-run the description/extensions sanitizer.
+// The accepts payTo binding is still enforced separately in bindLoadedEntry.
+const acceptSchema = z
+  .object({ scheme: z.string(), network: z.string(), asset: z.string(), amount: z.string(), payTo: z.string() })
+  .passthrough();
+
+const storedResourceSchema = z
+  .object({
+    resource: z.string().min(1),
+    type: z.string(),
+    x402Version: z.number(),
+    accepts: z.array(acceptSchema),
+    lastUpdated: z.string(),
+    description: z.unknown().optional(),
+    mimeType: z.string().optional(),
+    serviceName: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    iconUrl: z.string().optional(),
+    extensions: z.unknown().optional(),
+    // `trust` is deliberately NOT in the schema; .strip() below removes it.
+  })
+  .passthrough();
+
+const statsSchema = z
+  .object({
+    settlements: z.number(),
+    payers: z.array(z.string()),
+    lastSettled: z.string().optional(),
+  })
+  .optional();
+
+const storedEntrySchema = z.object({
+  resource: storedResourceSchema,
+  stats: statsSchema,
+});
+
+/** Normalize a validated stored resource: strip any forged `trust` field (trust
+ * is computed at serve time, never stored) and re-run the ingestion sanitizer on
+ * description/extensions so a crafted file gets the same defanging as the wire. */
+function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): DiscoveryResource {
+  const { trust: _dropTrust, description, extensions, ...rest } = res as Record<string, unknown> & {
+    resource: string;
+  };
+  const cleanDescription = sanitizeDescription(description);
+  const cleanExtensions = sanitizeExtensions(extensions);
+  return {
+    ...(rest as unknown as DiscoveryResource),
+    ...(cleanDescription !== undefined ? { description: cleanDescription } : {}),
+    ...(cleanExtensions !== undefined ? { extensions: cleanExtensions } : {}),
+  };
+}
 
 /**
  * The Bazaar catalog: discovered x402 resources, fed automatically from
@@ -151,18 +233,21 @@ export class BazaarCatalog {
     );
     if (!seen) accepts.push(requirements);
 
+    // Fix 4: sanitize the two unbounded/passthrough fields on the way in.
+    const description = sanitizeDescription(discovered.description);
+    const extensions = sanitizeExtensions(discovered.extensions);
     const entry: DiscoveryResource = {
       resource: discovered.resourceUrl,
       type: discovered.discoveryInfo.input.type,
       x402Version: discovered.x402Version,
       accepts,
       lastUpdated: new Date().toISOString(),
-      ...(discovered.description !== undefined ? { description: discovered.description } : {}),
+      ...(description !== undefined ? { description } : {}),
       ...(discovered.mimeType !== undefined ? { mimeType: discovered.mimeType } : {}),
       ...(discovered.serviceName !== undefined ? { serviceName: discovered.serviceName } : {}),
       ...(discovered.tags !== undefined ? { tags: discovered.tags } : {}),
       ...(discovered.iconUrl !== undefined ? { iconUrl: discovered.iconUrl } : {}),
-      ...(discovered.extensions !== undefined ? { extensions: discovered.extensions } : {}),
+      ...(extensions !== undefined ? { extensions } : {}),
     };
     // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
     const isFirstCatalog = existing === undefined;
@@ -271,27 +356,41 @@ export class BazaarCatalog {
   }
 
   private load(path: string): void {
+    let raw: unknown;
     try {
-      const raw = JSON.parse(readFileSync(path, "utf8")) as Array<
-        DiscoveryResource | StoredEntry
-      >;
-      for (const item of raw) {
-        const stored: StoredEntry =
-          "stats" in item && typeof item.resource === "object"
-            ? // Current format: { resource, stats }.
-              (item as StoredEntry)
-            : // Pre-binding format: a bare DiscoveryResource — migrate.
-              {
-                resource: item as DiscoveryResource,
-                stats: { settlements: 0, payers: [] },
-                boundPayTo: [],
-                verifiedOwner: false,
-              };
-        this.entries.set(stored.resource.resource, this.bindLoadedEntry(stored));
-      }
+      raw = JSON.parse(readFileSync(path, "utf8"));
     } catch {
       // Missing or unreadable file: start empty. Corrupt persistence must
       // never prevent the facilitator from starting.
+      return;
+    }
+    if (!Array.isArray(raw)) return;
+
+    for (const item of raw) {
+      // Accept both the current { resource, stats } shape and the pre-binding
+      // bare-DiscoveryResource shape; validate, drop the malformed, sanitize.
+      const candidate =
+        item && typeof item === "object" && "stats" in item ? item : { resource: item };
+      const parsed = storedEntrySchema.safeParse(candidate);
+      if (!parsed.success) {
+        console.warn(`[catalog] load: dropped a malformed entry (${parsed.error.issues[0]?.message ?? "invalid"})`);
+        continue;
+      }
+      const parsedStats = parsed.data.stats;
+      const stats: SettlementStats = parsedStats
+        ? {
+            settlements: parsedStats.settlements,
+            payers: parsedStats.payers,
+            ...(parsedStats.lastSettled !== undefined ? { lastSettled: parsedStats.lastSettled } : {}),
+          }
+        : { settlements: 0, payers: [] };
+      const stored: StoredEntry = {
+        resource: sanitizeStoredResource(parsed.data.resource),
+        stats,
+        boundPayTo: [],
+        verifiedOwner: false,
+      };
+      this.entries.set(stored.resource.resource, this.bindLoadedEntry(stored));
     }
   }
 
