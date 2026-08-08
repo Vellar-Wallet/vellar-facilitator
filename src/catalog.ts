@@ -25,6 +25,23 @@ const MAX_LIMIT = 100;
 const MAX_DESCRIPTION_LEN = 256;
 const CONTROL_AND_FORMAT = /[\p{Cc}\p{Cf}]/gu;
 
+/** Keep only the known payment-requirement fields from a client-supplied
+ * requirements object, so unknown keys never enter the catalog (ingest-side
+ * counterpart of acceptSchema, which guards the load path). */
+function pickAcceptFields(r: PaymentRequirements): PaymentRequirements {
+  const src = r as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {
+    scheme: src.scheme,
+    network: src.network,
+    asset: src.asset,
+    amount: src.amount,
+    payTo: src.payTo,
+  };
+  if (src.maxTimeoutSeconds !== undefined) out.maxTimeoutSeconds = src.maxTimeoutSeconds;
+  if (src.extra !== undefined) out.extra = src.extra;
+  return out as unknown as PaymentRequirements;
+}
+
 /** Clamp + strip a free-text description; returns undefined for empty/non-string. */
 function sanitizeDescription(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -93,7 +110,14 @@ function sanitizeIconUrl(value: unknown): string | undefined {
     // so it must not point at internal infrastructure).
     if (u.username !== "" || u.password !== "") return undefined;
     const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    if (host === "localhost" || host.endsWith(".localhost")) return undefined;
+    // Same loopback set the upstream ingest validator rejects.
+    const LOOPBACK_HOSTS = new Set([
+      "localhost",
+      "localhost.localdomain",
+      "ip6-localhost",
+      "ip6-loopback",
+    ]);
+    if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost")) return undefined;
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
       return undefined;
     }
@@ -109,9 +133,20 @@ function sanitizeIconUrl(value: unknown): string | undefined {
 // malformed rather than blind-casting, and (via sanitizeStoredResource below)
 // strip any forged `trust` field and re-run the description/extensions sanitizer.
 // The accepts payTo binding is still enforced separately in bindLoadedEntry.
-const acceptSchema = z
-  .object({ scheme: z.string(), network: z.string(), asset: z.string(), amount: z.string(), payTo: z.string() })
-  .passthrough();
+// NOT .passthrough(): `accepts` entries come straight from the client-supplied
+// /settle body, so arbitrary attacker-named keys inside a payment requirement
+// would otherwise be stored and served to agents — the same injection channel as
+// the resource-level passthrough, one level down. Zod strips unknown keys by
+// default. `extra` is kept because the x402 scheme legitimately uses it.
+const acceptSchema = z.object({
+  scheme: z.string(),
+  network: z.string(),
+  asset: z.string(),
+  amount: z.string(),
+  payTo: z.string(),
+  maxTimeoutSeconds: z.number().optional(),
+  extra: z.unknown().optional(),
+});
 
 // NOT .passthrough(): zod strips unknown keys by default, which is exactly what
 // we need. With passthrough, arbitrary attacker-named keys in a crafted
@@ -312,11 +347,20 @@ export class BazaarCatalog {
           amount: r.amount,
         }) === reqKey,
     );
-    if (!seen) accepts.push(requirements);
+    // Store only the known payment-requirement fields. `requirements` is the
+    // client-supplied /settle body, so pushing it whole would carry arbitrary
+    // attacker-named keys into the catalog and out to agents.
+    if (!seen) accepts.push(pickAcceptFields(requirements));
 
-    // Fix 4: sanitize the two unbounded/passthrough fields on the way in.
+    // Fix 4 + final audit: sanitize on the way in with EXACTLY the same rules the
+    // load path uses. A gap where ingest is weaker than load is the worse
+    // direction — ingest is reachable by any settled payment, while the load path
+    // needs filesystem access. (mimeType previously slipped through here while
+    // being sanitized on load.)
     const description = sanitizeDescription(discovered.description);
     const extensions = sanitizeExtensions(discovered.extensions);
+    const mimeType = sanitizeShortText(discovered.mimeType, MAX_MIME_TYPE_LEN);
+    const iconUrl = sanitizeIconUrl(discovered.iconUrl);
     const entry: DiscoveryResource = {
       resource: discovered.resourceUrl,
       type: discovered.discoveryInfo.input.type,
@@ -324,10 +368,10 @@ export class BazaarCatalog {
       accepts,
       lastUpdated: new Date().toISOString(),
       ...(description !== undefined ? { description } : {}),
-      ...(discovered.mimeType !== undefined ? { mimeType: discovered.mimeType } : {}),
+      ...(mimeType !== undefined ? { mimeType } : {}),
       ...(discovered.serviceName !== undefined ? { serviceName: discovered.serviceName } : {}),
       ...(discovered.tags !== undefined ? { tags: discovered.tags } : {}),
-      ...(discovered.iconUrl !== undefined ? { iconUrl: discovered.iconUrl } : {}),
+      ...(iconUrl !== undefined ? { iconUrl } : {}),
       ...(extensions !== undefined ? { extensions } : {}),
     };
     // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
