@@ -111,6 +111,27 @@ export class SpendPolicy {
     recent.push(t);
     this.perPayTo.set(payTo, recent);
     this.globalSpend.push({ at: t, stroops: this.cfg.perSettleEstimateStroops });
+    this.evictElapsed(t);
+  }
+
+  /**
+   * Audit D10: drop per-payTo buckets whose entries have all aged out. Without
+   * this the Map grows monotonically under payTo rotation (and on testnet, where
+   * fail-open reserves even on a rejected settle, under ANY traffic) — an
+   * unbounded-memory vector. Eviction is O(size) and runs on the settle path, so
+   * it is bounded by how many payTos are actually active in the window.
+   */
+  private evictElapsed(t: number): void {
+    const cutoff = t - this.cfg.rateWindowMs;
+    for (const [key, times] of this.perPayTo) {
+      const last = times[times.length - 1];
+      if (last === undefined || last <= cutoff) this.perPayTo.delete(key);
+    }
+  }
+
+  /** Number of per-payTo buckets currently tracked (observability + tests). */
+  trackedPayTos(): number {
+    return this.perPayTo.size;
   }
 }
 

@@ -81,6 +81,24 @@ describe("SpendPolicy — pubnet (fail-closed)", () => {
   });
 });
 
+describe("SpendPolicy — bounded state (audit D10)", () => {
+  it("evicts elapsed per-payTo buckets instead of growing forever", () => {
+    const clock = nowFn();
+    const p = new SpendPolicy(
+      { network: "stellar:pubnet", ...cfg, rateMax: 1000, spendCeilingStroops: 1e12 },
+      clock.now,
+    );
+    // 500 distinct payTos (the rotation vector) all settle at t0.
+    for (let i = 0; i < 500; i++) p.checkSettle(`GPAYTO_${i}`);
+    expect(p.trackedPayTos()).toBe(500);
+
+    // After the rate window elapses, those buckets are dead weight and must go.
+    clock.advance(cfg.rateWindowMs + 1);
+    p.checkSettle("GFRESH");
+    expect(p.trackedPayTos()).toBeLessThanOrEqual(1);
+  });
+});
+
 describe("SpendPolicy — testnet (fail-open)", () => {
   it("never blocks on testnet, even over the limits (log-only)", () => {
     const clock = nowFn();
