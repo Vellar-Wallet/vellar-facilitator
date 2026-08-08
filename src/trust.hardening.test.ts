@@ -55,6 +55,49 @@ describe("Fix 5 — trust resolver hardening", () => {
     expect(await resolver.assetStatus("CASSET")).toBe("unknown");
   });
 
+  // D7 (audit) — the cap must bound the actual DOWNLOAD, not just check the size
+  // after buffering. A hostile API can omit/lie about Content-Length or use
+  // chunked encoding, so the streaming read has to stop at the cap itself.
+  it("stops reading and returns unknown when a chunked body exceeds the cap without Content-Length", async () => {
+    let chunksServed = 0;
+    const makeBody = () =>
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunksServed++;
+          if (chunksServed > 1000) return controller.close();
+          controller.enqueue(new Uint8Array(1024)); // 1 KB per pull, unbounded
+        },
+      });
+    const fetchFn = vi.fn(async () => {
+      const body = makeBody();
+      return {
+        ok: true,
+        headers: { get: () => null }, // no Content-Length at all
+        body,
+        // A real Response.text() DRAINS the stream — model that, so a
+        // buffer-then-check implementation would pull every chunk.
+        text: async () => {
+          const reader = body.getReader();
+          let out = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            out += Buffer.from(value!).toString("utf8");
+          }
+          return out;
+        },
+      } as unknown as Response;
+    });
+    const resolver = createTrustResolver({
+      verificationApiUrl: "https://v/verification",
+      fetchFn,
+      maxResponseBytes: 4096, // 4 KB cap
+    });
+    expect(await resolver.assetStatus("CASSET")).toBe("unknown");
+    // Proves we stopped early rather than draining the whole stream.
+    expect(chunksServed).toBeLessThan(50);
+  });
+
   it("aborts and returns unknown when the response is slower than the timeout", async () => {
     const fetchFn = vi.fn((_url: string, init?: { signal?: AbortSignal }) => {
       return new Promise<Response>((_resolve, reject) => {

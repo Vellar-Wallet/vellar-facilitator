@@ -128,6 +128,48 @@ function newestRecord(records: HistoryRecord[]): HistoryRecord | undefined {
   return records[0];
 }
 
+/**
+ * Audit D7 — read a response body with a cap that bounds the actual DOWNLOAD.
+ * The previous version buffered via res.text() and only THEN checked the length,
+ * so a hostile verification API could stream unbounded data (Content-Length can
+ * be absent, wrong, or chunked). Stream instead and stop the moment the cap is
+ * crossed, cancelling the body so the transfer ends.
+ *
+ * Falls back to res.text() when the response has no readable stream (test
+ * doubles), preserving the post-read check for that path.
+ */
+async function readBoundedText(res: Response, maxBytes: number): Promise<string> {
+  const stream = res.body as ReadableStream<Uint8Array> | null | undefined;
+  if (!stream || typeof stream.getReader !== "function") {
+    const text = await res.text();
+    if (text.length > maxBytes) {
+      throw new Error(`verification API response too large (${text.length} bytes)`);
+    }
+    return text;
+  }
+
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        // Stop the transfer rather than draining a hostile stream.
+        await reader.cancel().catch(() => {});
+        throw new Error(`verification API response too large (>${maxBytes} bytes)`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function recordTimestamp(r: HistoryRecord): number | undefined {
   const raw = r.timestamp ?? r.verifiedAt ?? r.createdAt;
   if (raw === undefined) return undefined;
@@ -179,11 +221,7 @@ export function createTrustResolver(options: TrustResolverOptions): TrustResolve
           if (Number.isFinite(declaredLen) && declaredLen > maxResponseBytes) {
             throw new Error(`verification API response too large (${declaredLen} bytes)`);
           }
-          const text = await res.text();
-          if (text.length > maxResponseBytes) {
-            throw new Error(`verification API response too large (${text.length} bytes)`);
-          }
-          body = JSON.parse(text);
+          body = JSON.parse(await readBoundedText(res, maxResponseBytes));
         } finally {
           clearTimeout(timer);
         }
