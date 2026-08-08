@@ -368,35 +368,33 @@ export class BazaarCatalog {
     // attacker-named keys into the catalog and out to agents.
     if (!seen) accepts.push(pickAcceptFields(requirements));
 
-    // Fix 4 + final audit: sanitize on the way in with EXACTLY the same rules the
-    // load path uses. A gap where ingest is weaker than load is the worse
-    // direction — ingest is reachable by any settled payment, while the load path
-    // needs filesystem access. (mimeType previously slipped through here while
-    // being sanitized on load.)
-    const description = sanitizeDescription(discovered.description);
-    const extensions = sanitizeExtensions(discovered.extensions);
-    const mimeType = sanitizeShortText(discovered.mimeType, MAX_MIME_TYPE_LEN);
-    const iconUrl = sanitizeIconUrl(discovered.iconUrl);
-    const safeType = sanitizeType(discovered.discoveryInfo?.input?.type);
-    if (safeType === undefined) {
-      console.warn(`[catalog] rejected upsert for ${key}: unknown discovery type`);
-      return false;
-    }
-    const serviceName = sanitizeShortText(discovered.serviceName, MAX_SERVICE_NAME_LEN);
-    const tags = sanitizeTags(discovered.tags);
-    const entry: DiscoveryResource = {
+    // Fix 4: ONE funnel for both doors. Rather than re-implement the sanitizers
+    // inline (which drifted from the load path three times — mimeType, then
+    // serviceName/tags, then type), build the raw entry and push it through the
+    // SAME storedResourceSchema + sanitizeStoredResource that load() uses. Drift
+    // is now structurally impossible: there is only one implementation.
+    const rawEntry = {
       resource: discovered.resourceUrl,
-      type: safeType,
+      type: discovered.discoveryInfo?.input?.type,
       x402Version: discovered.x402Version,
       accepts,
       lastUpdated: new Date().toISOString(),
-      ...(description !== undefined ? { description } : {}),
-      ...(mimeType !== undefined ? { mimeType } : {}),
-      ...(serviceName !== undefined ? { serviceName } : {}),
-      ...(tags !== undefined ? { tags } : {}),
-      ...(iconUrl !== undefined ? { iconUrl } : {}),
-      ...(extensions !== undefined ? { extensions } : {}),
+      description: discovered.description,
+      mimeType: discovered.mimeType,
+      serviceName: discovered.serviceName,
+      tags: discovered.tags,
+      iconUrl: discovered.iconUrl,
+      extensions: discovered.extensions,
     };
+    const parsed = storedResourceSchema.safeParse(rawEntry);
+    if (!parsed.success) {
+      console.warn(
+        `[catalog] rejected upsert for ${key}: ${parsed.error.issues[0]?.message ?? "failed schema validation"}`,
+      );
+      return false;
+    }
+    const entry: DiscoveryResource = sanitizeStoredResource(parsed.data);
+
     // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
     const isFirstCatalog = existing === undefined;
     const boundPayTo = existing ? existing.boundPayTo : [requirements.payTo];
