@@ -51,6 +51,13 @@ interface StoredEntry {
    * ownership from the resource itself rather than from catalog history.
    */
   boundPayTo: string[];
+  /**
+   * Fix 0 Layer 2. True once the resource's own 402 challenge has confirmed the
+   * bound payTo owns this URL. Until then the entry is served but its accepts
+   * are NOT authoritative (Layer 3 surfaces this as an unverified owner). Default
+   * false; a mismatch verdict keeps it false permanently for that binding.
+   */
+  verifiedOwner: boolean;
 }
 
 /** Cap on tracked distinct payers per resource — bounds memory and the
@@ -78,6 +85,24 @@ export class BazaarCatalog {
     return this.entries.get(resourceUrl)?.boundPayTo.includes(payTo) ?? false;
   }
 
+  /** Whether the resource's own 402 challenge has confirmed its bound owner
+   * (Fix 0 Layer 2). Consumers should treat an entry's accepts as authoritative
+   * only when this is true. */
+  isVerifiedOwner(resourceUrl: string): boolean {
+    return this.entries.get(resourceUrl)?.verifiedOwner ?? false;
+  }
+
+  /** Record the Layer 2 402-challenge verdict for a URL. `match` marks the
+   * bound owner verified; `mismatch`/`unverifiable` leave it unverified. No-op
+   * if the entry vanished (e.g. restart) between settle and verification. */
+  setVerifiedOwner(resourceUrl: string, verified: boolean): void {
+    const entry = this.entries.get(resourceUrl);
+    if (!entry) return;
+    if (entry.verifiedOwner === verified) return;
+    entry.verifiedOwner = verified;
+    this.save();
+  }
+
   /**
    * Insert or update a resource from a settled payment's discovery info.
    * `accepts` accumulates distinct payment requirements seen for the resource.
@@ -87,8 +112,12 @@ export class BazaarCatalog {
    * honored only if its payTo is already bound; otherwise it is rejected and
    * logged, and the existing entry (accepts, metadata, and stats) is left
    * exactly as it was. This is what blocks the F11 hijack.
+   *
+   * Returns `true` when this call FIRST catalogs the URL (a new binding was
+   * created), so the caller can trigger Layer 2 402-challenge verification. A
+   * rejected or already-existing upsert returns `false`.
    */
-  upsertFromPayment(discovered: DiscoveredResource, requirements: PaymentRequirements): void {
+  upsertFromPayment(discovered: DiscoveredResource, requirements: PaymentRequirements): boolean {
     const key = discovered.resourceUrl;
     const existing = this.entries.get(key);
 
@@ -99,7 +128,7 @@ export class BazaarCatalog {
         `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} is not bound ` +
           `(bound: ${existing.boundPayTo.join(", ")}) — possible resource-URL hijack (F11)`,
       );
-      return;
+      return false;
     }
 
     const accepts = existing ? [...existing.resource.accepts] : [];
@@ -136,15 +165,16 @@ export class BazaarCatalog {
       ...(discovered.extensions !== undefined ? { extensions: discovered.extensions } : {}),
     };
     // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
-    const boundPayTo = existing
-      ? existing.boundPayTo
-      : [requirements.payTo];
+    const isFirstCatalog = existing === undefined;
+    const boundPayTo = existing ? existing.boundPayTo : [requirements.payTo];
     this.entries.set(key, {
       resource: entry,
       stats: existing?.stats ?? { settlements: 0, payers: [] },
       boundPayTo,
+      verifiedOwner: existing?.verifiedOwner ?? false,
     });
     this.save();
+    return isFirstCatalog;
   }
 
   /**
@@ -251,7 +281,12 @@ export class BazaarCatalog {
             ? // Current format: { resource, stats }.
               (item as StoredEntry)
             : // Pre-binding format: a bare DiscoveryResource — migrate.
-              { resource: item as DiscoveryResource, stats: { settlements: 0, payers: [] }, boundPayTo: [] };
+              {
+                resource: item as DiscoveryResource,
+                stats: { settlements: 0, payers: [] },
+                boundPayTo: [],
+                verifiedOwner: false,
+              };
         this.entries.set(stored.resource.resource, this.bindLoadedEntry(stored));
       }
     } catch {
@@ -272,7 +307,12 @@ export class BazaarCatalog {
     const accepts = stored.resource.accepts ?? [];
     const ownerPayTo = accepts[0]?.payTo;
     if (ownerPayTo === undefined) {
-      return { ...stored, resource: { ...stored.resource, accepts: [] }, boundPayTo: [] };
+      return {
+        ...stored,
+        resource: { ...stored.resource, accepts: [] },
+        boundPayTo: [],
+        verifiedOwner: false,
+      };
     }
     const kept = accepts.filter((a) => a.payTo === ownerPayTo);
     if (kept.length !== accepts.length) {
@@ -285,6 +325,9 @@ export class BazaarCatalog {
       resource: { ...stored.resource, accepts: kept },
       stats: stored.stats ?? { settlements: 0, payers: [] },
       boundPayTo: [ownerPayTo],
+      // Never trust a stored verified flag — a crafted file could forge it.
+      // Layer 2 re-verifies from the resource on the next settlement.
+      verifiedOwner: false,
     };
   }
 
