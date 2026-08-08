@@ -10,11 +10,13 @@ import { Agent } from "undici";
 //
 // This introduces the codebase's FIRST outbound fetch to an attacker-influenced
 // URL (F8 confirmed none existed before). It is therefore an SSRF sink and is
-// guarded accordingly (assertPublicHttpsUrl): https only, DNS-resolved host must
-// be public (no private/loopback/link-local/metadata ranges), no redirects,
-// bounded timeout, bounded response size. It runs off the settlement hot path
-// (see bazaar.ts) and NEVER throws into the caller — settlement must not depend
-// on it.
+// guarded accordingly (assertPublicHttpsUrl): https only; the host's address is
+// range-checked by BYTES (all IPv4/IPv6 forms, incl. mapped/compatible/site-local)
+// and then PINNED into the connection so DNS rebinding cannot redirect the socket;
+// no redirects; bounded timeout; and the response body is cancelled unread (the
+// verdict comes only from the PAYMENT-REQUIRED header, so nothing is downloaded).
+// It runs off the settlement hot path (see bazaar.ts) and NEVER throws into the
+// caller — settlement must not depend on it.
 
 /** 3s is enough for an honest 402; a slower endpoint degrades to "unverifiable"
  * (unbound), never blocks. */
@@ -152,12 +154,18 @@ export async function verifyResourceOwnership(
       dispatcher,
     } as unknown as RequestInit);
 
+    // Audit D11: the verdict is derived ENTIRELY from the PAYMENT-REQUIRED
+    // header, so the body is never needed. Cancel it immediately — that frees
+    // the socket instead of leaving it open until GC, and means no response
+    // body is ever downloaded (the only truly bounded outcome).
+    void res.body?.cancel?.().catch(() => {});
+
     // A redirect (or anything that isn't the payment challenge) is unverifiable.
     if (res.status !== 402) return "unverifiable";
 
     const header = res.headers.get("PAYMENT-REQUIRED");
     if (!header) return "unverifiable";
-    // Guard the decode size too (header is bounded by the platform, but be safe).
+    // Bound the header we will actually decode.
     if (header.length > maxBytes) return "unverifiable";
 
     const challenge = decodeChallenge(header);
