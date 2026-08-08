@@ -50,6 +50,43 @@ afterEach(async () => {
   apps = [];
 });
 
+// Every hardening test overrides the defaults, so mutations that shipped a
+// 100 MB body limit or an effectively-disabled rate limit passed the full suite.
+// These exercise buildServer with NO hardening options — the production path.
+describe("Fix 2 — production defaults are actually applied", () => {
+  it("applies the default 32 KiB body limit when no options are passed", async () => {
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    await app.ready();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/verify",
+        headers: { "content-type": "application/json" },
+        payload: { pad: "A".repeat(64 * 1024) }, // > 32 KiB default
+      });
+      expect(res.statusCode).toBe(413);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("applies a bounded default per-IP rate limit when no options are passed", async () => {
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    await app.ready();
+    try {
+      let limited = false;
+      // The default must be a real bound; 200 requests from one IP must trip it.
+      for (let i = 0; i < 200 && !limited; i++) {
+        const res = await app.inject({ method: "GET", url: "/supported", remoteAddress: "9.9.9.9" });
+        if (res.statusCode === 429) limited = true;
+      }
+      expect(limited, "default rate limit must bound a single IP").toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("Fix 2 — security headers", () => {
   it("sets helmet headers on responses", async () => {
     const app = await server();

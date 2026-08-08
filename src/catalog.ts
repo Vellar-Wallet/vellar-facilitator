@@ -71,6 +71,13 @@ const MAX_SERVICE_NAME_LEN = 64;
 const MAX_TAG_LEN = 32;
 const MAX_TAGS = 8;
 const MAX_MIME_TYPE_LEN = 128;
+/** The only protocol types the discovery model defines. `type` arrives from
+ * attacker-controlled discoveryInfo and is both served to agents and used as a
+ * filter key, so anything else is refused rather than stored as free text. */
+const KNOWN_TYPES = new Set(["http", "mcp"]);
+function sanitizeType(value: unknown): "http" | "mcp" | undefined {
+  return typeof value === "string" && KNOWN_TYPES.has(value) ? (value as "http" | "mcp") : undefined;
+}
 /** Printable ASCII only — mirrors the upstream ingest validator. Anything else
  * (incl. Cyrillic/Greek homoglyphs used for brand impersonation) is rejected
  * outright rather than "cleaned", so the load path is not weaker than the wire. */
@@ -160,7 +167,7 @@ const acceptSchema = z.object({
 // Stripping also removes any forged `trust` field for free.
 const storedResourceSchema = z.object({
   resource: z.string().min(1),
-  type: z.string(),
+  type: z.enum(["http", "mcp"]),
   x402Version: z.number(),
   accepts: z.array(acceptSchema),
   lastUpdated: z.string(),
@@ -370,11 +377,16 @@ export class BazaarCatalog {
     const extensions = sanitizeExtensions(discovered.extensions);
     const mimeType = sanitizeShortText(discovered.mimeType, MAX_MIME_TYPE_LEN);
     const iconUrl = sanitizeIconUrl(discovered.iconUrl);
+    const safeType = sanitizeType(discovered.discoveryInfo?.input?.type);
+    if (safeType === undefined) {
+      console.warn(`[catalog] rejected upsert for ${key}: unknown discovery type`);
+      return false;
+    }
     const serviceName = sanitizeShortText(discovered.serviceName, MAX_SERVICE_NAME_LEN);
     const tags = sanitizeTags(discovered.tags);
     const entry: DiscoveryResource = {
       resource: discovered.resourceUrl,
-      type: discovered.discoveryInfo.input.type,
+      type: safeType,
       x402Version: discovered.x402Version,
       accepts,
       lastUpdated: new Date().toISOString(),
