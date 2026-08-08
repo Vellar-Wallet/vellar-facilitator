@@ -80,14 +80,15 @@ export class SpendPolicy {
   }
 
   /**
-   * Consult before calling facilitator.settle. If allowed, the caller should
-   * proceed and then call recordSettle. On pubnet a tripped limit returns
+   * Consult before calling facilitator.settle. On pubnet a tripped limit returns
    * allowed:false with a reason; on testnet it returns allowed:true but sets
    * wouldReject so the route can log what production would have refused.
    *
-   * A checkSettle that returns allowed:true reserves the settle in the rolling
-   * windows (it counts immediately), so concurrent bursts are bounded without a
-   * separate record step racing the check.
+   * There is NO separate record step: a checkSettle that returns allowed:true
+   * has already reserved the settle in both rolling windows, so concurrent
+   * bursts are bounded without a second call racing the check. If the settlement
+   * then turns out to have spent nothing on-chain, the caller releases the
+   * global reservation with refundUnspent().
    */
   checkSettle(payTo: string): SettleVerdict {
     const t = this.now();
@@ -134,8 +135,11 @@ export class SpendPolicy {
   private evictElapsed(t: number): void {
     const cutoff = t - this.cfg.rateWindowMs;
     for (const [key, times] of this.perPayTo) {
-      const last = times[times.length - 1];
-      if (last === undefined || last <= cutoff) this.perPayTo.delete(key);
+      // Use the MAX rather than the last element: prune() preserves insertion
+      // order, which is only ascending while the clock moves forward. A backward
+      // clock step (NTP correction) would otherwise evict a bucket that still
+      // holds in-window entries, silently resetting that payTo's rate limit.
+      if (times.length === 0 || Math.max(...times) <= cutoff) this.perPayTo.delete(key);
     }
   }
 
