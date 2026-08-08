@@ -13,6 +13,16 @@
 // and logged but never block, so demos/examples run freely — and fail-CLOSED on
 // pubnet, where crossing a limit refuses /settle.
 //
+// HONEST LIMIT OF THE PER-PAYTO CONTROL (audit D6). The per-payTo rate limit keys
+// on the client-supplied payTo. A self-dealer who controls several addresses can
+// rotate them and get a fresh bucket per address, so per-payTo is a CONVENIENCE
+// THROTTLE against naive/repeated abuse — it is not a hard bound. The real bound
+// against a determined rotating self-dealer is the GLOBAL rolling spend ceiling,
+// which is address-independent and (since audit D3) cannot be skipped by omitting
+// payTo. Deliberately NOT "fixed" by normalizing the payTo string: normalization
+// would stop only trivial casing/whitespace variation while making the control
+// look stronger than it is. Size the global ceiling as if per-payTo did not exist.
+//
 // Note on the spend estimate: the simulated fee is NOT exposed on the verify
 // response (@x402/core VerifyResponse is isValid/payer/reason only), so we
 // cannot read the real per-settle fee at the route without a second simulation.
