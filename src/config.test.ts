@@ -55,6 +55,17 @@ describe("loadConfig", () => {
     expect(over.spend.ceilingStroops).toBe(1_000_000);
   });
 
+  it("defaults sponsor balance floors and honors overrides", () => {
+    const def = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+    expect(def.balance).toEqual({
+      softFloorStroops: 100_000_000,
+      hardFloorStroops: 20_000_000,
+      intervalMs: 60_000,
+    });
+    const over = loadConfig({ SPONSOR_SECRET_KEY: SECRET, SPONSOR_HARD_FLOOR_STROOPS: "5000000" });
+    expect(over.balance.hardFloorStroops).toBe(5_000_000);
+  });
+
   it("rejects a non-positive spend limit", () => {
     expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SETTLE_RATE_MAX: "0" })).toThrow(
       /SETTLE_RATE_MAX/,

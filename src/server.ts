@@ -15,6 +15,7 @@ import {
   type TrustResolver,
 } from "./trust.js";
 import { createSpendPolicy, type SpendPolicy } from "./policy.js";
+import { BalanceGuard } from "./balance.js";
 
 interface FacilitatorRequestBody {
   x402Version?: number;
@@ -55,6 +56,7 @@ export async function buildServer(
   trust?: TrustResolver,
   policy?: SpendPolicy,
   hardening: HardeningOptions = {},
+  balanceGuard?: BalanceGuard,
 ) {
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
@@ -105,6 +107,13 @@ export async function buildServer(
       return reply
         .status(400)
         .send({ error: "invalid_body", detail: "paymentPayload and paymentRequirements are required" });
+    }
+    // Fix 3: refuse settle when the sponsor is below the hard balance floor —
+    // fees would fail on-chain anyway. Discovery is unaffected. A failed/absent
+    // balance check leaves settle allowed (fail open).
+    if (balanceGuard && !balanceGuard.settleAllowed()) {
+      request.log.error({ balanceStatus: balanceGuard.status() }, "[balance] settle refused: sponsor below hard floor");
+      return reply.status(503).send({ error: "settlement_refused", reason: "sponsor_balance_low" });
     }
     // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
     // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
@@ -218,9 +227,38 @@ if (isDirectRun) {
     spendWindowMs: config.spend.windowMs,
     perSettleEstimateStroops: config.maxTransactionFeeStroops,
   });
-  const app = await buildServer(buildFacilitator(config), catalog, trust, policy);
+  // Fix 3: sponsor balance guard. Derive the sponsor public key and poll its XLM
+  // balance from Horizon. The first check is not awaited (startup is not blocked);
+  // a failed check leaves settle allowed (fail open).
+  const { Keypair } = await import("@stellar/stellar-sdk");
+  const sponsorPub = Keypair.fromSecret(config.sponsorSecretKey).publicKey();
+  const horizonUrl =
+    config.network === "stellar:pubnet"
+      ? "https://horizon.stellar.org"
+      : "https://horizon-testnet.stellar.org";
+  const balanceGuard = new BalanceGuard({
+    fetchBalanceStroops: () => fetchXlmBalanceStroops(horizonUrl, sponsorPub),
+    softFloorStroops: config.balance.softFloorStroops,
+    hardFloorStroops: config.balance.hardFloorStroops,
+    intervalMs: config.balance.intervalMs,
+  });
+  balanceGuard.start();
+
+  const app = await buildServer(buildFacilitator(config), catalog, trust, policy, {}, balanceGuard);
   app.listen({ port: config.port, host: config.host }).catch((err) => {
     app.log.error(err);
     process.exit(1);
   });
+}
+
+/** Fetch the account's native (XLM) balance from Horizon, in stroops. Throws on
+ * any error (the guard catches and degrades to "unknown"). */
+async function fetchXlmBalanceStroops(horizonUrl: string, publicKey: string): Promise<number> {
+  const res = await fetch(`${horizonUrl}/accounts/${publicKey}`);
+  if (!res.ok) throw new Error(`Horizon HTTP ${res.status}`);
+  const body = (await res.json()) as { balances?: Array<{ asset_type?: string; balance?: string }> };
+  const native = body.balances?.find((b) => b.asset_type === "native");
+  if (!native?.balance) throw new Error("no native balance on sponsor account");
+  // Horizon reports XLM with 7 decimals; convert to integer stroops.
+  return Math.round(Number(native.balance) * 10_000_000);
 }

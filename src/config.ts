@@ -21,6 +21,15 @@ export interface FacilitatorConfig {
     /** Global spend window in ms (default 60_000). */
     windowMs: number;
   };
+  /** Fix 3 sponsor balance guard floors, in stroops. */
+  balance: {
+    /** Warn below this (default 10 XLM). */
+    softFloorStroops: number;
+    /** Refuse /settle below this (default 2 XLM). */
+    hardFloorStroops: number;
+    /** Poll interval in ms (default 60_000). */
+    intervalMs: number;
+  };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorConfig {
@@ -51,6 +60,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     windowMs: positiveIntEnv(env.SPEND_WINDOW_MS, 60_000, "SPEND_WINDOW_MS"),
   };
 
+  const balance = {
+    // 10 XLM / 2 XLM. NOTE (Fix 3): review before pubnet — placeholder floors.
+    softFloorStroops: positiveIntEnv(env.SPONSOR_SOFT_FLOOR_STROOPS, 100_000_000, "SPONSOR_SOFT_FLOOR_STROOPS"),
+    hardFloorStroops: positiveIntEnv(env.SPONSOR_HARD_FLOOR_STROOPS, 20_000_000, "SPONSOR_HARD_FLOOR_STROOPS"),
+    intervalMs: positiveIntEnv(env.SPONSOR_BALANCE_INTERVAL_MS, 60_000, "SPONSOR_BALANCE_INTERVAL_MS"),
+  };
+
   return {
     port: Number(env.PORT ?? 4100),
     host: env.HOST ?? "0.0.0.0",
@@ -61,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     catalogFile: env.CATALOG_FILE,
     verificationApiUrl: env.VERIFICATION_API_URL,
     spend,
+    balance,
   };
 }
 

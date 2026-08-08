@@ -7,6 +7,7 @@ import { BazaarCatalog } from "./catalog.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
 import { createSpendPolicy } from "./policy.js";
+import { BalanceGuard } from "./balance.js";
 
 const testConfig = {
   port: 0,
@@ -18,6 +19,7 @@ const testConfig = {
   catalogFile: undefined,
   verificationApiUrl: undefined,
   spend: { rateMax: 30, rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000 },
+  balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
 };
 
 function requirements(): PaymentRequirements {
@@ -179,6 +181,64 @@ describe("Fix 1 — spend policy on /settle", () => {
         const res = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
         expect(res.statusCode).not.toBe(503);
       }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Fix 3 — sponsor balance guard on /settle", () => {
+  function settleBody() {
+    return {
+      x402Version: 2,
+      paymentPayload: {
+        x402Version: 2,
+        scheme: "exact",
+        network: "stellar:testnet",
+        payload: { transaction: "not-a-real-transaction" },
+      },
+      paymentRequirements: requirements(),
+    };
+  }
+
+  it("returns 503 sponsor_balance_low when below the hard floor, but /discovery still serves", async () => {
+    const guard = new BalanceGuard({
+      fetchBalanceStroops: async () => 1_000_000, // 0.1 XLM, below 2 XLM hard floor
+      softFloorStroops: 10 * 10_000_000,
+      hardFloorStroops: 2 * 10_000_000,
+      intervalMs: 60_000,
+    });
+    await guard.refresh();
+    const catalog = new BazaarCatalog();
+    const app = await buildServer(buildFacilitator(testConfig), catalog, undefined, undefined, {}, guard);
+    await app.ready();
+    try {
+      const settle = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      expect(settle.statusCode).toBe(503);
+      expect(settle.json().reason).toBe("sponsor_balance_low");
+      // Discovery is unaffected.
+      const disc = await app.inject({ method: "GET", url: "/discovery/resources" });
+      expect(disc.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not refuse settle when the balance check has never succeeded (fail open)", async () => {
+    const guard = new BalanceGuard({
+      fetchBalanceStroops: async () => {
+        throw new Error("horizon down");
+      },
+      softFloorStroops: 10 * 10_000_000,
+      hardFloorStroops: 2 * 10_000_000,
+      intervalMs: 60_000,
+    });
+    await guard.refresh(); // errors → unknown → allowed
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, undefined, {}, guard);
+    await app.ready();
+    try {
+      const settle = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      expect(settle.statusCode).not.toBe(503);
     } finally {
       await app.close();
     }
