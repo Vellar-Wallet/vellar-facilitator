@@ -12,13 +12,21 @@ describe("loadConfig", () => {
     const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
     expect(config.network).toBe("stellar:testnet");
     expect(config.port).toBe(4100);
-    expect(config.maxTransactionFeeStroops).toBe(2_000_000);
+    expect(config.maxTransactionFeeStroops).toBe(500_000);
     expect(config.rpcUrl).toBeUndefined();
   });
 
-  it("fee ceiling default clears the policy-governed payment cost (~140k stroops)", () => {
+  // The invariant that matters: the ceiling must clear the real cost of a
+  // policy-governed smart-account settlement. Measured on testnet from the
+  // dedicated facilitator sponsor's own history, the worst REAL settlement was
+  // 127,808 stroops (higher-fee txs on dev accounts are contract deploys and
+  // add_signer calls, which never flow through /settle). 500k is ~3.9x that and
+  // 2.5x the documented 200k floor — while cutting worst-case sponsor drain per
+  // settle from 0.2 XLM to 0.05 XLM.
+  it("fee ceiling default clears the worst observed real settlement (127,808 stroops)", () => {
     const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
-    expect(config.maxTransactionFeeStroops).toBeGreaterThan(140_000);
+    expect(config.maxTransactionFeeStroops).toBeGreaterThan(127_808);
+    expect(config.maxTransactionFeeStroops).toBeGreaterThanOrEqual(200_000); // documented floor
   });
 
   it("selects pubnet when STELLAR_NETWORK=pubnet", () => {
