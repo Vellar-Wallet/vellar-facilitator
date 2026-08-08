@@ -42,6 +42,46 @@ function sanitizeExtensions(value: unknown): Record<string, unknown> | undefined
   return { bazaar: src.bazaar };
 }
 
+// Audit D5 — on the INGEST path the upstream extractor sanitizes serviceName /
+// tags / iconUrl, but a crafted CATALOG_FILE bypasses the extractor entirely.
+// Re-sanitize these on LOAD so stored prompt injection through them can't land.
+const MAX_SERVICE_NAME_LEN = 64;
+const MAX_TAG_LEN = 32;
+const MAX_TAGS = 8;
+
+/** Strip control/bidi chars and clamp a short free-text field. */
+function sanitizeShortText(value: unknown, maxLen: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(CONTROL_AND_FORMAT, "").slice(0, maxLen);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function sanitizeTags(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const t of value) {
+    const clean = sanitizeShortText(t, MAX_TAG_LEN);
+    if (clean) out.push(clean);
+    if (out.length >= MAX_TAGS) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Keep an iconUrl only if it is a well-formed http(s) URL — drops javascript:,
+ * data:, and other schemes that could execute or exfiltrate in a consumer UI. */
+function sanitizeIconUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2048) return undefined;
+  // Note: use a fresh non-global regex — CONTROL_AND_FORMAT has the /g flag and
+  // .test() on a /g regex is stateful (advances lastIndex).
+  if (/[\p{Cc}\p{Cf}]/u.test(value)) return undefined;
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Fix 4/F6 — load-time schema. A crafted CATALOG_FILE is a trust boundary: the
 // ingestion sanitizer never ran on it. Validate each entry's structure, drop the
 // malformed rather than blind-casting, and (via sanitizeStoredResource below)
@@ -85,15 +125,29 @@ const storedEntrySchema = z.object({
  * is computed at serve time, never stored) and re-run the ingestion sanitizer on
  * description/extensions so a crafted file gets the same defanging as the wire. */
 function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): DiscoveryResource {
-  const { trust: _dropTrust, description, extensions, ...rest } = res as Record<string, unknown> & {
-    resource: string;
-  };
+  const {
+    trust: _dropTrust,
+    description,
+    extensions,
+    serviceName,
+    tags,
+    iconUrl,
+    ...rest
+  } = res as Record<string, unknown> & { resource: string };
+  // Audit D5: every free-text/URL field a crafted file could carry is
+  // re-sanitized here, not just description/extensions.
   const cleanDescription = sanitizeDescription(description);
   const cleanExtensions = sanitizeExtensions(extensions);
+  const cleanServiceName = sanitizeShortText(serviceName, MAX_SERVICE_NAME_LEN);
+  const cleanTags = sanitizeTags(tags);
+  const cleanIconUrl = sanitizeIconUrl(iconUrl);
   return {
     ...(rest as unknown as DiscoveryResource),
     ...(cleanDescription !== undefined ? { description: cleanDescription } : {}),
     ...(cleanExtensions !== undefined ? { extensions: cleanExtensions } : {}),
+    ...(cleanServiceName !== undefined ? { serviceName: cleanServiceName } : {}),
+    ...(cleanTags !== undefined ? { tags: cleanTags } : {}),
+    ...(cleanIconUrl !== undefined ? { iconUrl: cleanIconUrl } : {}),
   };
 }
 
