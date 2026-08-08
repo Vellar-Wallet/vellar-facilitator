@@ -1,5 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { Agent } from "undici";
 
 // Fix 0 Layer 2 — resource-URL ownership verification via the resource's own
 // HTTP 402 challenge. This is the actual ownership control (Layer 1 TOFU is only
@@ -29,6 +30,48 @@ interface LookupResult {
 }
 type LookupFn = (hostname: string) => Promise<LookupResult>;
 
+/** The single address the SSRF guard vetted, pinned into the connection (D2). */
+export interface VettedAddress {
+  address: string;
+  family: number;
+}
+
+/**
+ * Audit D2 — close the DNS-rebinding TOCTOU. Previously the guard resolved the
+ * host, range-checked the IP, then DISCARDED it while `fetch` performed its own
+ * independent resolution — so attacker-controlled DNS could answer a public IP
+ * to the guard and 127.0.0.1 / 169.254.169.254 to the actual connection.
+ *
+ * This dispatcher overrides the connection's DNS lookup to return ONLY the
+ * address the guard already vetted, so the socket cannot land anywhere else.
+ * TLS still validates against the original hostname (SNI/cert are unchanged —
+ * we override resolution, not identity), so pinning costs no certificate safety.
+ */
+function pinnedDispatcher(vetted: VettedAddress): Agent {
+  const family = vetted.family === 6 ? 6 : 4;
+  // Node calls the lookup with all:true (expects an array) or all:false/absent
+  // (expects address+family). Handle both so the pin holds either way. Cast at
+  // the boundary: undici's LookupFunction overloads don't model both shapes.
+  const lookup = (
+    _hostname: string,
+    options: { all?: boolean },
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      address: string | Array<{ address: string; family: number }>,
+      family?: number,
+    ) => void,
+  ): void => {
+    if (options?.all) {
+      callback(null, [{ address: vetted.address, family }]);
+      return;
+    }
+    callback(null, vetted.address, family);
+  };
+  // Single cast at the undici boundary: its LookupFunction type models only one
+  // of the two callback shapes Node actually uses.
+  return new Agent({ connect: { lookup } } as unknown as ConstructorParameters<typeof Agent>[0]);
+}
+
 export interface VerifyOptions {
   fetchFn?: typeof fetch;
   lookupFn?: LookupFn;
@@ -45,7 +88,7 @@ export interface VerifyOptions {
 export async function assertPublicHttpsUrl(
   rawUrl: string,
   lookupFn: LookupFn = defaultLookup,
-): Promise<void> {
+): Promise<VettedAddress> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -59,10 +102,14 @@ export async function assertPublicHttpsUrl(
 
   // If the host is a literal IP, check it directly; otherwise resolve and check.
   const literal = isIP(host);
-  const address = literal ? host : (await lookupFn(host)).address;
-  if (isBlockedAddress(address)) {
-    throw new Error(`ownership: host resolves to a blocked (private/loopback/link-local) address: ${address}`);
+  const resolved = literal ? { address: host, family: literal } : await lookupFn(host);
+  if (isBlockedAddress(resolved.address)) {
+    throw new Error(
+      `ownership: host resolves to a blocked (private/loopback/link-local) address: ${resolved.address}`,
+    );
   }
+  // Returned so the caller can PIN the connection to exactly this address (D2).
+  return { address: resolved.address, family: resolved.family || (isIP(resolved.address) as 4 | 6) };
 }
 
 /**
@@ -81,11 +128,18 @@ export async function verifyResourceOwnership(
   const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
 
+  let vetted: VettedAddress;
   try {
-    await assertPublicHttpsUrl(resourceUrl, lookupFn);
+    vetted = await assertPublicHttpsUrl(resourceUrl, lookupFn);
   } catch {
     return "unverifiable";
   }
+
+  // D2: pin the connection to the address the guard vetted, so fetch cannot
+  // re-resolve the hostname to an internal target between check and connect.
+  const dispatcher = pinnedDispatcher(vetted);
+  // Surfaced for tests/observability: which address this request is pinned to.
+  (dispatcher as Agent & { pinnedAddress?: string }).pinnedAddress = vetted.address;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -95,7 +149,8 @@ export async function verifyResourceOwnership(
       redirect: "manual", // never follow a redirect into a blocked range
       signal: controller.signal,
       headers: { accept: "application/json" },
-    });
+      dispatcher,
+    } as unknown as RequestInit);
 
     // A redirect (or anything that isn't the payment challenge) is unverifiable.
     if (res.status !== 402) return "unverifiable";
@@ -120,6 +175,9 @@ export async function verifyResourceOwnership(
     return "unverifiable";
   } finally {
     clearTimeout(timer);
+    // The pinned dispatcher owns a connection pool; close it so a per-request
+    // agent cannot accumulate sockets. Never let cleanup surface an error.
+    void (dispatcher as Agent & { close?: () => Promise<void> }).close?.().catch(() => {});
   }
 }
 

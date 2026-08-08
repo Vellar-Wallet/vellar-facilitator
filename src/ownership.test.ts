@@ -28,8 +28,11 @@ describe("assertPublicHttpsUrl — SSRF guard", () => {
   it("rejects IPv6 loopback (::1)", async () => {
     await expect(assertPublicHttpsUrl("https://x.example/x", fakeLookup("::1"))).rejects.toThrow(/private|loopback|blocked/i);
   });
-  it("accepts a public address", async () => {
-    await expect(assertPublicHttpsUrl("https://example.com/x", fakeLookup("93.184.216.34"))).resolves.toBeUndefined();
+  it("accepts a public address and returns it for pinning", async () => {
+    await expect(assertPublicHttpsUrl("https://example.com/x", fakeLookup("93.184.216.34"))).resolves.toEqual({
+      address: "93.184.216.34",
+      family: 4,
+    });
   });
 
   // D1/D12 (audit) — literal IP hosts skip DNS and go straight to the range
@@ -63,6 +66,51 @@ describe("assertPublicHttpsUrl — SSRF guard", () => {
     await expect(assertPublicHttpsUrl("https://[::ffff:7f00:1]/x", fakeLookup("93.184.216.34"))).rejects.toThrow(
       /private|loopback|blocked/i,
     );
+  });
+});
+
+// D2 (audit) — DNS-rebinding TOCTOU. The guard used to resolve the host, check
+// the IP, then throw it away while fetch re-resolved independently; attacker DNS
+// could answer public to the guard and internal to the connection. The vetted IP
+// must now be PINNED into the actual connection.
+describe("verifyResourceOwnership — DNS-rebinding pin (D2)", () => {
+  it("pins the vetted IP into the connection via a dispatcher", async () => {
+    const fetchFn = vi.fn(async () => ({
+      status: 402,
+      headers: { get: () => challengeHeader(["GLEGIT_A"]) },
+      body: null,
+      text: async () => "",
+    }) as unknown as Response);
+
+    await verifyResourceOwnership("https://example.com/quote", "GLEGIT_A", {
+      fetchFn,
+      lookupFn: fakeLookup("93.184.216.34"),
+    });
+
+    const init = (fetchFn.mock.calls[0] as unknown as [string, { dispatcher?: unknown }])[1];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("the pinned dispatcher resolves ONLY to the guard-vetted address", async () => {
+    let pinned: string | undefined;
+    const fetchFn = vi.fn(async (_u: string, init: { dispatcher?: { pinnedAddress?: string } }) => {
+      pinned = init.dispatcher?.pinnedAddress;
+      return {
+        status: 402,
+        headers: { get: () => challengeHeader(["GLEGIT_A"]) },
+        body: null,
+        text: async () => "",
+      } as unknown as Response;
+    });
+
+    await verifyResourceOwnership("https://example.com/quote", "GLEGIT_A", {
+      fetchFn: fetchFn as unknown as typeof fetch,
+      lookupFn: fakeLookup("93.184.216.34"),
+    });
+
+    // The address the guard vetted is the one the connection is pinned to —
+    // fetch cannot re-resolve to something internal.
+    expect(pinned).toBe("93.184.216.34");
   });
 });
 
