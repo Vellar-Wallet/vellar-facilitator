@@ -48,12 +48,23 @@ function sanitizeExtensions(value: unknown): Record<string, unknown> | undefined
 const MAX_SERVICE_NAME_LEN = 64;
 const MAX_TAG_LEN = 32;
 const MAX_TAGS = 8;
+const MAX_MIME_TYPE_LEN = 128;
+/** Printable ASCII only — mirrors the upstream ingest validator. Anything else
+ * (incl. Cyrillic/Greek homoglyphs used for brand impersonation) is rejected
+ * outright rather than "cleaned", so the load path is not weaker than the wire. */
+const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 
-/** Strip control/bidi chars and clamp a short free-text field. */
+/**
+ * Strip control/bidi chars, clamp, and require printable ASCII. Returns
+ * undefined (field dropped) rather than a mangled string when the input isn't
+ * clean — matching @x402/extensions' isValidServiceName/sanitizeTags behaviour,
+ * so a crafted CATALOG_FILE gets exactly the treatment a wire payload gets.
+ */
 function sanitizeShortText(value: unknown, maxLen: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const cleaned = value.replace(CONTROL_AND_FORMAT, "").slice(0, maxLen);
-  return cleaned.length > 0 ? cleaned : undefined;
+  if (cleaned.length === 0) return undefined;
+  return PRINTABLE_ASCII.test(cleaned) ? cleaned : undefined;
 }
 
 function sanitizeTags(value: unknown): string[] | undefined {
@@ -76,7 +87,18 @@ function sanitizeIconUrl(value: unknown): string | undefined {
   if (/[\p{Cc}\p{Cf}]/u.test(value)) return undefined;
   try {
     const u = new URL(value);
-    return u.protocol === "http:" || u.protocol === "https:" ? value : undefined;
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    // Match the upstream ingest validator: no embedded credentials, and no
+    // loopback / bare-IP / private hosts (an iconUrl is rendered by consumers,
+    // so it must not point at internal infrastructure).
+    if (u.username !== "" || u.password !== "") return undefined;
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost")) return undefined;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
+      return undefined;
+    }
+    if (host.includes(":")) return undefined; // bare IPv6 literal
+    return value;
   } catch {
     return undefined;
   }
@@ -91,22 +113,24 @@ const acceptSchema = z
   .object({ scheme: z.string(), network: z.string(), asset: z.string(), amount: z.string(), payTo: z.string() })
   .passthrough();
 
-const storedResourceSchema = z
-  .object({
-    resource: z.string().min(1),
-    type: z.string(),
-    x402Version: z.number(),
-    accepts: z.array(acceptSchema),
-    lastUpdated: z.string(),
-    description: z.unknown().optional(),
-    mimeType: z.string().optional(),
-    serviceName: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    iconUrl: z.string().optional(),
-    extensions: z.unknown().optional(),
-    // `trust` is deliberately NOT in the schema; .strip() below removes it.
-  })
-  .passthrough();
+// NOT .passthrough(): zod strips unknown keys by default, which is exactly what
+// we need. With passthrough, arbitrary attacker-named keys in a crafted
+// CATALOG_FILE survived the schema and rode the rest-spread straight into the
+// served entry (and into an agent's MCP context), bypassing every sanitizer.
+// Stripping also removes any forged `trust` field for free.
+const storedResourceSchema = z.object({
+  resource: z.string().min(1),
+  type: z.string(),
+  x402Version: z.number(),
+  accepts: z.array(acceptSchema),
+  lastUpdated: z.string(),
+  description: z.unknown().optional(),
+  mimeType: z.unknown().optional(),
+  serviceName: z.unknown().optional(),
+  tags: z.unknown().optional(),
+  iconUrl: z.unknown().optional(),
+  extensions: z.unknown().optional(),
+});
 
 const statsSchema = z
   .object({
@@ -132,6 +156,7 @@ function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): Disc
     serviceName,
     tags,
     iconUrl,
+    mimeType,
     ...rest
   } = res as Record<string, unknown> & { resource: string };
   // Audit D5: every free-text/URL field a crafted file could carry is
@@ -141,6 +166,7 @@ function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): Disc
   const cleanServiceName = sanitizeShortText(serviceName, MAX_SERVICE_NAME_LEN);
   const cleanTags = sanitizeTags(tags);
   const cleanIconUrl = sanitizeIconUrl(iconUrl);
+  const cleanMimeType = sanitizeShortText(mimeType, MAX_MIME_TYPE_LEN);
   return {
     ...(rest as unknown as DiscoveryResource),
     ...(cleanDescription !== undefined ? { description: cleanDescription } : {}),
@@ -148,6 +174,7 @@ function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): Disc
     ...(cleanServiceName !== undefined ? { serviceName: cleanServiceName } : {}),
     ...(cleanTags !== undefined ? { tags: cleanTags } : {}),
     ...(cleanIconUrl !== undefined ? { iconUrl: cleanIconUrl } : {}),
+    ...(cleanMimeType !== undefined ? { mimeType: cleanMimeType } : {}),
   };
 }
 
