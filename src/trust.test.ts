@@ -153,13 +153,18 @@ describe("annotateTrust precedence", () => {
   it("all assets verified ⇒ verified; any unverified ⇒ unverified; else unknown", async () => {
     const resolver = fixedResolver({ CV: "verified", CU: "unverified", CX: "unknown" });
 
-    const [allVerified] = await annotateTrust([item(["CV"])], resolver);
+    // Fix 0 Layer 3: "verified" now also requires the owner to have passed the
+    // Layer 2 402 challenge, so these precedence cases pass an owner-verified
+    // check. (Asset-precedence itself is unchanged: any unverified ⇒ unverified.)
+    const ownerVerified = () => true;
+
+    const [allVerified] = await annotateTrust([item(["CV"])], resolver, ownerVerified);
     expect(allVerified!.trust?.verification).toBe("verified");
 
-    const [mixed] = await annotateTrust([item(["CV", "CU"])], resolver);
+    const [mixed] = await annotateTrust([item(["CV", "CU"])], resolver, ownerVerified);
     expect(mixed!.trust?.verification).toBe("unverified");
 
-    const [withUnknown] = await annotateTrust([item(["CV", "CX"])], resolver);
+    const [withUnknown] = await annotateTrust([item(["CV", "CX"])], resolver, ownerVerified);
     expect(withUnknown!.trust?.verification).toBe("unknown");
   });
 
@@ -168,12 +173,14 @@ describe("annotateTrust precedence", () => {
     const withStats = item("CV", {
       trust: { settlements: 7, uniquePayers: 3, lastSettled: "2026-08-01T00:00:00Z" },
     });
-    const [annotated] = await annotateTrust([withStats], resolver);
+    const [annotated] = await annotateTrust([withStats], resolver, () => true);
     expect(annotated!.trust).toEqual({
       settlements: 7,
       uniquePayers: 3,
       lastSettled: "2026-08-01T00:00:00Z",
       verification: "verified",
+      acceptsVerification: ["verified"],
+      ownerVerified: true,
     });
   });
 });

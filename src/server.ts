@@ -78,7 +78,7 @@ export function buildServer(
       ...(q.offset !== undefined ? { offset: Number(q.offset) } : {}),
     });
     if (!trust) return response;
-    let items = await annotateTrust(response.items, trust);
+    let items = await annotateTrust(response.items, trust, (url) => catalog.isVerifiedOwner(url));
     if (q.verified_only === "true") items = filterVerifiedOnly(items);
     return { ...response, items };
   });
@@ -103,7 +103,11 @@ export function buildServer(
     if (!trust) return response;
     // Annotate, then verified-first within the relevance ranking (stable), or
     // hard-filter when the caller asked for verified_only.
-    let resources = await annotateTrust(response.resources, trust);
+    let resources = await annotateTrust(
+      response.resources,
+      trust,
+      (url) => catalog.isVerifiedOwner(url),
+    );
     resources = q.verified_only === "true"
       ? filterVerifiedOnly(resources)
       : rerankVerifiedFirst(resources);

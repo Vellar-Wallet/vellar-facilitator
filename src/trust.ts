@@ -24,15 +24,40 @@ export type TrustVerification = "verified" | "unverified" | "unknown";
 
 /** Wire shape of a trust-annotated Bazaar entry: the standard DiscoveryResource
  * plus an additive `trust` block (settlement stats come from the catalog;
- * `verification` is filled in by `annotateTrust`). */
+ * the verification fields are filled in by `annotateTrust`).
+ *
+ * Fix 0 Layer 3: verification is annotated PER accepts entry, because payment
+ * redirection (F11) lives in an individual accepts element, not in the entry.
+ * `acceptsVerification[i]` is the verdict for `accepts[i]`. `verification` is
+ * the entry-level roll-up: the strict minimum across all accepts. Both are
+ * clamped by `ownerVerified` — an accepts option can only read "verified" when
+ * its asset is verified AND the resource owner passed the Layer 2 402 challenge.
+ * An owner-unverified entry never surfaces a verified badge. */
 export type TrustedDiscoveryResource = DiscoveryResource & {
   trust?: {
     settlements: number;
     uniquePayers: number;
     lastSettled?: string;
+    /** Entry-level roll-up: strict min across acceptsVerification. */
     verification?: TrustVerification;
+    /** Per-accepts verdicts, index-aligned with `accepts`. */
+    acceptsVerification?: TrustVerification[];
+    /** Whether the resource owner passed Layer 2 402-challenge verification. */
+    ownerVerified?: boolean;
   };
 };
+
+/** Owner-verification lookup (Fix 0 Layer 2): does the catalog consider this
+ * resourceUrl's bound owner confirmed by its own 402 challenge? */
+export type OwnerVerifiedFn = (resourceUrl: string) => boolean;
+
+/** Rank order for the strict-minimum roll-up: verified is best (0). */
+const RANK: Record<TrustVerification, number> = { verified: 0, unknown: 1, unverified: 2 };
+
+function strictMin(verdicts: TrustVerification[]): TrustVerification {
+  if (verdicts.length === 0) return "unknown";
+  return verdicts.reduce((worst, v) => (RANK[v] > RANK[worst] ? v : worst), "verified" as TrustVerification);
+}
 
 export interface TrustResolver {
   /** Verification verdict for one contract id (cached). */
@@ -122,30 +147,32 @@ export function createTrustResolver(options: TrustResolverOptions): TrustResolve
   };
 }
 
-/** Distinct asset contract ids across an entry's accepted payment options. */
-function distinctAssets(resource: DiscoveryResource): string[] {
-  return [...new Set(resource.accepts.map((a) => a.asset).filter(Boolean))];
-}
-
 /**
- * Fills `trust.verification` on each entry from its accepted assets'
- * verification verdicts. Precedence: any unverified ⇒ unverified; else any
- * unknown ⇒ unknown; else verified. (An entry paying out in ANY unverified
- * token is not presented as verified.)
+ * Fix 0 Layer 3: annotate verification PER accepts entry. For each accepts
+ * option, resolve its asset's verdict, then clamp: an option may read "verified"
+ * only if the resource owner passed Layer 2 (`ownerVerified`). When the owner is
+ * NOT verified, every option is clamped to at most "unknown", so no redirection
+ * option can wear a verified badge. The entry-level `verification` is the strict
+ * minimum across the (clamped) per-accepts verdicts.
+ *
+ * `ownerVerifiedFn` is optional: when omitted, ownership cannot be asserted, so
+ * `ownerVerified` is false and nothing shows verified (the safe default).
  */
 export async function annotateTrust(
   items: TrustedDiscoveryResource[],
   resolver: TrustResolver,
+  ownerVerifiedFn?: OwnerVerifiedFn,
 ): Promise<TrustedDiscoveryResource[]> {
   return Promise.all(
     items.map(async (item) => {
-      const verdicts = await Promise.all(
-        distinctAssets(item).map((asset) => resolver.assetStatus(asset)),
+      const ownerVerified = ownerVerifiedFn ? ownerVerifiedFn(item.resource) : false;
+
+      // Per-accepts asset verdicts, index-aligned with item.accepts, then clamped.
+      const rawVerdicts = await Promise.all(
+        item.accepts.map((a) => (a.asset ? resolver.assetStatus(a.asset) : Promise.resolve<TrustVerification>("unknown"))),
       );
-      let verification: TrustVerification = "verified";
-      if (verdicts.length === 0) verification = "unknown";
-      else if (verdicts.includes("unverified")) verification = "unverified";
-      else if (verdicts.includes("unknown")) verification = "unknown";
+      const acceptsVerification = rawVerdicts.map((v) => clampByOwner(v, ownerVerified));
+      const verification = strictMin(acceptsVerification);
 
       return {
         ...item,
@@ -154,10 +181,19 @@ export async function annotateTrust(
           uniquePayers: item.trust?.uniquePayers ?? 0,
           ...(item.trust?.lastSettled ? { lastSettled: item.trust.lastSettled } : {}),
           verification,
+          acceptsVerification,
+          ownerVerified,
         },
       };
     }),
   );
+}
+
+/** An option can only be "verified" if the owner is verified; otherwise the best
+ * it can read is "unknown" (never downgrade an already-"unverified" asset). */
+function clampByOwner(verdict: TrustVerification, ownerVerified: boolean): TrustVerification {
+  if (ownerVerified) return verdict;
+  return verdict === "verified" ? "unknown" : verdict;
 }
 
 /** Keep only entries whose verification verdict is "verified". */
