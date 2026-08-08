@@ -71,6 +71,39 @@ describe("Fix 2 — rate limiting", () => {
     expect(sawLimited).toBe(true);
   });
 
+  // D4 (audit) — behind Render's proxy every request arrives from the proxy's IP,
+  // so without trustProxy the per-IP limit collapses into ONE shared bucket:
+  // one noisy client 429s everyone, and an IP-rotating attacker is never
+  // partitioned. With trustProxy, X-Forwarded-For identifies the real client.
+  it("partitions the rate limit by X-Forwarded-For, not the proxy IP (D4)", async () => {
+    const app = await server({ rateMax: 2 });
+    // Client A exhausts its own bucket through the proxy.
+    for (let i = 0; i < 2; i++) {
+      await app.inject({
+        method: "GET",
+        url: "/supported",
+        remoteAddress: "10.0.0.1", // the proxy
+        headers: { "x-forwarded-for": "203.0.113.1" },
+      });
+    }
+    const aBlocked = await app.inject({
+      method: "GET",
+      url: "/supported",
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "203.0.113.1" },
+    });
+    expect(aBlocked.statusCode).toBe(429);
+
+    // Client B, same proxy, different real client — must NOT be affected.
+    const bOk = await app.inject({
+      method: "GET",
+      url: "/supported",
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "203.0.113.9" },
+    });
+    expect(bOk.statusCode).toBe(200);
+  });
+
   it("never rate-limits /health (Render health check must not trip)", async () => {
     const app = await server({ rateMax: 1 });
     for (let i = 0; i < 10; i++) {

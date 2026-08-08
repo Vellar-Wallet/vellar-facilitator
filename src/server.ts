@@ -61,7 +61,12 @@ export async function buildServer(
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
   // default), sized for real signed settlement XDR with headroom.
-  const app = Fastify({ logger: true, bodyLimit });
+  // Audit D4: this service runs behind Render's reverse proxy (render.yaml,
+  // type: web), so without trustProxy every request appears to come from the
+  // proxy's IP and the per-IP rate limit collapses into a single shared bucket —
+  // one noisy client 429s everyone and an IP-rotating attacker is never
+  // partitioned. trustProxy makes req.ip the real client from X-Forwarded-For.
+  const app = Fastify({ logger: true, bodyLimit, trustProxy: true });
   registerBazaar(facilitator, catalog);
 
   // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
