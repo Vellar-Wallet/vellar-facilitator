@@ -34,6 +34,23 @@ interface SettlementStats {
 interface StoredEntry {
   resource: DiscoveryResource;
   stats: SettlementStats;
+  /**
+   * Fix 0 Layer 1 (TOFU ownership binding). The set of payTo addresses bound to
+   * this canonical resourceUrl. The first settlement to catalog a URL binds its
+   * payTo here; only a settlement whose payTo is already in this set may append
+   * a new accepts entry or overwrite metadata. This stops resource-URL hijack
+   * (F11): an attacker cannot append their own payTo to, or overwrite the
+   * metadata of, a resource someone else already established.
+   *
+   * LIMITATION — this binding is in-memory (and, when CATALOG_FILE is set,
+   * persisted to disk). On the free tier the disk is ephemeral, so the whole
+   * catalog — bindings included — empties on every redeploy/restart, and every
+   * URL becomes claimable again by whoever settles first afterward. Layer 1 is
+   * therefore a floor, not a real control, until durable storage exists; the
+   * actual control is the Layer 2 402-challenge verification, which re-derives
+   * ownership from the resource itself rather than from catalog history.
+   */
+  boundPayTo: string[];
 }
 
 /** Cap on tracked distinct payers per resource — bounds memory and the
@@ -54,13 +71,36 @@ export class BazaarCatalog {
     return this.entries.size;
   }
 
+  /** Whether `payTo` is bound to `resourceUrl` under the TOFU rule (Layer 1).
+   * A settlement whose payTo is not bound may not append accepts or overwrite
+   * metadata for that URL. */
+  isBound(resourceUrl: string, payTo: string): boolean {
+    return this.entries.get(resourceUrl)?.boundPayTo.includes(payTo) ?? false;
+  }
+
   /**
    * Insert or update a resource from a settled payment's discovery info.
    * `accepts` accumulates distinct payment requirements seen for the resource.
+   *
+   * Ownership rule (Fix 0 Layer 1): the FIRST settlement for a canonical URL
+   * binds it to that payment's payTo. Any later settlement for the same URL is
+   * honored only if its payTo is already bound; otherwise it is rejected and
+   * logged, and the existing entry (accepts, metadata, and stats) is left
+   * exactly as it was. This is what blocks the F11 hijack.
    */
   upsertFromPayment(discovered: DiscoveredResource, requirements: PaymentRequirements): void {
     const key = discovered.resourceUrl;
     const existing = this.entries.get(key);
+
+    if (existing && !existing.boundPayTo.includes(requirements.payTo)) {
+      // Unbound payTo for an already-established URL: reject the whole write.
+      // Do not append accepts, do not overwrite metadata, do not touch stats.
+      console.warn(
+        `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} is not bound ` +
+          `(bound: ${existing.boundPayTo.join(", ")}) — possible resource-URL hijack (F11)`,
+      );
+      return;
+    }
 
     const accepts = existing ? [...existing.resource.accepts] : [];
     const reqKey = JSON.stringify({
@@ -95,9 +135,14 @@ export class BazaarCatalog {
       ...(discovered.iconUrl !== undefined ? { iconUrl: discovered.iconUrl } : {}),
       ...(discovered.extensions !== undefined ? { extensions: discovered.extensions } : {}),
     };
+    // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
+    const boundPayTo = existing
+      ? existing.boundPayTo
+      : [requirements.payTo];
     this.entries.set(key, {
       resource: entry,
       stats: existing?.stats ?? { settlements: 0, payers: [] },
+      boundPayTo,
     });
     this.save();
   }
@@ -201,22 +246,46 @@ export class BazaarCatalog {
         DiscoveryResource | StoredEntry
       >;
       for (const item of raw) {
-        if ("stats" in item && typeof item.resource === "object") {
-          // Current format: { resource, stats }.
-          this.entries.set(item.resource.resource, item);
-        } else {
-          // Pre-trust format: a bare DiscoveryResource — migrate with zero stats.
-          const resource = item as DiscoveryResource;
-          this.entries.set(resource.resource, {
-            resource,
-            stats: { settlements: 0, payers: [] },
-          });
-        }
+        const stored: StoredEntry =
+          "stats" in item && typeof item.resource === "object"
+            ? // Current format: { resource, stats }.
+              (item as StoredEntry)
+            : // Pre-binding format: a bare DiscoveryResource — migrate.
+              { resource: item as DiscoveryResource, stats: { settlements: 0, payers: [] }, boundPayTo: [] };
+        this.entries.set(stored.resource.resource, this.bindLoadedEntry(stored));
       }
     } catch {
       // Missing or unreadable file: start empty. Corrupt persistence must
       // never prevent the facilitator from starting.
     }
+  }
+
+  /**
+   * Fix 0 Layer 1 enforcement at load time: a crafted CATALOG_FILE must not be
+   * able to plant a hijacked entry the ingestion path would have rejected. The
+   * owner is the payTo of the FIRST accepts entry (the TOFU winner); any later
+   * accepts entry whose payTo differs is quarantined (dropped) rather than
+   * served as authoritative. `boundPayTo` is re-derived from the surviving
+   * accepts, never trusted from the file.
+   */
+  private bindLoadedEntry(stored: StoredEntry): StoredEntry {
+    const accepts = stored.resource.accepts ?? [];
+    const ownerPayTo = accepts[0]?.payTo;
+    if (ownerPayTo === undefined) {
+      return { ...stored, resource: { ...stored.resource, accepts: [] }, boundPayTo: [] };
+    }
+    const kept = accepts.filter((a) => a.payTo === ownerPayTo);
+    if (kept.length !== accepts.length) {
+      console.warn(
+        `[catalog] load: quarantined ${accepts.length - kept.length} accepts entry(ies) for ` +
+          `${stored.resource.resource} with a payTo other than the bound owner ${ownerPayTo} (F11)`,
+      );
+    }
+    return {
+      resource: { ...stored.resource, accepts: kept },
+      stats: stored.stats ?? { settlements: 0, payers: [] },
+      boundPayTo: [ownerPayTo],
+    };
   }
 
   private save(): void {
