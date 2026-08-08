@@ -137,6 +137,37 @@ describe("Fix 1 — spend policy on /settle", () => {
     };
   }
 
+  it("does not let an empty payTo bypass the spend policy on pubnet (audit D3)", async () => {
+    // Global spend ceiling that admits exactly one settle; a client sending an
+    // empty payTo must NOT skip the ceiling and drain the sponsor.
+    const policy = createSpendPolicy({
+      network: "stellar:pubnet",
+      rateMax: 1000,
+      rateWindowMs: 60_000,
+      spendCeilingStroops: 2_000_000, // 1 settle at the estimate, then refuse
+      spendWindowMs: 60_000,
+      perSettleEstimateStroops: 2_000_000,
+    });
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    await app.ready();
+    try {
+      const emptyPayToBody = () => {
+        const b = settleBody();
+        (b.paymentRequirements as { payTo: string }).payTo = "";
+        return b;
+      };
+      // First empty-payTo settle is admitted by the ceiling; the second must 503,
+      // proving the global backstop is enforced even without a payTo.
+      const first = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      expect(first.statusCode).not.toBe(503);
+      const second = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      expect(second.statusCode).toBe(503);
+      expect(second.json().reason).toBe("spend_ceiling");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 503 settlement_refused once the per-payTo rate limit trips on pubnet", async () => {
     // Pubnet policy, rateMax 2 so the 3rd settle from one payTo is refused.
     const policy = createSpendPolicy({

@@ -118,11 +118,17 @@ export async function buildServer(
     // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
     // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
     // testnet it logs what would have tripped and proceeds (fail-open).
-    if (policy && paymentRequirements.payTo) {
-      const verdict = policy.checkSettle(paymentRequirements.payTo);
+    //
+    // Audit D3: run the policy UNCONDITIONALLY — never gate it on payTo being
+    // truthy, or a client sending an empty payTo would skip the global spend
+    // ceiling (the fail-closed backstop), not just the per-payTo limit. A missing
+    // payTo maps to a single shared bucket so it can't get free settles.
+    if (policy) {
+      const payToKey = paymentRequirements.payTo || "<no-payto>";
+      const verdict = policy.checkSettle(payToKey);
       if (!verdict.allowed) {
         request.log.warn(
-          { payTo: paymentRequirements.payTo, reason: verdict.reason },
+          { payTo: payToKey, reason: verdict.reason },
           "[policy] settle refused",
         );
         return reply
@@ -131,7 +137,7 @@ export async function buildServer(
       }
       if (verdict.wouldReject) {
         request.log.warn(
-          { payTo: paymentRequirements.payTo, wouldReject: verdict.wouldReject },
+          { payTo: payToKey, wouldReject: verdict.wouldReject },
           "[policy] settle would be refused on pubnet",
         );
       }
