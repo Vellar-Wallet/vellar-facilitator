@@ -104,6 +104,28 @@ describe("Fix 2 — rate limiting", () => {
     expect(bOk.statusCode).toBe(200);
   });
 
+  // A client must NOT be able to mint a fresh bucket by forging X-Forwarded-For.
+  // Render's proxy appends the true client IP after any client-supplied value, so
+  // trusting exactly ONE hop makes the real client authoritative and the forgery
+  // inert. (trustProxy:true would take the attacker-controlled leftmost entry and
+  // defeat the rate limit entirely — worse than no trustProxy at all.)
+  it("ignores a forged X-Forwarded-For prefix and keys on the real client", async () => {
+    const app = await server({ rateMax: 2 });
+    const spoof = (n: number) => ({
+      method: "GET" as const,
+      url: "/supported",
+      remoteAddress: "10.0.0.1", // Render's proxy
+      // Attacker varies the forged prefix every request; the proxy appends the
+      // real client (203.0.113.50) last.
+      headers: { "x-forwarded-for": `6.6.6.${n}, 203.0.113.50` },
+    });
+    await app.inject(spoof(1));
+    await app.inject(spoof(2));
+    // Same real client despite a different forged prefix → must be rate-limited.
+    const third = await app.inject(spoof(3));
+    expect(third.statusCode).toBe(429);
+  });
+
   it("never rate-limits /health (Render health check must not trip)", async () => {
     const app = await server({ rateMax: 1 });
     for (let i = 0; i < 10; i++) {

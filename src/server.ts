@@ -65,8 +65,16 @@ export async function buildServer(
   // type: web), so without trustProxy every request appears to come from the
   // proxy's IP and the per-IP rate limit collapses into a single shared bucket —
   // one noisy client 429s everyone and an IP-rotating attacker is never
-  // partitioned. trustProxy makes req.ip the real client from X-Forwarded-For.
-  const app = Fastify({ logger: true, bodyLimit, trustProxy: true });
+  // partitioned.
+  //
+  // Trust exactly ONE hop, never `true`. X-Forwarded-For is client-writable and
+  // Render's proxy APPENDS the true client after whatever the client sent, so
+  // `true` would take the attacker-controlled leftmost entry — letting anyone
+  // mint a fresh rate-limit bucket per request and evade the limit entirely
+  // (strictly worse than the shared-bucket bug). Trusting one hop makes the
+  // address Render's proxy actually observed authoritative. Raise this number
+  // only if you add more trusted proxies in front of the service.
+  const app = Fastify({ logger: true, bodyLimit, trustProxy: 1 });
   registerBazaar(facilitator, catalog);
 
   // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
