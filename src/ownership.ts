@@ -57,13 +57,17 @@ export interface VettedAddress {
  */
 export const defaultFetch = undiciFetch as unknown as typeof fetch;
 
-/** Exported for tests: builds the IP-pinning dispatcher. */
-export function pinnedDispatcher(vetted: VettedAddress): Agent {
+/**
+ * The DNS lookup that pins a connection to the guard-vetted address. Extracted
+ * and exported so it can be tested as a unit: asserting a decorative label on
+ * the dispatcher did NOT detect a mutation that pinned every request to
+ * 127.0.0.1, which inverts the SSRF guard entirely.
+ */
+export function pinnedLookup(vetted: VettedAddress) {
   const family = vetted.family === 6 ? 6 : 4;
-  // Node calls the lookup with all:true (expects an array) or all:false/absent
-  // (expects address+family). Handle both so the pin holds either way. Cast at
-  // the boundary: undici's LookupFunction overloads don't model both shapes.
-  const lookup = (
+  // Node calls this with all:true (expects an array) or all:false/absent
+  // (expects address+family). Handle both so the pin holds either way.
+  return (
     _hostname: string,
     options: { all?: boolean },
     callback: (
@@ -78,9 +82,13 @@ export function pinnedDispatcher(vetted: VettedAddress): Agent {
     }
     callback(null, vetted.address, family);
   };
+}
+
+/** Exported for tests: builds the IP-pinning dispatcher. */
+export function pinnedDispatcher(vetted: VettedAddress): Agent {
   // Single cast at the undici boundary: its LookupFunction type models only one
   // of the two callback shapes Node actually uses.
-  return new Agent({ connect: { lookup } } as unknown as ConstructorParameters<typeof Agent>[0]);
+  return new Agent({ connect: { lookup: pinnedLookup(vetted) } } as unknown as ConstructorParameters<typeof Agent>[0]);
 }
 
 export interface VerifyOptions {
@@ -141,7 +149,7 @@ export async function verifyResourceOwnership(
   // opened. Mixing them made every verification throw and degrade to
   // "unverifiable" — silently disabling the entire Layer 2 control. Dispatcher
   // and fetch must come from the same undici copy.
-  const fetchFn = opts.fetchFn ?? (undiciFetch as unknown as typeof fetch);
+  const fetchFn = opts.fetchFn ?? defaultFetch;
   const lookupFn = opts.lookupFn ?? defaultLookup;
   const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;

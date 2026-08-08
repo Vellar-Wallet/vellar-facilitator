@@ -370,6 +370,8 @@ export class BazaarCatalog {
     const extensions = sanitizeExtensions(discovered.extensions);
     const mimeType = sanitizeShortText(discovered.mimeType, MAX_MIME_TYPE_LEN);
     const iconUrl = sanitizeIconUrl(discovered.iconUrl);
+    const serviceName = sanitizeShortText(discovered.serviceName, MAX_SERVICE_NAME_LEN);
+    const tags = sanitizeTags(discovered.tags);
     const entry: DiscoveryResource = {
       resource: discovered.resourceUrl,
       type: discovered.discoveryInfo.input.type,
@@ -378,8 +380,8 @@ export class BazaarCatalog {
       lastUpdated: new Date().toISOString(),
       ...(description !== undefined ? { description } : {}),
       ...(mimeType !== undefined ? { mimeType } : {}),
-      ...(discovered.serviceName !== undefined ? { serviceName: discovered.serviceName } : {}),
-      ...(discovered.tags !== undefined ? { tags: discovered.tags } : {}),
+      ...(serviceName !== undefined ? { serviceName } : {}),
+      ...(tags !== undefined ? { tags } : {}),
       ...(iconUrl !== undefined ? { iconUrl } : {}),
       ...(extensions !== undefined ? { extensions } : {}),
     };

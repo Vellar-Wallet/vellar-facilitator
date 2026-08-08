@@ -6,6 +6,7 @@ import {
   assertPublicHttpsUrl,
   isBlockedAddress,
   pinnedDispatcher,
+  pinnedLookup,
   defaultFetch,
 } from "./ownership.js";
 
@@ -178,6 +179,109 @@ describe("pinned dispatch actually works with the default fetch (D2 regression g
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+// The audit proved these mutations passed the whole suite. Each test below is
+// written to FAIL against its named mutation — that is the only property that
+// makes a regression guard worth anything.
+describe("mutation guards (audit: these all went undetected)", () => {
+  // MUTATION B: pin every request to 127.0.0.1, discarding the vetted address.
+  // Previously asserted only via a decorative `pinnedAddress` label.
+  it("the pinned lookup returns the VETTED address, not a constant", async () => {
+    const lookup = pinnedLookup({ address: "93.184.216.34", family: 4 });
+    // Both callback shapes Node uses must yield the vetted address. A mutation
+    // that hardcodes 127.0.0.1 (or ignores `vetted`) fails here.
+    const all = await new Promise<Array<{ address: string; family: number }>>((res) =>
+      lookup("evil.example", { all: true }, (_e: unknown, a: unknown) => res(a as Array<{ address: string; family: number }>)),
+    );
+    expect(all[0]!.address).toBe("93.184.216.34");
+
+    const single = await new Promise<string>((res) =>
+      lookup("evil.example", {}, (_e: unknown, a: unknown) => res(a as string)),
+    );
+    expect(single).toBe("93.184.216.34");
+
+    // And an IPv6 vetted address must pin as v6, not silently coerce to v4.
+    const v6 = pinnedLookup({ address: "2606:2800::1", family: 6 });
+    const got = await new Promise<Array<{ address: string; family: number }>>((res) =>
+      v6("evil.example", { all: true }, (_e: unknown, a: unknown) => res(a as Array<{ address: string; family: number }>)),
+    );
+    expect(got[0]).toEqual({ address: "2606:2800::1", family: 6 });
+  });
+
+  // MUTATION C: redirect:"manual" -> "follow".
+  it("passes redirect:manual to fetch", async () => {
+    const fetchFn = vi.fn(async () => ({
+      status: 402,
+      headers: { get: () => challengeHeader(["GLEGIT"]) },
+      body: null,
+      text: async () => "",
+    }) as unknown as Response);
+    await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+      fetchFn,
+      lookupFn: fakeLookup("93.184.216.34"),
+    });
+    const init = (fetchFn.mock.calls[0] as unknown as [string, { redirect?: string }])[1];
+    expect(init.redirect).toBe("manual");
+  });
+
+  // MUTATION AD: the abort callback emptied, so the timeout never fires.
+  it("actually aborts the fetch when the timeout elapses", async () => {
+    let sawAbort = false;
+    const fetchFn = vi.fn(
+      (_u: string, init: { signal?: AbortSignal }) =>
+        new Promise<Response>((_res, rej) => {
+          init?.signal?.addEventListener("abort", () => {
+            sawAbort = true;
+            rej(new Error("aborted"));
+          });
+        }),
+    );
+    const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+      fetchFn: fetchFn as unknown as typeof fetch,
+      lookupFn: fakeLookup("93.184.216.34"),
+      timeoutMs: 25,
+    });
+    expect(sawAbort, "the timeout must fire an abort, not just clear a timer").toBe(true);
+    expect(v).toBe("unverifiable");
+  });
+
+  // MUTATION AE: the header size cap deleted. The header must be a VALID,
+  // matching challenge — otherwise the verdict is "unverifiable" either way and
+  // the cap is not what the assertion measures.
+  it("rejects an oversized but otherwise VALID PAYMENT-REQUIRED header", async () => {
+    // Valid challenge padded past the cap with ignored filler.
+    const padded = Buffer.from(
+      JSON.stringify({ accepts: [{ payTo: "GLEGIT" }], pad: "x".repeat(4000) }),
+      "utf8",
+    ).toString("base64");
+    const fetchFn = vi.fn(async () => ({
+      status: 402,
+      headers: { get: () => padded },
+      body: null,
+      text: async () => "",
+    }) as unknown as Response);
+
+    // Same header, generous cap -> the challenge is honoured (proves it is valid).
+    const ok = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+      fetchFn, lookupFn: fakeLookup("93.184.216.34"), maxBytes: 1024 * 1024,
+    });
+    expect(ok, "control: the padded challenge is otherwise valid").toBe("match");
+
+    // Tight cap -> must be refused purely because of size.
+    const capped = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+      fetchFn, lookupFn: fakeLookup("93.184.216.34"), maxBytes: 1024,
+    });
+    expect(capped).toBe("unverifiable");
+  });
+
+  // MUTATION A: the module default swapped back to Node's global fetch, which is
+  // a different bundled undici and rejects our Agent before opening a socket —
+  // silently disabling Layer 2. defaultFetch is the single source of truth used
+  // by verifyResourceOwnership, so guarding the constant guards the behaviour.
+  it("does not default to Node's global fetch", () => {
+    expect(defaultFetch).not.toBe(globalThis.fetch);
   });
 });
 
