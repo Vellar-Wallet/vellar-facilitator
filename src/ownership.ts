@@ -258,6 +258,8 @@ function isBlockedIpv4(ip: string): boolean {
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
   if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local + metadata
   if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+  if (a >= 224) return true; // 224/4 multicast, 240/4 reserved, 255.255.255.255
+  if (a === 192 && b === 0 && parts[2] === 0) return true; // 192.0.0.0/24 IETF
   return false;
 }
 
@@ -283,6 +285,21 @@ function isBlockedIpv6(ip: string): boolean {
 
   // Unique-local fc00::/7 (fc00–fdff).
   if ((bytes[0]! & 0xfe) === 0xfc) return true;
+
+  // Standard IPv4-in-IPv6 transition prefixes all carry a routable IPv4 that a
+  // gateway will translate to, so each must be decoded and range-checked:
+  //   NAT64/DNS64  64:ff9b::/96      (and 64:ff9b:1::/48 local-use)
+  //   6to4         2002::/16         (IPv4 in bytes 2..5)
+  //   IPv4-translated ::ffff:0:0/96  (bytes 8..9 == 0xffff)
+  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b) {
+    return isBlockedIpv4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
+  }
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) {
+    return isBlockedIpv4(`${bytes[2]}.${bytes[3]}.${bytes[4]}.${bytes[5]}`);
+  }
+  if (bytes.slice(0, 8).every((b) => b === 0) && bytes[8] === 0xff && bytes[9] === 0xff) {
+    return isBlockedIpv4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
+  }
 
   // IPv4-mapped ::ffff:a.b.c.d  → bytes 10,11 == 0xff, first 10 zero.
   const mappedPrefix = bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff;

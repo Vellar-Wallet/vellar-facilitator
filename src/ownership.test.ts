@@ -70,6 +70,32 @@ describe("assertPublicHttpsUrl — SSRF guard", () => {
   it("still allows a genuine public IPv6 (2606:2800::1)", () => {
     expect(isBlockedAddress("2606:2800::1")).toBe(false);
   });
+
+  // Re-audit: standard IPv4-in-IPv6 transition prefixes carry a routable private
+  // IPv4. Behind a NAT64/DNS64 gateway (an ordinary cloud setup) the gateway
+  // translates these to the embedded address, tunnelling into RFC1918 space.
+  it("blocks NAT64-embedded private IPv4 (64:ff9b::/96)", () => {
+    expect(isBlockedAddress("64:ff9b::a00:1")).toBe(true); // 10.0.0.1
+    expect(isBlockedAddress("64:ff9b::c0a8:1")).toBe(true); // 192.168.0.1
+  });
+  it("blocks 6to4-embedded private IPv4 (2002::/16)", () => {
+    expect(isBlockedAddress("2002:0a00:0001::")).toBe(true); // 10.0.0.1
+  });
+  it("blocks IPv4-translated private IPv4 (::ffff:0:0/96)", () => {
+    expect(isBlockedAddress("::ffff:0:a00:1")).toBe(true); // 10.0.0.1
+  });
+  it("still allows 6to4 wrapping a PUBLIC IPv4", () => {
+    expect(isBlockedAddress("2002:5db8:0001::")).toBe(false); // 93.184.x
+  });
+
+  // Re-audit: multicast, reserved Class E, limited broadcast and IETF-protocol
+  // space were treated as public, directly and via the mapped path.
+  it("blocks multicast, reserved, broadcast and IETF-protocol IPv4", () => {
+    expect(isBlockedAddress("224.0.0.1")).toBe(true); // multicast
+    expect(isBlockedAddress("240.0.0.1")).toBe(true); // reserved class E
+    expect(isBlockedAddress("255.255.255.255")).toBe(true); // limited broadcast
+    expect(isBlockedAddress("192.0.0.1")).toBe(true); // IETF protocol assignments
+  });
   it("rejects a URL whose literal host is a mapped loopback", async () => {
     await expect(assertPublicHttpsUrl("https://[::ffff:7f00:1]/x", fakeLookup("93.184.216.34"))).rejects.toThrow(
       /private|loopback|blocked/i,
