@@ -30,7 +30,31 @@ services:
       - key: MAX_TX_FEE_STROOPS
         value: "500000"
       # Bazaar catalog persistence (single-instance file store).
+      #
+      # NOTE: `plan: free` has NO persistent disk, so /var/data does NOT survive
+      # a restart or redeploy. This path therefore implies a durability that
+      # does not currently exist: the catalog is effectively in-memory and
+      # re-populates from the next settled payment. That is the documented
+      # free-tier behaviour, not a fault.
+      #
+      # BEFORE ATTACHING A DISK, read this. Once the files DO persist, the first
+      # boot after upgrading finds a catalog file with no companion
+      # `<CATALOG_FILE>.ownership` store — indistinguishable from an attacker
+      # deleting it — so the catalog FAILS CLOSED: it comes up healthy, serves
+      # settlements, and returns an EMPTY discovery catalog, signalled only by
+      # `catalogFrozen: "ownership-unreadable"` on /health.
+      #
+      # To migrate an existing catalog once, set CATALOG_OWNERSHIP_BOOTSTRAP=1 in
+      # the Render dashboard for a single boot, then REMOVE it. It is
+      # deliberately not declared here: it derives ownership from a file an
+      # attacker could have written, and it disables the fail-closed protection
+      # while set. It warns loudly on every boot.
       - key: CATALOG_FILE
         value: "/var/data/bazaar-catalog.json"
+      # Deliberately NOT set: VERIFICATION_API_URL. Unset, every trust verdict
+      # degrades to "unknown", which is the honest default. Configuring it makes
+      # that API a trust root, and its response still carries no per-record
+      # timestamp (so "newest" falls back to array order) and is unauthenticated.
+      # See docs/security-audit.md (F4) for the precondition before enabling.
       - key: SPONSOR_SECRET_KEY
         sync: false

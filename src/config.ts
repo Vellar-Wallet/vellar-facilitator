@@ -21,6 +21,13 @@ export interface FacilitatorConfig {
     /** Global spend window in ms (default 60_000). */
     windowMs: number;
   };
+  /**
+   * ESCAPE HATCH (F3). Permits deriving ownership bindings from an existing
+   * catalog file when the companion ownership store is absent — the state a
+   * first upgrade produces, and equally the state a tamperer produces. Off by
+   * default; must be set deliberately and removed once the upgrade is done.
+   */
+  catalogOwnershipBootstrap: boolean;
   /** Fix 3 sponsor balance guard floors, in stroops. */
   balance: {
     /** Warn below this (default 10 XLM). */
@@ -92,8 +99,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     );
   }
 
+  // Announce the escape hatch on EVERY boot while it is set, not only when it
+  // is exercised. A quiet flag that silently downgrades a security control is
+  // how "temporary" becomes permanent.
+  const catalogOwnershipBootstrap = /^(1|true)$/i.test(env.CATALOG_OWNERSHIP_BOOTSTRAP ?? "");
+  if (catalogOwnershipBootstrap) {
+    console.warn(
+      "[config] CATALOG_OWNERSHIP_BOOTSTRAP is SET. On boot, if the catalog file exists without its " +
+        "companion ownership store, ownership bindings will be DERIVED FROM THAT CATALOG FILE. " +
+        "It grants no more trust than that file already had — if an attacker wrote the file, they " +
+        "choose the owners. This exists only to migrate a pre-existing catalog once; REMOVE IT " +
+        "immediately afterwards. While it is set, the fail-closed protection against a missing or " +
+        "deleted ownership store is DISABLED.",
+    );
+  }
+
   return {
     port: Number(env.PORT ?? 4100),
+    catalogOwnershipBootstrap,
     host: env.HOST ?? "0.0.0.0",
     network,
     rpcUrl: env.STELLAR_RPC_URL,
