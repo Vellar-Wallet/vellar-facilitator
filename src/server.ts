@@ -153,7 +153,22 @@ export async function buildServer(
     let reservation: number | undefined;
     if (policy) {
       const payToKey = policyBucketKey(paymentRequirements.payTo);
-      const verdict = policy.checkSettle(payToKey);
+      // F12: budget against the DURABLE ownership binding, not verifiedOwner —
+      // verifiedOwner is not persisted and resets on restart, so keying on it
+      // would drop every merchant into the shared unbound pool after a reboot.
+      // G-3: canonicalize to the catalog's own key (`origin + pathname`). The
+      // payload carries the RAW url, so without this a merchant on
+      // `/quote?symbol=AAPL` reads as unbound on every settle and lands in the
+      // shared unbound pool — and the per-URL budget could be multiplied by
+      // simply varying the query string.
+      const rawResourceUrl =
+        (paymentPayload as unknown as { resource?: { url?: string } }).resource?.url ?? "";
+      const resourceUrl = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
+      const verdict = policy.checkSettle({
+        resourceUrl,
+        payTo: payToKey,
+        bound: rawResourceUrl !== "" && catalog.isBound(resourceUrl, payToKey),
+      });
       reservation = verdict.reservation;
       if (!verdict.allowed) {
         request.log.warn(
@@ -301,6 +316,9 @@ if (isDirectRun) {
     spendCeilingStroops: config.spend.ceilingStroops,
     spendWindowMs: config.spend.windowMs,
     perSettleEstimateStroops: config.maxTransactionFeeStroops,
+    perUrlMax: config.spend.perUrlMax,
+    perPayToMax: config.spend.perPayToMax,
+    unboundPoolMax: config.spend.unboundPoolMax,
   });
   // Fix 3: sponsor balance guard. Derive the sponsor public key and poll its XLM
   // balance from Horizon. The first check is not awaited (startup is not blocked);

@@ -20,6 +20,13 @@ export interface FacilitatorConfig {
     ceilingStroops: number;
     /** Global spend window in ms (default 60_000). */
     windowMs: number;
+    /** F12: settles/window for one BOUND resource URL (default 10). */
+    perUrlMax: number;
+    /** F12: settles/window per payTo (default 100 = global; a ratchet that only
+     * starts binding if the global ceiling is later raised). */
+    perPayToMax: number;
+    /** F12: settles/window shared by ALL unbound URLs (default 10). */
+    unboundPoolMax: number;
   };
   /**
    * ESCAPE HATCH (F3). Permits deriving ownership bindings from an existing
@@ -76,8 +83,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     // so 1 XLM trips first. That is ~20 settles/minute globally across ALL
     // merchants — deliberately tight, and unreviewed against real pubnet
     // traffic. See docs/security-audit.md before raising STELLAR_NETWORK=pubnet.
-    ceilingStroops: positiveIntEnv(env.SPEND_CEILING_STROOPS, 10_000_000, "SPEND_CEILING_STROOPS"),
+    ceilingStroops: positiveIntEnv(env.SPEND_CEILING_STROOPS, 50_000_000, "SPEND_CEILING_STROOPS"),
     windowMs: positiveIntEnv(env.SPEND_WINDOW_MS, 60_000, "SPEND_WINDOW_MS"),
+    // F12 per-entity budgets. Keyed on the DURABLE F11 ownership binding, never
+    // on verifiedOwner (not persisted; resets on restart).
+    perUrlMax: positiveIntEnv(env.SETTLE_PER_URL_MAX, 10, "SETTLE_PER_URL_MAX"),
+    perPayToMax: positiveIntEnv(env.SETTLE_PER_PAYTO_MAX, 100, "SETTLE_PER_PAYTO_MAX"),
+    unboundPoolMax: positiveIntEnv(env.SETTLE_UNBOUND_POOL_MAX, 10, "SETTLE_UNBOUND_POOL_MAX"),
   };
 
   // Balance floors. INVARIANT: the hard floor must exceed the maximum XLM a
