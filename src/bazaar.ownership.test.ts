@@ -1,9 +1,12 @@
 import { x402Facilitator } from "@x402/core/facilitator";
 import type { PaymentPayload, PaymentRequirements, SchemeNetworkFacilitator } from "@x402/core/types";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { registerBazaar } from "./bazaar.js";
 import { BazaarCatalog } from "./catalog.js";
+import { verifyResourceOwnership } from "./ownership.js";
 
 // Fix 0 Layer 2 — the settlement hook triggers 402-challenge verification
 // asynchronously (fire-and-forget). Settlement must return immediately and must
@@ -46,6 +49,81 @@ function payloadWithDiscovery(): PaymentPayload {
     extensions,
   } as PaymentPayload;
 }
+
+// The binding itself, end to end: a REAL 402 server, the REAL verifier (no
+// injected verifyOwnership), through registerBazaar's settle hook, asserting the
+// catalog's ownership binding is actually populated. Everything F3's tombstones
+// preserve depends on this working — and the re-audit found it silently did not.
+describe("Layer 2 populates the ownership binding for real (no mocks)", () => {
+  it("sets verifiedOwner from a live 402 challenge", async () => {
+    const payTo = "GAN5MFH3GGAWH2UTO5DDOMDRQK6E32CE2GPAMPQT6KEHEPNHVBKJEF6A";
+    const challenge = Buffer.from(JSON.stringify({ accepts: [{ payTo }] }), "utf8").toString("base64");
+    const server = http.createServer((_q, res) => {
+      res.writeHead(402, { "PAYMENT-REQUIRED": challenge });
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    const url = `http://owner.test:${port}/quote`;
+
+    try {
+      const catalog = new BazaarCatalog();
+      const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
+      // Real verifier — only the transport relaxations and DNS are injected.
+      registerBazaar(facilitator, catalog, {
+        verifyOwnership: (resourceUrl, settledPayTo) =>
+          verifyResourceOwnership(resourceUrl, settledPayTo, {
+            lookupFn: async () => ({ address: "127.0.0.1", family: 4 }),
+            __insecureTestTransport: true,
+          }),
+      });
+
+      const payload = payloadWithDiscovery();
+      (payload as unknown as { resource: { url: string } }).resource.url = url;
+      await facilitator.settle(payload, requirements(payTo));
+      // Let the fire-and-forget verification complete.
+      await new Promise((r) => setTimeout(r, 150));
+
+      expect(catalog.size).toBe(1);
+      expect(catalog.isVerifiedOwner(url), "the binding must actually be populated").toBe(true);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("leaves the binding unset when the live challenge names a different payTo", async () => {
+    const challenge = Buffer.from(
+      JSON.stringify({ accepts: [{ payTo: "GSOMEONE_ELSE" }] }),
+      "utf8",
+    ).toString("base64");
+    const server = http.createServer((_q, res) => {
+      res.writeHead(402, { "PAYMENT-REQUIRED": challenge });
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    const url = `http://owner.test:${port}/quote`;
+
+    try {
+      const catalog = new BazaarCatalog();
+      const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
+      registerBazaar(facilitator, catalog, {
+        verifyOwnership: (resourceUrl, settledPayTo) =>
+          verifyResourceOwnership(resourceUrl, settledPayTo, {
+            lookupFn: async () => ({ address: "127.0.0.1", family: 4 }),
+            __insecureTestTransport: true,
+          }),
+      });
+      const payload = payloadWithDiscovery();
+      (payload as unknown as { resource: { url: string } }).resource.url = url;
+      await facilitator.settle(payload, requirements());
+      await new Promise((r) => setTimeout(r, 150));
+      expect(catalog.isVerifiedOwner(url)).toBe(false);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
 
 describe("registerBazaar — Layer 2 async ownership verification", () => {
   it("does not delay or fail settlement when the verifier hangs", async () => {

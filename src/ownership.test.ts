@@ -210,6 +210,72 @@ describe("Layer 2 end-to-end against a real server (no mocks)", () => {
     }
   });
 
+  // The guard rejections, asserted against a REAL server rather than a mock.
+  // These run WITHOUT __insecureTestTransport, so the guard is fully armed and
+  // must refuse before a socket is ever opened — proven by the server recording
+  // zero requests.
+  it("refuses http:// against a live server (https-only), without contacting it", async () => {
+    let hits = 0;
+    const s = await serve((_q, res) => {
+      hits++;
+      res.writeHead(402, { "PAYMENT-REQUIRED": "x" });
+      res.end();
+    });
+    try {
+      const v = await verifyResourceOwnership(`http://owner.test:${s.port}/quote`, "GOWNER", {
+        lookupFn: fakeLookup("93.184.216.34"),
+      });
+      expect(v).toBe("unverifiable");
+      expect(hits, "https-only must reject before any request").toBe(0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("refuses a DNS name that RESOLVES to a private address, without contacting it", async () => {
+    let hits = 0;
+    const s = await serve((_q, res) => {
+      hits++;
+      res.writeHead(402, { "PAYMENT-REQUIRED": "x" });
+      res.end();
+    });
+    try {
+      // https URL (passes the protocol check) whose hostname resolves to loopback.
+      // The block must happen AFTER resolution.
+      const v = await verifyResourceOwnership(`https://rebind.test:${s.port}/quote`, "GOWNER", {
+        lookupFn: fakeLookup("127.0.0.1"),
+      });
+      expect(v).toBe("unverifiable");
+      expect(hits, "post-resolution private block must prevent any request").toBe(0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("does not follow a real 302 into a private range — the target is never contacted", async () => {
+    let targetHits = 0;
+    const target = await serve((_q, res) => {
+      targetHits++;
+      res.writeHead(200);
+      res.end("INTERNAL");
+    });
+    const redirector = await serve((_q, res) => {
+      res.writeHead(302, { location: `http://127.0.0.1:${target.port}/` });
+      res.end();
+    });
+    try {
+      const v = await verifyResourceOwnership(`http://owner.test:${redirector.port}/quote`, "GOWNER", {
+        lookupFn: fakeLookup("127.0.0.1"),
+        __insecureTestTransport: true,
+      });
+      expect(v).toBe("unverifiable");
+      expect(targetHits, "the redirect target must never be contacted").toBe(0);
+    } finally {
+      await redirector.close();
+      await target.close();
+    }
+  });
+
   it("returns unverifiable for a real non-402 response", async () => {
     const s = await serve((_q, res) => {
       res.writeHead(200);
