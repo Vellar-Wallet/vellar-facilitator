@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { PaymentRequirements } from "@x402/core/types";
@@ -20,6 +20,50 @@ const MAX_LIMIT = 100;
  * persistence file; the count saturates at the cap. Declared here because both
  * the write path and the load-time schema enforce it. */
 const MAX_TRACKED_PAYERS = 10_000;
+
+// F3 — bounds. Entry count and per-entry accepts were unbounded, and every
+// settlement wrote the whole catalog synchronously (O(n) per settle, O(n^2) to
+// fill). Measured stringify cost alone: ~72ms at 10k entries, ~316ms at 50k.
+/** Max cataloged resources. LRU by lastUpdated beyond this. */
+const MAX_ENTRIES = 10_000;
+/** Max payment options stored per resource. */
+const MAX_ACCEPTS = 20;
+/** Max ownership tombstones. At this cap the catalog FREEZES new bindings
+ * rather than forgetting ownership — see `frozen`. */
+const MAX_TOMBSTONES = 100_000;
+/** Debounce window for the (reconstructible) entry file. Ownership is never
+ * debounced. */
+const PERSIST_DEBOUNCE_MS = 250;
+
+/** Companion ownership file path. Kept separate from the entry file so it can be
+ * flushed synchronously without rewriting all entries. */
+export function ownershipPathFor(catalogPath: string): string {
+  return `${catalogPath}.ownership`;
+}
+
+/** Atomic write: temp + fsync + rename. A torn ownership file is worse than a
+ * torn catalog — entries rebuild from settlements, ownership does not. */
+function writeFileAtomic(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, data);
+  const fd = openSync(tmp, "r+");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+}
+
+/** Ownership file shape: validated on load exactly like the catalog file, so a
+ * crafted file cannot inject a malformed or forged binding. NOTE: absence is
+ * indistinguishable from deletion, so a file-writer can still CLEAR a tombstone
+ * — see docs/security-audit.md (F6/RA-13). Forging is prevented; clearing is a
+ * documented accepted risk pending the HMAC/DB fix. */
+const ownershipFileSchema = z.array(
+  z.object({ resource: z.string().min(1), boundPayTo: z.array(z.string().min(1)).min(1) }),
+);
 
 // Fix 4 (F1) — description is the one discovery field extractDiscoveryInfo does
 // NOT bound (serviceName/tags/iconUrl/routeTemplate are sanitized upstream), and
@@ -289,9 +333,51 @@ export class BazaarCatalog {
   private readonly entries = new Map<string, StoredEntry>();
   private readonly persistPath: string | undefined;
 
-  constructor(persistPath?: string) {
+  /**
+   * F3 — ownership tombstones: `resourceUrl -> boundPayTo[]`, the record that
+   * survives an entry being evicted. Without this, evicting an entry to enforce
+   * the cap would DROP its ownership binding and reopen that URL to first-writer
+   * claim — turning cache pressure into a way to re-run the F11 hijack.
+   *
+   * Written when the binding is ESTABLISHED, not when the entry is evicted, so
+   * ownership is durable from the moment it exists rather than at the mercy of
+   * whether an eviction write completed.
+   */
+  private readonly ownership = new Map<string, string[]>();
+
+  /**
+   * F3 fail-closed state. Set when the ownership store is unusable (missing or
+   * unparseable while a catalog file loaded fine — the state a crafted file or a
+   * half-finished deploy produces) or when the tombstone cap is reached. While
+   * frozen, NO new URL may be bound; existing bindings keep working so
+   * settlement is unaffected. Refusing new entries is a visible availability
+   * problem; forgetting ownership is a silent security one.
+   */
+  private frozen: false | "ownership-unreadable" | "tombstone-cap" = false;
+
+  constructor(persistPath?: string, opts: { bootstrapOwnership?: boolean } = {}) {
     this.persistPath = persistPath;
-    if (persistPath) this.load(persistPath);
+    if (persistPath) {
+      // Ownership loads FIRST: if it is unusable we must not serve a catalog
+      // whose bindings are missing.
+      const ownershipOk = this.loadOwnership(ownershipPathFor(persistPath), opts.bootstrapOwnership === true);
+      if (!ownershipOk) {
+        this.frozen = "ownership-unreadable";
+        console.error(
+          `[catalog] ownership store at ${ownershipPathFor(persistPath)} is missing or unreadable — ` +
+            `refusing to load the catalog and freezing new bindings. An intact catalog with absent ` +
+            `ownership is exactly the state a tampered file produces; serving it would reopen every ` +
+            `URL to first-writer claim. Resolve the ownership file, then restart.`,
+        );
+        return; // catalog stays empty; frozen blocks new bindings
+      }
+      this.load(persistPath);
+    }
+  }
+
+  /** Whether new URL bindings are currently refused, and why (see /health). */
+  get catalogFrozen(): false | "ownership-unreadable" | "tombstone-cap" {
+    return this.frozen;
   }
 
   /** Number of cataloged resources. */
@@ -342,6 +428,17 @@ export class BazaarCatalog {
     const key = discovered.resourceUrl;
     const existing = this.entries.get(key);
 
+    // F3: an evicted entry leaves its ownership tombstone behind, so a URL that
+    // was cached out cannot be reclaimed by a different payTo. This is what stops
+    // cache pressure from becoming a way to re-run the F11 hijack.
+    const tomb = this.ownership.get(key);
+    if (!existing && tomb && !tomb.includes(requirements.payTo)) {
+      console.warn(
+        `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} does not match the ` +
+          `ownership tombstone (${tomb.join(", ")}) — evicted-entry reclaim refused (F3/F11)`,
+      );
+      return false;
+    }
     if (existing && !existing.boundPayTo.includes(requirements.payTo)) {
       // Unbound payTo for an already-established URL: reject the whole write.
       // Do not append accepts, do not overwrite metadata, do not touch stats.
@@ -373,7 +470,11 @@ export class BazaarCatalog {
     // Store only the known payment-requirement fields. `requirements` is the
     // client-supplied /settle body, so pushing it whole would carry arbitrary
     // attacker-named keys into the catalog and out to agents.
-    if (!seen) accepts.push(pickAcceptFields(requirements));
+    if (!seen && accepts.length >= MAX_ACCEPTS) {
+      console.warn(`[catalog] ${key}: accepts cap (${MAX_ACCEPTS}) reached — new payment option dropped`);
+    } else if (!seen) {
+      accepts.push(pickAcceptFields(requirements));
+    }
 
     // Fix 4: ONE funnel for both doors. Rather than re-implement the sanitizers
     // inline (which drifted from the load path three times — mimeType, then
@@ -404,13 +505,21 @@ export class BazaarCatalog {
 
     // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
     const isFirstCatalog = existing === undefined;
-    const boundPayTo = existing ? existing.boundPayTo : [requirements.payTo];
+    if (isFirstCatalog) {
+      // Ownership is recorded when the binding is ESTABLISHED (not at eviction),
+      // so it is durable from the moment it exists. Refused when frozen.
+      if (this.frozen === "ownership-unreadable" || !this.bindOwnership(key, requirements.payTo)) {
+        return false;
+      }
+    }
+    const boundPayTo = existing ? existing.boundPayTo : (this.ownership.get(key) ?? [requirements.payTo]);
     this.entries.set(key, {
       resource: entry,
       stats: existing?.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo,
       verifiedOwner: existing?.verifiedOwner ?? false,
     });
+    this.evictToCap();
     this.save();
     return isFirstCatalog;
   }
@@ -576,21 +685,133 @@ export class BazaarCatalog {
           `${stored.resource.resource} with a payTo other than the bound owner ${ownerPayTo} (F11)`,
       );
     }
+    // Ownership tombstone wins over whatever the entry file claims; only seed it
+    // when there is none (first upgrade / bootstrap).
+    const authoritative = this.ownership.get(stored.resource.resource);
+    if (!authoritative) this.ownership.set(stored.resource.resource, [ownerPayTo]);
     return {
       resource: { ...stored.resource, accepts: kept },
       stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
-      boundPayTo: [ownerPayTo],
+      boundPayTo: authoritative ?? [ownerPayTo],
       // Never trust a stored verified flag — a crafted file could forge it.
       // Layer 2 re-verifies from the resource on the next settlement.
       verifiedOwner: false,
     };
   }
 
-  private save(): void {
+  /**
+   * Load the ownership store. Returns false when it is missing or unparseable,
+   * which the constructor treats as fail-closed. Validated by its own schema so
+   * a crafted file cannot inject a malformed binding.
+   */
+  private loadOwnership(path: string, bootstrap: boolean): boolean {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      // Missing or unreadable. A brand-new deployment has no ownership file yet
+      // AND no catalog file; that is the only benign case, handled by the caller
+      // seeing no catalog file either.
+      try {
+        readFileSync(this.persistPath!, "utf8");
+      } catch {
+        return true; // neither file exists: a genuinely fresh start
+      }
+      // A catalog file with NO ownership file is ambiguous: it is either a
+      // first upgrade from a version that had no ownership store, or an attacker
+      // (or half-finished deploy) removing it. These are indistinguishable, so
+      // the default is fail-closed and the migration must be opted into
+      // explicitly — never inferred.
+      if (!bootstrap) return false;
+      console.warn(
+        "[catalog] bootstrapping the ownership store from the existing catalog file " +
+          "(CATALOG_OWNERSHIP_BOOTSTRAP). Do this ONCE on upgrade. It derives bindings from a file " +
+          "an attacker could have written, so it grants no more trust than that file already had.",
+      );
+      return true; // bindings get derived per-entry in bindLoadedEntry
+    }
+    const parsed = ownershipFileSchema.safeParse(raw);
+    if (!parsed.success) return false;
+    for (const row of parsed.data) this.ownership.set(row.resource, row.boundPayTo);
+    return true;
+  }
+
+  /**
+   * Persist ownership SYNCHRONOUSLY and atomically. Never debounced: entries are
+   * reconstructible from settlement traffic, ownership is not — losing a
+   * tombstone silently reopens that URL to first-writer claim, which is the
+   * vulnerability F11 closed.
+   */
+  private saveOwnership(): void {
     if (!this.persistPath) return;
     try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      writeFileSync(this.persistPath, JSON.stringify([...this.entries.values()], null, 2));
+      const rows = [...this.ownership.entries()].map(([resource, boundPayTo]) => ({
+        resource,
+        boundPayTo,
+      }));
+      writeFileAtomic(ownershipPathFor(this.persistPath), JSON.stringify(rows));
+    } catch (err) {
+      console.error("[catalog] ownership persist FAILED — bindings are at risk:", err);
+    }
+  }
+
+  /** Record ownership for a URL. Returns false when frozen (cap reached), which
+   * refuses the binding rather than silently forgetting an older one. */
+  private bindOwnership(resourceUrl: string, payTo: string): boolean {
+    if (this.ownership.has(resourceUrl)) return true; // already bound
+    if (this.ownership.size >= MAX_TOMBSTONES) {
+      if (this.frozen !== "tombstone-cap") {
+        this.frozen = "tombstone-cap";
+      }
+      // Warn on EVERY rejection, not just the transition: an operator reading
+      // logs a week later must see this is still happening.
+      console.warn(
+        `[catalog] tombstone cap (${MAX_TOMBSTONES}) reached — REFUSING new binding for ${resourceUrl}. ` +
+          `Existing bindings still work and settlement is unaffected. Forgetting ownership would be a ` +
+          `silent security regression, so new URLs are refused instead.`,
+      );
+      return false;
+    }
+    this.ownership.set(resourceUrl, [payTo]);
+    this.saveOwnership();
+    return true;
+  }
+
+  /** Evict least-recently-updated entries down to MAX_ENTRIES. Ownership is NOT
+   * dropped — the tombstone outlives the entry, so an evicted URL cannot be
+   * reclaimed by a different payTo. */
+  private evictToCap(): void {
+    if (this.entries.size <= MAX_ENTRIES) return;
+    const byAge = [...this.entries.entries()].sort((a, b) =>
+      a[1].resource.lastUpdated.localeCompare(b[1].resource.lastUpdated),
+    );
+    let toDrop = this.entries.size - MAX_ENTRIES;
+    for (const [key] of byAge) {
+      if (toDrop-- <= 0) break;
+      this.entries.delete(key);
+    }
+  }
+
+  private saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Debounced, atomic entry persistence. Entries are reconstructible from
+   * settlement traffic, so coalescing writes is safe; ownership is written
+   * separately and synchronously. */
+  private save(): void {
+    if (!this.persistPath) return;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      this.flush();
+    }, PERSIST_DEBOUNCE_MS);
+    this.saveTimer.unref?.();
+  }
+
+  /** Write entries now (also used by tests and shutdown). */
+  flush(): void {
+    if (!this.persistPath) return;
+    try {
+      writeFileAtomic(this.persistPath, JSON.stringify([...this.entries.values()], null, 2));
     } catch (err) {
       // Persistence is best-effort; the in-memory catalog stays authoritative.
       console.error("[catalog] persist failed:", err);

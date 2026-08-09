@@ -91,7 +91,13 @@ export async function buildServer(
     allowList: (req) => req.url === "/health",
   });
 
-  app.get("/health", async () => ({ status: "ok", service: "vellar-facilitator" }));
+  app.get("/health", async () => ({
+    status: "ok",
+    service: "vellar-facilitator",
+    // F3: surfaced so an operator sees a frozen catalog rather than wondering
+    // why discovery stopped growing. Settlement is unaffected while frozen.
+    ...(catalog.catalogFrozen ? { catalogFrozen: catalog.catalogFrozen } : {}),
+  }));
 
   app.get("/supported", async () => facilitator.getSupported());
 

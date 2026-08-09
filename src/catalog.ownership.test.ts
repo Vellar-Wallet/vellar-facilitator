@@ -131,7 +131,7 @@ describe("Fix 0 Layer 1 — TOFU enforcement at load() (CATALOG_FILE cannot bypa
         stats: { settlements: 999, payers: ["GPAYER1"] },
       },
     ]);
-    const cat = new BazaarCatalog(path);
+    const cat = new BazaarCatalog(path, { bootstrapOwnership: true });
     const item = cat.list().items[0];
     // The entry binds to the FIRST accepts payTo; the conflicting attacker
     // option is dropped, not served.

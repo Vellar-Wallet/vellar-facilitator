@@ -64,9 +64,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
   const spend = {
     rateMax: positiveIntEnv(env.SETTLE_RATE_MAX, 30, "SETTLE_RATE_MAX"),
     rateWindowMs: positiveIntEnv(env.SETTLE_RATE_WINDOW_MS, 60_000, "SETTLE_RATE_WINDOW_MS"),
-    // 5 XLM = 50,000,000 stroops. NOTE (Fix 1): review before pubnet — chosen
-    // as a conservative default, not derived from measured live spend.
-    ceilingStroops: positiveIntEnv(env.SPEND_CEILING_STROOPS, 50_000_000, "SPEND_CEILING_STROOPS"),
+    // 1 XLM = 10,000,000 stroops per window. Chosen so the GLOBAL ceiling binds
+    // before the per-payTo rate limit: 30 settles x 500,000 stroops = 1.5 XLM,
+    // so 1 XLM trips first. That is ~20 settles/minute globally across ALL
+    // merchants — deliberately tight, and unreviewed against real pubnet
+    // traffic. See docs/security-audit.md before raising STELLAR_NETWORK=pubnet.
+    ceilingStroops: positiveIntEnv(env.SPEND_CEILING_STROOPS, 10_000_000, "SPEND_CEILING_STROOPS"),
     windowMs: positiveIntEnv(env.SPEND_WINDOW_MS, 60_000, "SPEND_WINDOW_MS"),
   };
 

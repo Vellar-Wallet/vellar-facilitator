@@ -51,7 +51,7 @@ describe("loadConfig", () => {
     expect(def.spend).toEqual({
       rateMax: 30,
       rateWindowMs: 60_000,
-      ceilingStroops: 50_000_000,
+      ceilingStroops: 10_000_000,
       windowMs: 60_000,
     });
     const over = loadConfig({

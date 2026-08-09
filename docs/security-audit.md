@@ -135,9 +135,43 @@ lockfile-only `npm audit fix` — no `package.json` ranges changed. CI added
 reports non-blocking so a fresh upstream advisory cannot red the pipeline without
 a code change.
 
-### F3 — Catalog resource exhaustion and non-atomic persistence — **High** — **OPEN**
+### Accepted risk: a crafted `CATALOG_FILE` can CLEAR an ownership tombstone
 
-**The only finding unfixed on any branch.**
+Filed under F6/RA-13 because it is the same trust boundary.
+
+F3 moves ownership bindings into a companion file (`${CATALOG_FILE}.ownership`),
+validated by its own zod schema on load. That makes a binding **impossible to
+forge**: a malformed or invented row is rejected, and `verifiedOwner` is never
+read from disk at all — it is re-derived from the resource's own 402 challenge.
+
+It does **not** make a binding impossible to **clear**. Absence is
+indistinguishable from deletion: the loader cannot detect a row that is not
+there. Mitigations in place:
+
+- Deleting the ownership file while a catalog file remains is detected as a
+  disagreement and **fails closed** — the catalog refuses to load and new
+  bindings are refused (`catalogFrozen: "ownership-unreadable"`, surfaced on
+  `/health`). An attacker cannot quietly produce "intact catalog, no ownership".
+- Deleting **both** files degrades to a fresh start: the pre-F11 first-writer
+  race for those URLs, with an empty catalog as the visible signal.
+
+**Named future fix**, in preference order:
+
+1. **HMAC the persisted files with a key held only in the environment** (never on
+   disk). Any edit — including deletion of a row — invalidates the MAC, so an
+   attacker with filesystem-but-not-environment access can no longer tamper
+   undetected. Small change; the realistic threats (shared volume, restored
+   backup, compromised sidecar, path traversal in another service) all touch the
+   disk without seeing the environment.
+2. **The DB-backed catalog** (milestone 1), which removes the single
+   hand-editable file entirely.
+
+Until one of those lands, treat `CATALOG_FILE` and its companion as
+integrity-sensitive: dedicated volume, `0600`, no shared mounts.
+
+### F3 — Catalog resource exhaustion and non-atomic persistence — **High** — closed-by-test
+
+Was the only finding unfixed on any branch; closed by the ownership-tombstone design below.
 
 - `save()` (`src/catalog.ts`) is a direct `writeFileSync` with no temp+rename, so
   a crash mid-write leaves a truncated file. `load()` fails safe (starts empty),
@@ -147,8 +181,29 @@ a code change.
   loop. Measured `JSON.stringify` cost alone: ~72 ms at 10k entries, ~316 ms at
   50k, ~1.1 s at 100k — before the synchronous disk write.
 
-Interacts with F11: evicting an entry to enforce a cap also drops its ownership
-binding, reopening that URL to first-writer claim. Any cap must address this.
+**Resolution.** Atomic `save()` (temp + `fsync` + `rename`) for both files; caps
+of 10,000 entries (LRU by `lastUpdated`) and 20 `accepts` per entry; debounced
+entry persistence.
+
+The F11 interaction — evicting an entry drops its ownership binding, so cache
+pressure becomes a way to re-run the hijack — is handled by **ownership
+tombstones**: `resourceUrl -> boundPayTo` recorded when the binding is
+ESTABLISHED (not at eviction, so it is durable from the moment it exists), kept
+in a companion file written **synchronously and never debounced**. Entries are
+reconstructible from settlement traffic; ownership is not, so the two have
+deliberately different durability. Re-cataloging an evicted URL must match its
+tombstone.
+
+At the tombstone cap (100,000) the catalog **fails closed**: new URL bindings are
+refused (`catalogFrozen: "tombstone-cap"`, on `/health`, warned on every
+rejection — not just the transition) rather than evicting tombstones. Refusing
+new entries is a visible availability problem; forgetting ownership is a silent
+security one. Existing bindings and settlement are unaffected.
+
+Proven by test with the **real** verifier against a **real** 402 server: a URL is
+bound, flooded out of the catalog, and reclaim by a different `payTo` is refused.
+Each control mutation-verified (removing the tombstone check, never persisting
+ownership, removing fail-closed, disabling the entry cap all fail the suite).
 
 ### F5 — Settle/confirm reconciliation — **Medium** — deferred
 
@@ -327,6 +382,21 @@ not decoded. Requires a NAT64 gateway configured with a local-use prefix — not
 the current deployment.
 
 ---
+
+## Policy values — UNREVIEWED against real traffic
+
+Every value below is a **placeholder**, chosen from reasoning rather than
+production data. They are **log-only on testnet and enforced on pubnet**, so they
+first bite whenever someone sets `STELLAR_NETWORK=pubnet`. Revisit before that.
+
+| Value | Default | Reasoning |
+| --- | --- | --- |
+| `MAX_TX_FEE_STROOPS` | **500,000** | The one value that IS measured. Worst real settlement observed on-chain: 127,808 stroops (a stacked double-policy smart-account payment). 500k is ~3.9x that and 2.5x the documented 200k floor, cutting worst-case drain per settle from 0.2 to 0.05 XLM. |
+| `SPEND_CEILING_STROOPS` | **1 XLM / 60s** | Sized so the GLOBAL ceiling binds before the per-payTo rate limit: 30 settles x 500,000 = 1.5 XLM, so 1 XLM trips first. **This is ~20 settlements/minute across ALL merchants — deliberately tight.** Raise it if legitimate pubnet traffic exceeds that; it will throttle honest load before it throttles an attacker with many addresses. |
+| `SETTLE_RATE_MAX` | **30 / 60s per payTo** | A convenience throttle only. An attacker with several addresses rotates them for a fresh bucket each, so size the global ceiling as if this did not exist (RA-6/D6). |
+| `SPONSOR_SOFT/HARD_FLOOR` | **25 / 10 XLM** | The hard floor MUST exceed one spend window's ceiling, or a stale balance read (up to one interval old) can be drained straight through it. `loadConfig` warns at startup if that invariant is broken. |
+| Per-IP rate limit | **60 / min** | `/health` exempt so the Render health check cannot trip. Keyed via `trustProxy: 1` — exactly one hop, because `true` is client-spoofable (RA-4). |
+| Body limit | **32 KiB** | Derived, not picked: largest real settlement envelope measured on-chain is 3,400 base64 chars (~2.5 KB), giving ~9.6x margin. |
 
 ## Still open
 
