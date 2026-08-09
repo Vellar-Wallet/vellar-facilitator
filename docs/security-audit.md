@@ -398,6 +398,19 @@ first bite whenever someone sets `STELLAR_NETWORK=pubnet`. Revisit before that.
 | Per-IP rate limit | **60 / min** | `/health` exempt so the Render health check cannot trip. Keyed via `trustProxy: 1` — exactly one hop, because `true` is client-spoofable (RA-4). |
 | Body limit | **32 KiB** | Derived, not picked: largest real settlement envelope measured on-chain is 3,400 base64 chars (~2.5 KB), giving ~9.6x margin. |
 
+### Operational lesson: secrets in `argv`
+
+During the F11 reproduction, throwaway secrets were passed as command-line
+arguments. Command lines are not private: they land in shell history, in `ps`
+output visible to other users on the host, and — as happened here — in harness
+and tooling logs written to world-readable `/tmp`. A key that was only ever meant
+to exist for one test run persisted in three places afterwards.
+
+Repro and operational scripts must read keys from a file with restrictive
+permissions, or from stdin — never `argv`, and never interpolated into a shell
+command. This applies to disposable testnet keys too: the habit is what
+generalises, and the cost of getting it right is zero.
+
 ## Deployment posture — deliberate choices, not oversights
 
 ### `VERIFICATION_API_URL` is deliberately UNCONFIGURED
@@ -441,7 +454,7 @@ change.
 
 | ID | Finding | Why |
 | --- | --- | --- |
-| **F12** | Spend accounting is global while rate limiting is per-IP — neither stops a distributed attacker | **open — first pubnet blocker.** See below. |
+| **F12** | Spend accounting was global while rate limiting was per-IP | **closed-by-test** — per-entity budgets keyed off the F11 bindings. See the control-scope table below for what this does and does not achieve. |
 | **F3** | Non-atomic `save()`, unbounded entries/`accepts` | Not fixed on any branch. Interacts with F11 — eviction drops ownership bindings. |
 | **F4-ts** | Verification API has no per-record timestamp | **external** — needs the API to emit one; consumer side is already forward-compatible. |
 | **F10-op** | `examples/.env.recording` holds a live testnet `AGENT_SECRET` | Operational; needs rotation and scrub. |
@@ -479,6 +492,38 @@ was written; they do now, and they are exactly the stable identity the accountin
 needs — an attacker cannot rotate `payTo` under a bound URL, which was the reason
 per-payTo throttling was dismissed as a convenience-only control (RA-6/D6). A
 bound URL is a much harder identity to multiply than an address or an IP.
+
+### What each control actually does — and what none of them do
+
+Written plainly because four tuned numbers can look like a defence they are not.
+
+| Control | What it actually provides | What it does NOT provide |
+| --- | --- | --- |
+| **F12 per-entity budgets** | **Fairness between merchants.** One operator can no longer starve another, and a refused honest merchant is now a bug rather than the design. | It does not cap a *funded* attacker. Ten bound URLs at 10/min each is 100/min — the whole global ceiling — while every per-entity budget reads green. |
+| **F11 ownership binding** | **The price of claiming an identity.** A URL cannot be budgeted until it is bound, and binding requires serving a matching 402 challenge from that origin. | The price is **one-time and low** — see below. It is a speed bump, not an economic barrier. |
+| **Balance guard** | **The sponsor's actual protection.** Refuses `/settle` below the hard floor regardless of how many identities an attacker holds. | It is a *floor*, not a rate limit: it stops the bleeding at the end, it does not slow the attack. |
+
+**None of the three is a rate limit against a funded attacker.** They are, in
+order: a fairness mechanism, a one-time identity cost, and a last-resort floor.
+
+**Quantifying the F11 price**, since the whole design leans on it:
+
+- **Verification runs only at first bind** (`src/bazaar.ts`, `if (firstCatalog)`).
+  It never re-runs. The endpoint can be taken down the moment the bind completes.
+- **A canonical URL is `origin + pathname`**, so ten *paths* on **one** domain are
+  ten distinct bindable URLs — one host, one certificate.
+- Each distinct `payTo` costs a Stellar account minimum plus a trustline (~1.5
+  XLM on pubnet), and that is **locked reserve, recoverable**, not spend.
+
+So ten bound URLs cost roughly: one free static host serving ten 402 responses
+for a few minutes, plus ~15 XLM of recoverable reserve. That is the real barrier.
+It is not nothing — it is far less than "each URL needs a live endpoint" implies,
+and it should not be mistaken for rate limiting.
+
+**Implication for the numbers:** raising the global ceiling improves honest
+throughput and costs an attacker nothing, because they were never constrained by
+it. Lowering it hurts honest merchants first. The ceiling is therefore a
+sponsor-exposure dial, not a security control — the balance guard is the control.
 
 **Sequencing: this is the first pubnet blocker after merge, ahead of the
 threshold review.** Reviewing the numbers before fixing the shape would produce a

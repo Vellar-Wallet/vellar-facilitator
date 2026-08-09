@@ -16,6 +16,9 @@ const cfg = {
   spendCeilingStroops: 600, // 3 settles * 200 estimate = 600 exactly at ceiling
   spendWindowMs: 1000,
   perSettleEstimateStroops: 200,
+  perUrlMax: 1000,
+  perPayToMax: 1000,
+  unboundPoolMax: 1000,
 };
 
 function nowFn() {

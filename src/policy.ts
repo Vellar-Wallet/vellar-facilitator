@@ -30,7 +30,25 @@
 // ceiling), which OVER-counts and thus fails safe — the ceiling bites earlier,
 // never later, than true spend.
 
-export type SettleRejectReason = "rate_limited_payto" | "spend_ceiling";
+export type SettleRejectReason =
+  | "rate_limited_payto"
+  | "spend_ceiling"
+  | "rate_limited_url"
+  | "unbound_pool_exhausted";
+
+/** F12 — the identity a settle is budgeted against. `bound` means the resource
+ * URL has a durable ownership binding (F11 tombstone); `unbound` means it does
+ * not yet. Deliberately keyed on the BINDING, not on verifiedOwner: the latter
+ * is not persisted and resets on every restart, so using it would collapse every
+ * merchant into the shared unbound pool after a restart. */
+export interface SettleIdentity {
+  /** Canonical resource URL. */
+  resourceUrl: string;
+  /** Payment recipient. */
+  payTo: string;
+  /** Whether resourceUrl carries a durable ownership binding. */
+  bound: boolean;
+}
 
 export interface SpendPolicyConfig {
   network: "stellar:testnet" | "stellar:pubnet";
@@ -44,6 +62,15 @@ export interface SpendPolicyConfig {
   spendWindowMs: number;
   /** Estimated stroops charged per settle for accounting (default = fee ceiling). */
   perSettleEstimateStroops: number;
+  /** F12: settles per window for one BOUND resource URL (default 10). */
+  perUrlMax: number;
+  /** F12: settles per window for one payTo across all its URLs (default 100 —
+   * equal to the global ceiling, so it never binds honest traffic today and
+   * starts doing work only if the global ceiling is later raised). */
+  perPayToMax: number;
+  /** F12: settles per window shared by ALL unbound URLs (default 10 — exactly
+   * one bound URL's budget, so spraying N unverified URLs yields 10/N each). */
+  unboundPoolMax: number;
 }
 
 export interface SettleVerdict {
@@ -69,6 +96,10 @@ export class SpendPolicy {
   private readonly cfg: SpendPolicyConfig;
   private readonly now: Clock;
   private readonly perPayTo = new Map<string, number[]>();
+  /** F12: settle timestamps per BOUND resource URL. */
+  private readonly perUrl = new Map<string, number[]>();
+  /** F12: settle timestamps shared by ALL unbound URLs. */
+  private unboundPool: number[] = [];
   private globalSpend: Array<{ at: number; stroops: number; id: number }> = [];
   /** Monotonic reservation id so a refund can only release its OWN entry. */
   private nextReservationId = 1;
@@ -94,23 +125,45 @@ export class SpendPolicy {
    * then turns out to have spent nothing on-chain, the caller releases the
    * global reservation with refundUnspent().
    */
-  checkSettle(payTo: string): SettleVerdict {
+  checkSettle(id: SettleIdentity | string): SettleVerdict {
+    // A bare payTo keeps older callers working; such a settle is treated as
+    // unbound with no URL of its own.
+    const ident: SettleIdentity =
+      typeof id === "string" ? { resourceUrl: "", payTo: id, bound: false } : id;
     const t = this.now();
-    const tripped = this.evaluate(payTo, t);
+    const tripped = this.evaluate(ident, t);
     if (tripped) {
       if (this.enforced) return { allowed: false, reason: tripped };
       // Fail-open (testnet): allow, but still reserve and flag.
-      const tok = this.reserve(payTo, t);
+      const tok = this.reserve(ident, t);
       return { allowed: true, wouldReject: tripped, reservation: tok };
     }
-    const tok = this.reserve(payTo, t);
+    const tok = this.reserve(ident, t);
     return { allowed: true, reservation: tok };
   }
 
-  /** Which limit (if any) this settle would cross, without mutating state. */
-  private evaluate(payTo: string, t: number): SettleRejectReason | undefined {
-    const recent = prune(this.perPayTo.get(payTo) ?? [], t - this.cfg.rateWindowMs);
-    if (recent.length >= this.cfg.rateMax) return "rate_limited_payto";
+  /**
+   * Which limit (if any) this settle would cross. Evaluates EVERY budget and
+   * mutates nothing — reservation happens only after all of them pass, so a
+   * refused settle can never leave a partial consume behind (the failure mode
+   * that let a throwing settle leak its reservation).
+   */
+  private evaluate(id: SettleIdentity, t: number): SettleRejectReason | undefined {
+    const payToRecent = prune(this.perPayTo.get(id.payTo) ?? [], t - this.cfg.rateWindowMs);
+    if (payToRecent.length >= this.cfg.rateMax) return "rate_limited_payto";
+    if (payToRecent.length >= this.cfg.perPayToMax) return "rate_limited_payto";
+
+    if (id.bound && id.resourceUrl) {
+      const urlRecent = prune(this.perUrl.get(id.resourceUrl) ?? [], t - this.cfg.rateWindowMs);
+      if (urlRecent.length >= this.cfg.perUrlMax) return "rate_limited_url";
+    } else {
+      // Unbound URLs share ONE pool sized at a single bound URL's budget, so
+      // spraying N unverified URLs yields perUrlMax/N each. Spraying competes
+      // with itself rather than with honest merchants — that ratio IS the
+      // economic signal attached to claiming an identity (F11).
+      const pool = prune(this.unboundPool, t - this.cfg.rateWindowMs);
+      if (pool.length >= this.cfg.unboundPoolMax) return "unbound_pool_exhausted";
+    }
 
     this.globalSpend = this.globalSpend.filter((e) => e.at > t - this.cfg.spendWindowMs);
     const windowSpend = this.globalSpend.reduce((s, e) => s + e.stroops, 0);
@@ -120,15 +173,28 @@ export class SpendPolicy {
     return undefined;
   }
 
-  /** Count this settle in both rolling windows. */
-  private reserve(payTo: string, t: number): number {
-    const recent = prune(this.perPayTo.get(payTo) ?? [], t - this.cfg.rateWindowMs);
+  /**
+   * Count this settle in EVERY window at once. Called only after evaluate()
+   * cleared all budgets, so the three records succeed or fail together — there
+   * is no interleaving point at which one budget is consumed and another is not.
+   */
+  private reserve(id: SettleIdentity, t: number): number {
+    const recent = prune(this.perPayTo.get(id.payTo) ?? [], t - this.cfg.rateWindowMs);
     recent.push(t);
-    this.perPayTo.set(payTo, recent);
-    const id = this.nextReservationId++;
-    this.globalSpend.push({ at: t, stroops: this.cfg.perSettleEstimateStroops, id });
+    this.perPayTo.set(id.payTo, recent);
+
+    if (id.bound && id.resourceUrl) {
+      const u = prune(this.perUrl.get(id.resourceUrl) ?? [], t - this.cfg.rateWindowMs);
+      u.push(t);
+      this.perUrl.set(id.resourceUrl, u);
+    } else {
+      this.unboundPool = prune(this.unboundPool, t - this.cfg.rateWindowMs);
+      this.unboundPool.push(t);
+    }
+    const reservationId = this.nextReservationId++;
+    this.globalSpend.push({ at: t, stroops: this.cfg.perSettleEstimateStroops, id: reservationId });
     this.evictElapsed(t);
-    return id;
+    return reservationId;
   }
 
   /**
@@ -146,6 +212,9 @@ export class SpendPolicy {
       // clock step (NTP correction) would otherwise evict a bucket that still
       // holds in-window entries, silently resetting that payTo's rate limit.
       if (times.length === 0 || Math.max(...times) <= cutoff) this.perPayTo.delete(key);
+    }
+    for (const [key, times] of this.perUrl) {
+      if (times.length === 0 || Math.max(...times) <= cutoff) this.perUrl.delete(key);
     }
   }
 
@@ -183,6 +252,9 @@ export function createSpendPolicy(input: {
   spendCeilingStroops?: number;
   spendWindowMs?: number;
   perSettleEstimateStroops: number;
+  perUrlMax?: number;
+  perPayToMax?: number;
+  unboundPoolMax?: number;
 }): SpendPolicy {
   return new SpendPolicy({
     network: input.network,
@@ -191,5 +263,8 @@ export function createSpendPolicy(input: {
     spendCeilingStroops: input.spendCeilingStroops ?? 50_000_000, // 5 XLM
     spendWindowMs: input.spendWindowMs ?? 60_000,
     perSettleEstimateStroops: input.perSettleEstimateStroops,
+    perUrlMax: input.perUrlMax ?? 10,
+    perPayToMax: input.perPayToMax ?? 100,
+    unboundPoolMax: input.unboundPoolMax ?? 10,
   });
 }
