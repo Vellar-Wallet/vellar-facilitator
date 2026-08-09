@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 
 const SECRET = "SBJP6HHFTABK2GXVVFAKY6C4B7DDNB5PIEQXKUNL2ZAOBPWFOUOSTLVNMA";
@@ -12,13 +12,21 @@ describe("loadConfig", () => {
     const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
     expect(config.network).toBe("stellar:testnet");
     expect(config.port).toBe(4100);
-    expect(config.maxTransactionFeeStroops).toBe(2_000_000);
+    expect(config.maxTransactionFeeStroops).toBe(500_000);
     expect(config.rpcUrl).toBeUndefined();
   });
 
-  it("fee ceiling default clears the policy-governed payment cost (~140k stroops)", () => {
+  // The invariant that matters: the ceiling must clear the real cost of a
+  // policy-governed smart-account settlement. Measured on testnet from the
+  // dedicated facilitator sponsor's own history, the worst REAL settlement was
+  // 127,808 stroops (higher-fee txs on dev accounts are contract deploys and
+  // add_signer calls, which never flow through /settle). 500k is ~3.9x that and
+  // 2.5x the documented 200k floor — while cutting worst-case sponsor drain per
+  // settle from 0.2 XLM to 0.05 XLM.
+  it("fee ceiling default clears the worst observed real settlement (127,808 stroops)", () => {
     const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
-    expect(config.maxTransactionFeeStroops).toBeGreaterThan(140_000);
+    expect(config.maxTransactionFeeStroops).toBeGreaterThan(127_808);
+    expect(config.maxTransactionFeeStroops).toBeGreaterThanOrEqual(200_000); // documented floor
   });
 
   it("selects pubnet when STELLAR_NETWORK=pubnet", () => {
@@ -36,6 +44,62 @@ describe("loadConfig", () => {
     expect(config.port).toBe(5000);
     expect(config.rpcUrl).toBe("https://rpc.example.com");
     expect(config.maxTransactionFeeStroops).toBe(500_000);
+  });
+
+  it("defaults spend-policy limits and honors overrides", () => {
+    const def = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+    expect(def.spend).toEqual({
+      rateMax: 30,
+      rateWindowMs: 60_000,
+      ceilingStroops: 10_000_000,
+      windowMs: 60_000,
+    });
+    const over = loadConfig({
+      SPONSOR_SECRET_KEY: SECRET,
+      SETTLE_RATE_MAX: "10",
+      SPEND_CEILING_STROOPS: "1000000",
+    });
+    expect(over.spend.rateMax).toBe(10);
+    expect(over.spend.ceilingStroops).toBe(1_000_000);
+  });
+
+  it("defaults sponsor balance floors and honors overrides", () => {
+    const def = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+    expect(def.balance).toEqual({
+      softFloorStroops: 250_000_000, // 25 XLM warn
+      hardFloorStroops: 100_000_000, // 10 XLM refuse — must exceed the 5 XLM window ceiling
+      intervalMs: 60_000,
+    });
+    const over = loadConfig({ SPONSOR_SECRET_KEY: SECRET, SPONSOR_HARD_FLOOR_STROOPS: "5000000" });
+    expect(over.balance.hardFloorStroops).toBe(5_000_000);
+  });
+
+  // Re-audit: the sponsor hard floor must exceed the maximum XLM one spend
+  // window can drain, or the balance check (which is up to one interval stale)
+  // can read "above floor" and then be drained straight through it.
+  it("ships defaults where the hard floor outlasts a full spend window", () => {
+    const c = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+    expect(c.balance.hardFloorStroops).toBeGreaterThan(c.spend.ceilingStroops);
+  });
+
+  it("warns when an operator configures a floor a spend window can breach", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    loadConfig({
+      SPONSOR_SECRET_KEY: SECRET,
+      SPEND_CEILING_STROOPS: "50000000", // 5 XLM per window
+      SPONSOR_HARD_FLOOR_STROOPS: "20000000", // 2 XLM — cannot hold
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/hard floor.*spend ceiling|cannot hold/i));
+    warn.mockRestore();
+  });
+
+  it("rejects a non-positive spend limit", () => {
+    expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SETTLE_RATE_MAX: "0" })).toThrow(
+      /SETTLE_RATE_MAX/,
+    );
+    expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SPEND_CEILING_STROOPS: "-1" })).toThrow(
+      /SPEND_CEILING_STROOPS/,
+    );
   });
 
   it("rejects a non-integer or non-positive fee ceiling", () => {

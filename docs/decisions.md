@@ -4,6 +4,52 @@ Newest first. Same convention as the vela-wallet repo: record what was
 decided or discovered, with enough evidence that a future reader can verify
 it.
 
+## 2026-08-09 — F11 resource-URL hijack: reproduced AND blocked on live testnet
+
+The critical finding from the ownership investigation, demonstrated on-chain as a
+controlled A/B: same accounts, same canonical URL, same payloads, only the code
+differs.
+
+Setup (self-contained, disposable testnet): issuer `GD2P22IM…` minting `F11TST`
+via SAC `CBPYWRHT…`; classic payer `GAOP33R6…`; merchant A `GCKD7HEC…`
+(legitimate) and merchant B `GAIDXTLQ…` (attacker payout); facilitator sponsor
+`GBOC2UOB…`. Deliberately NOT the demo wallet — see the note below.
+
+**PRE-FIX (`main`, port 4191) — HIJACKED.** Settle #1 to merchant A cataloged the
+URL (tx `f7ea48f3070e9ad7…`). Settle #2 to merchant B on the SAME URL
+(tx `d56dc927a7c7c019…`) produced exactly the three predicted effects:
+
+- accepts grew to two entries — the attacker's payout served alongside the owner's
+- description overwritten to "PAY HERE - cheapest"
+- settlement stats carried forward (1 -> 2), so the attacker inherits the
+  victim's accumulated credibility
+
+**POST-FIX (`security/pubnet-blockers`, port 4192) — BLOCKED.** Identical
+sequence. Settle #1 (tx `c16af8224c474901…`) cataloged normally. Settle #2
+(tx `a909e4748c83f559…`) was **refused by the TOFU ownership binding**: accepts
+still lists only merchant A, and the description is unchanged.
+
+The control matters: settle #2 **succeeded on-chain in BOTH runs**
+(`success: true`, real hash, fee 23,067 stroops paid by the sponsor in all four —
+Horizon-confirmed). So "blocked" means the catalog rejected the hijack, not that
+the payment failed. Without the pre-fix pass the post-fix result would have been
+uninterpretable — "blocked" and "settlement broke for unrelated reasons" look
+identical from the catalog alone.
+
+Two things learned while getting there:
+
+1. **The demo wallet (`CDPUL7TZ…`) currently refuses ALL payments.** Its
+   verified-recipient policy is in the revoked state left over from the demo
+   recording, so `__check_auth` fails with `Error(Contract, #1)` /
+   `Error(Auth, InvalidAction)` for every recipient. Re-attesting needs the
+   attestor key from the local Stellar keychain. Unrelated to F11, but it blocks
+   `examples/` until re-attested.
+2. **Classic-account auth entries must be signed via the SDK's `signAuthEntries`
+   and NOT re-simulated afterwards** — re-simulation regenerates the auth nonce
+   and invalidates the signature. Expiry must also stay inside the facilitator's
+   tolerance (`+12` ledgers as in `examples/buyer.mjs`; `+100` is rejected as
+   `invalid_exact_stellar_signature_expiration_too_far`).
+
 ## 2026-07-31 — DEPLOYED: hosted instance live and settling real payments
 
 `https://vellar-facilitator.onrender.com` — deployed from the render.yaml

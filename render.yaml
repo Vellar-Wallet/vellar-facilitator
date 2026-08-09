@@ -22,10 +22,13 @@ services:
         value: "testnet"
       - key: STELLAR_RPC_URL
         value: "https://soroban-testnet.stellar.org"
-      # Raised fee ceiling: policy-governed smart-account payments cost ~140k
-      # stroops; the @x402/stellar default (50k) rejects them.
+      # Raised fee ceiling: policy-governed smart-account payments cost ~130k
+      # stroops; the @x402/stellar default (50k) rejects them. 500k is ~3.9x the
+      # worst REAL settlement measured from this sponsor's own history (127,808)
+      # and bounds worst-case drain per settle at 0.05 XLM. Raise if a heavier
+      # policy legitimately needs it — rejection is loud, not silent.
       - key: MAX_TX_FEE_STROOPS
-        value: "2000000"
+        value: "500000"
       # Bazaar catalog persistence (single-instance file store).
       - key: CATALOG_FILE
         value: "/var/data/bazaar-catalog.json"

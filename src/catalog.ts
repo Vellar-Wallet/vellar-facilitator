@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { z } from "zod";
 import type { PaymentRequirements } from "@x402/core/types";
 import type {
   DiscoveredResource,
@@ -15,6 +16,266 @@ import type { TrustedDiscoveryResource } from "./trust.js";
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
+/** Cap on tracked distinct payers per resource — bounds memory and the
+ * persistence file; the count saturates at the cap. Declared here because both
+ * the write path and the load-time schema enforce it. */
+const MAX_TRACKED_PAYERS = 10_000;
+
+// F3 — bounds. Entry count and per-entry accepts were unbounded, and every
+// settlement wrote the whole catalog synchronously (O(n) per settle, O(n^2) to
+// fill). Measured stringify cost alone: ~72ms at 10k entries, ~316ms at 50k.
+/** Max cataloged resources. LRU by lastUpdated beyond this. */
+const MAX_ENTRIES = 10_000;
+/** Max payment options stored per resource. */
+const MAX_ACCEPTS = 20;
+/** Max ownership tombstones. At this cap the catalog FREEZES new bindings
+ * rather than forgetting ownership — see `frozen`. */
+const MAX_TOMBSTONES = 100_000;
+/** Debounce window for the (reconstructible) entry file. Ownership is never
+ * debounced. */
+const PERSIST_DEBOUNCE_MS = 250;
+
+/** Companion ownership file path. Kept separate from the entry file so it can be
+ * flushed synchronously without rewriting all entries. */
+export function ownershipPathFor(catalogPath: string): string {
+  return `${catalogPath}.ownership`;
+}
+
+/** Atomic write: temp + fsync + rename. A torn ownership file is worse than a
+ * torn catalog — entries rebuild from settlements, ownership does not. */
+function writeFileAtomic(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, data);
+  const fd = openSync(tmp, "r+");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+}
+
+/** Ownership file shape: validated on load exactly like the catalog file, so a
+ * crafted file cannot inject a malformed or forged binding. NOTE: absence is
+ * indistinguishable from deletion, so a file-writer can still CLEAR a tombstone
+ * — see docs/security-audit.md (F6/RA-13). Forging is prevented; clearing is a
+ * documented accepted risk pending the HMAC/DB fix. */
+const ownershipFileSchema = z.array(
+  z.object({ resource: z.string().min(1), boundPayTo: z.array(z.string().min(1)).min(1) }),
+);
+
+// Fix 4 (F1) — description is the one discovery field extractDiscoveryInfo does
+// NOT bound (serviceName/tags/iconUrl/routeTemplate are sanitized upstream), and
+// the raw extensions object is passed through wholesale. We defang both on the
+// way into storage, and again on load, so a crafted CATALOG_FILE cannot bypass
+// it. Control chars (\p{Cc}) and Unicode bidi/format chars (\p{Cf}) are stripped
+// — the latter defeats RTL-override / homoglyph impersonation in agent context.
+const MAX_DESCRIPTION_LEN = 256;
+const CONTROL_AND_FORMAT = /[\p{Cc}\p{Cf}]/gu;
+
+/** Keep only the known payment-requirement fields from a client-supplied
+ * requirements object, so unknown keys never enter the catalog (ingest-side
+ * counterpart of acceptSchema, which guards the load path). */
+function pickAcceptFields(r: PaymentRequirements): PaymentRequirements {
+  const src = r as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {
+    scheme: src.scheme,
+    network: src.network,
+    asset: src.asset,
+    amount: src.amount,
+    payTo: src.payTo,
+  };
+  if (src.maxTimeoutSeconds !== undefined) out.maxTimeoutSeconds = src.maxTimeoutSeconds;
+  if (src.extra !== undefined) out.extra = src.extra;
+  return out as unknown as PaymentRequirements;
+}
+
+/** Clamp + strip a free-text description; returns undefined for empty/non-string. */
+function sanitizeDescription(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(CONTROL_AND_FORMAT, "").slice(0, MAX_DESCRIPTION_LEN);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+/** Allowlist the extensions object to only the `bazaar` key (the one the
+ * discovery flow and search actually consume). Everything else is dropped so it
+ * can never reach an agent's context. */
+function sanitizeExtensions(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const src = value as Record<string, unknown>;
+  if (!("bazaar" in src)) return undefined;
+  return { bazaar: src.bazaar };
+}
+
+// Audit D5 — on the INGEST path the upstream extractor sanitizes serviceName /
+// tags / iconUrl, but a crafted CATALOG_FILE bypasses the extractor entirely.
+// Re-sanitize these on LOAD so stored prompt injection through them can't land.
+const MAX_SERVICE_NAME_LEN = 64;
+const MAX_TAG_LEN = 32;
+const MAX_TAGS = 8;
+const MAX_MIME_TYPE_LEN = 128;
+/** The only protocol types the discovery model defines. `type` arrives from
+ * attacker-controlled discoveryInfo and is both served to agents and used as a
+ * filter key, so anything else is refused rather than stored as free text. */
+const KNOWN_TYPES = new Set(["http", "mcp"]);
+function sanitizeType(value: unknown): "http" | "mcp" | undefined {
+  return typeof value === "string" && KNOWN_TYPES.has(value) ? (value as "http" | "mcp") : undefined;
+}
+/** Printable ASCII only — mirrors the upstream ingest validator. Anything else
+ * (incl. Cyrillic/Greek homoglyphs used for brand impersonation) is rejected
+ * outright rather than "cleaned", so the load path is not weaker than the wire. */
+const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
+
+/**
+ * Strip control/bidi chars, clamp, and require printable ASCII. Returns
+ * undefined (field dropped) rather than a mangled string when the input isn't
+ * clean — matching @x402/extensions' isValidServiceName/sanitizeTags behaviour,
+ * so a crafted CATALOG_FILE gets exactly the treatment a wire payload gets.
+ */
+function sanitizeShortText(value: unknown, maxLen: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(CONTROL_AND_FORMAT, "").slice(0, maxLen);
+  if (cleaned.length === 0) return undefined;
+  return PRINTABLE_ASCII.test(cleaned) ? cleaned : undefined;
+}
+
+function sanitizeTags(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const t of value) {
+    const clean = sanitizeShortText(t, MAX_TAG_LEN);
+    if (clean) out.push(clean);
+    if (out.length >= MAX_TAGS) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Keep an iconUrl only if it is a well-formed http(s) URL — drops javascript:,
+ * data:, and other schemes that could execute or exfiltrate in a consumer UI. */
+function sanitizeIconUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2048) return undefined;
+  // Note: use a fresh non-global regex — CONTROL_AND_FORMAT has the /g flag and
+  // .test() on a /g regex is stateful (advances lastIndex).
+  if (/[\p{Cc}\p{Cf}]/u.test(value)) return undefined;
+  try {
+    const u = new URL(value);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    // Match the upstream ingest validator: no embedded credentials, and no
+    // loopback / bare-IP / private hosts (an iconUrl is rendered by consumers,
+    // so it must not point at internal infrastructure).
+    if (u.username !== "" || u.password !== "") return undefined;
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    // Same loopback set the upstream ingest validator rejects.
+    const LOOPBACK_HOSTS = new Set([
+      "localhost",
+      "localhost.localdomain",
+      "ip6-localhost",
+      "ip6-loopback",
+    ]);
+    if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost")) return undefined;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
+      return undefined;
+    }
+    if (host.includes(":")) return undefined; // bare IPv6 literal
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+// Fix 4/F6 — load-time schema. A crafted CATALOG_FILE is a trust boundary: the
+// ingestion sanitizer never ran on it. Validate each entry's structure, drop the
+// malformed rather than blind-casting, and (via sanitizeStoredResource below)
+// strip any forged `trust` field and re-run the description/extensions sanitizer.
+// The accepts payTo binding is still enforced separately in bindLoadedEntry.
+// NOT .passthrough(): `accepts` entries come straight from the client-supplied
+// /settle body, so arbitrary attacker-named keys inside a payment requirement
+// would otherwise be stored and served to agents — the same injection channel as
+// the resource-level passthrough, one level down. Zod strips unknown keys by
+// default. `extra` is kept because the x402 scheme legitimately uses it.
+const acceptSchema = z.object({
+  scheme: z.string(),
+  network: z.string(),
+  asset: z.string(),
+  amount: z.string(),
+  payTo: z.string(),
+  maxTimeoutSeconds: z.number().optional(),
+  extra: z.unknown().optional(),
+});
+
+// NOT .passthrough(): zod strips unknown keys by default, which is exactly what
+// we need. With passthrough, arbitrary attacker-named keys in a crafted
+// CATALOG_FILE survived the schema and rode the rest-spread straight into the
+// served entry (and into an agent's MCP context), bypassing every sanitizer.
+// Stripping also removes any forged `trust` field for free.
+const storedResourceSchema = z.object({
+  resource: z.string().min(1),
+  type: z.enum(["http", "mcp"]),
+  x402Version: z.number(),
+  accepts: z.array(acceptSchema),
+  lastUpdated: z.string(),
+  description: z.unknown().optional(),
+  mimeType: z.unknown().optional(),
+  serviceName: z.unknown().optional(),
+  tags: z.unknown().optional(),
+  iconUrl: z.unknown().optional(),
+  extensions: z.unknown().optional(),
+});
+
+// Stats come from the persistence file, which is a trust boundary (F6): whoever
+// can write CATALOG_FILE controls them, and we cannot re-derive settlement
+// history from anywhere else — that is inherent to file-backed persistence and
+// is documented as such. What we CAN do is refuse implausible values so a
+// crafted file cannot exhaust memory or render nonsense: settlements must be a
+// non-negative integer, and the payer list is capped at the same bound the write
+// path enforces.
+const statsSchema = z
+  .object({
+    settlements: z.number().int().nonnegative(),
+    payers: z.array(z.string()).max(MAX_TRACKED_PAYERS),
+    lastSettled: z.string().optional(),
+  })
+  .optional();
+
+const storedEntrySchema = z.object({
+  resource: storedResourceSchema,
+  stats: statsSchema,
+});
+
+/** Normalize a validated stored resource: strip any forged `trust` field (trust
+ * is computed at serve time, never stored) and re-run the ingestion sanitizer on
+ * description/extensions so a crafted file gets the same defanging as the wire. */
+function sanitizeStoredResource(res: z.infer<typeof storedResourceSchema>): DiscoveryResource {
+  const {
+    trust: _dropTrust,
+    description,
+    extensions,
+    serviceName,
+    tags,
+    iconUrl,
+    mimeType,
+    ...rest
+  } = res as Record<string, unknown> & { resource: string };
+  // Audit D5: every free-text/URL field a crafted file could carry is
+  // re-sanitized here, not just description/extensions.
+  const cleanDescription = sanitizeDescription(description);
+  const cleanExtensions = sanitizeExtensions(extensions);
+  const cleanServiceName = sanitizeShortText(serviceName, MAX_SERVICE_NAME_LEN);
+  const cleanTags = sanitizeTags(tags);
+  const cleanIconUrl = sanitizeIconUrl(iconUrl);
+  const cleanMimeType = sanitizeShortText(mimeType, MAX_MIME_TYPE_LEN);
+  return {
+    ...(rest as unknown as DiscoveryResource),
+    ...(cleanDescription !== undefined ? { description: cleanDescription } : {}),
+    ...(cleanExtensions !== undefined ? { extensions: cleanExtensions } : {}),
+    ...(cleanServiceName !== undefined ? { serviceName: cleanServiceName } : {}),
+    ...(cleanTags !== undefined ? { tags: cleanTags } : {}),
+    ...(cleanIconUrl !== undefined ? { iconUrl: cleanIconUrl } : {}),
+    ...(cleanMimeType !== undefined ? { mimeType: cleanMimeType } : {}),
+  };
+}
+
 /**
  * The Bazaar catalog: discovered x402 resources, fed automatically from
  * payment traffic (see bazaar.ts) and served over /discovery/*.
@@ -26,6 +287,13 @@ const MAX_LIMIT = 100;
 /** Per-resource settlement ground truth — data only a facilitator has. */
 interface SettlementStats {
   settlements: number;
+  /**
+   * Settlements this PROCESS actually witnessed. Deliberately NOT loaded from
+   * CATALOG_FILE — it starts at zero on every load, so a tampered file cannot
+   * inflate it. `settlements` may include a persisted base that no longer has
+   * any independent source of truth; this number always has one.
+   */
+  observed: number;
   /** Distinct payer addresses (capped; uniquePayers reports the count). */
   payers: string[];
   lastSettled?: string;
@@ -34,19 +302,82 @@ interface SettlementStats {
 interface StoredEntry {
   resource: DiscoveryResource;
   stats: SettlementStats;
+  /**
+   * Fix 0 Layer 1 (TOFU ownership binding). The set of payTo addresses bound to
+   * this canonical resourceUrl. The first settlement to catalog a URL binds its
+   * payTo here; only a settlement whose payTo is already in this set may append
+   * a new accepts entry or overwrite metadata. This stops resource-URL hijack
+   * (F11): an attacker cannot append their own payTo to, or overwrite the
+   * metadata of, a resource someone else already established.
+   *
+   * LIMITATION — this binding is in-memory (and, when CATALOG_FILE is set,
+   * persisted to disk). On the free tier the disk is ephemeral, so the whole
+   * catalog — bindings included — empties on every redeploy/restart, and every
+   * URL becomes claimable again by whoever settles first afterward. Layer 1 is
+   * therefore a floor, not a real control, until durable storage exists; the
+   * actual control is the Layer 2 402-challenge verification, which re-derives
+   * ownership from the resource itself rather than from catalog history.
+   */
+  boundPayTo: string[];
+  /**
+   * Fix 0 Layer 2. True once the resource's own 402 challenge has confirmed the
+   * bound payTo owns this URL. Until then the entry is served but its accepts
+   * are NOT authoritative (Layer 3 surfaces this as an unverified owner). Default
+   * false; a mismatch verdict keeps it false permanently for that binding.
+   */
+  verifiedOwner: boolean;
 }
 
-/** Cap on tracked distinct payers per resource — bounds memory and the
- * persistence file; the count saturates at the cap. */
-const MAX_TRACKED_PAYERS = 10_000;
 
 export class BazaarCatalog {
   private readonly entries = new Map<string, StoredEntry>();
   private readonly persistPath: string | undefined;
 
-  constructor(persistPath?: string) {
+  /**
+   * F3 — ownership tombstones: `resourceUrl -> boundPayTo[]`, the record that
+   * survives an entry being evicted. Without this, evicting an entry to enforce
+   * the cap would DROP its ownership binding and reopen that URL to first-writer
+   * claim — turning cache pressure into a way to re-run the F11 hijack.
+   *
+   * Written when the binding is ESTABLISHED, not when the entry is evicted, so
+   * ownership is durable from the moment it exists rather than at the mercy of
+   * whether an eviction write completed.
+   */
+  private readonly ownership = new Map<string, string[]>();
+
+  /**
+   * F3 fail-closed state. Set when the ownership store is unusable (missing or
+   * unparseable while a catalog file loaded fine — the state a crafted file or a
+   * half-finished deploy produces) or when the tombstone cap is reached. While
+   * frozen, NO new URL may be bound; existing bindings keep working so
+   * settlement is unaffected. Refusing new entries is a visible availability
+   * problem; forgetting ownership is a silent security one.
+   */
+  private frozen: false | "ownership-unreadable" | "tombstone-cap" = false;
+
+  constructor(persistPath?: string, opts: { bootstrapOwnership?: boolean } = {}) {
     this.persistPath = persistPath;
-    if (persistPath) this.load(persistPath);
+    if (persistPath) {
+      // Ownership loads FIRST: if it is unusable we must not serve a catalog
+      // whose bindings are missing.
+      const ownershipOk = this.loadOwnership(ownershipPathFor(persistPath), opts.bootstrapOwnership === true);
+      if (!ownershipOk) {
+        this.frozen = "ownership-unreadable";
+        console.error(
+          `[catalog] ownership store at ${ownershipPathFor(persistPath)} is missing or unreadable — ` +
+            `refusing to load the catalog and freezing new bindings. An intact catalog with absent ` +
+            `ownership is exactly the state a tampered file produces; serving it would reopen every ` +
+            `URL to first-writer claim. Resolve the ownership file, then restart.`,
+        );
+        return; // catalog stays empty; frozen blocks new bindings
+      }
+      this.load(persistPath);
+    }
+  }
+
+  /** Whether new URL bindings are currently refused, and why (see /health). */
+  get catalogFrozen(): false | "ownership-unreadable" | "tombstone-cap" {
+    return this.frozen;
   }
 
   /** Number of cataloged resources. */
@@ -54,13 +385,69 @@ export class BazaarCatalog {
     return this.entries.size;
   }
 
+  /** Whether `payTo` is bound to `resourceUrl` under the TOFU rule (Layer 1).
+   * A settlement whose payTo is not bound may not append accepts or overwrite
+   * metadata for that URL. */
+  isBound(resourceUrl: string, payTo: string): boolean {
+    return this.entries.get(resourceUrl)?.boundPayTo.includes(payTo) ?? false;
+  }
+
+  /** Whether the resource's own 402 challenge has confirmed its bound owner
+   * (Fix 0 Layer 2). Consumers should treat an entry's accepts as authoritative
+   * only when this is true. */
+  isVerifiedOwner(resourceUrl: string): boolean {
+    return this.entries.get(resourceUrl)?.verifiedOwner ?? false;
+  }
+
+  /** Record the Layer 2 402-challenge verdict for a URL. `match` marks the
+   * bound owner verified; `mismatch`/`unverifiable` leave it unverified. No-op
+   * if the entry vanished (e.g. restart) between settle and verification. */
+  setVerifiedOwner(resourceUrl: string, verified: boolean): void {
+    const entry = this.entries.get(resourceUrl);
+    if (!entry) return;
+    if (entry.verifiedOwner === verified) return;
+    entry.verifiedOwner = verified;
+    this.save();
+  }
+
   /**
    * Insert or update a resource from a settled payment's discovery info.
    * `accepts` accumulates distinct payment requirements seen for the resource.
+   *
+   * Ownership rule (Fix 0 Layer 1): the FIRST settlement for a canonical URL
+   * binds it to that payment's payTo. Any later settlement for the same URL is
+   * honored only if its payTo is already bound; otherwise it is rejected and
+   * logged, and the existing entry (accepts, metadata, and stats) is left
+   * exactly as it was. This is what blocks the F11 hijack.
+   *
+   * Returns `true` when this call FIRST catalogs the URL (a new binding was
+   * created), so the caller can trigger Layer 2 402-challenge verification. A
+   * rejected or already-existing upsert returns `false`.
    */
-  upsertFromPayment(discovered: DiscoveredResource, requirements: PaymentRequirements): void {
+  upsertFromPayment(discovered: DiscoveredResource, requirements: PaymentRequirements): boolean {
     const key = discovered.resourceUrl;
     const existing = this.entries.get(key);
+
+    // F3: an evicted entry leaves its ownership tombstone behind, so a URL that
+    // was cached out cannot be reclaimed by a different payTo. This is what stops
+    // cache pressure from becoming a way to re-run the F11 hijack.
+    const tomb = this.ownership.get(key);
+    if (!existing && tomb && !tomb.includes(requirements.payTo)) {
+      console.warn(
+        `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} does not match the ` +
+          `ownership tombstone (${tomb.join(", ")}) — evicted-entry reclaim refused (F3/F11)`,
+      );
+      return false;
+    }
+    if (existing && !existing.boundPayTo.includes(requirements.payTo)) {
+      // Unbound payTo for an already-established URL: reject the whole write.
+      // Do not append accepts, do not overwrite metadata, do not touch stats.
+      console.warn(
+        `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} is not bound ` +
+          `(bound: ${existing.boundPayTo.join(", ")}) — possible resource-URL hijack (F11)`,
+      );
+      return false;
+    }
 
     const accepts = existing ? [...existing.resource.accepts] : [];
     const reqKey = JSON.stringify({
@@ -80,26 +467,61 @@ export class BazaarCatalog {
           amount: r.amount,
         }) === reqKey,
     );
-    if (!seen) accepts.push(requirements);
+    // Store only the known payment-requirement fields. `requirements` is the
+    // client-supplied /settle body, so pushing it whole would carry arbitrary
+    // attacker-named keys into the catalog and out to agents.
+    if (!seen && accepts.length >= MAX_ACCEPTS) {
+      console.warn(`[catalog] ${key}: accepts cap (${MAX_ACCEPTS}) reached — new payment option dropped`);
+    } else if (!seen) {
+      accepts.push(pickAcceptFields(requirements));
+    }
 
-    const entry: DiscoveryResource = {
+    // Fix 4: ONE funnel for both doors. Rather than re-implement the sanitizers
+    // inline (which drifted from the load path three times — mimeType, then
+    // serviceName/tags, then type), build the raw entry and push it through the
+    // SAME storedResourceSchema + sanitizeStoredResource that load() uses. Drift
+    // is now structurally impossible: there is only one implementation.
+    const rawEntry = {
       resource: discovered.resourceUrl,
-      type: discovered.discoveryInfo.input.type,
+      type: discovered.discoveryInfo?.input?.type,
       x402Version: discovered.x402Version,
       accepts,
       lastUpdated: new Date().toISOString(),
-      ...(discovered.description !== undefined ? { description: discovered.description } : {}),
-      ...(discovered.mimeType !== undefined ? { mimeType: discovered.mimeType } : {}),
-      ...(discovered.serviceName !== undefined ? { serviceName: discovered.serviceName } : {}),
-      ...(discovered.tags !== undefined ? { tags: discovered.tags } : {}),
-      ...(discovered.iconUrl !== undefined ? { iconUrl: discovered.iconUrl } : {}),
-      ...(discovered.extensions !== undefined ? { extensions: discovered.extensions } : {}),
+      description: discovered.description,
+      mimeType: discovered.mimeType,
+      serviceName: discovered.serviceName,
+      tags: discovered.tags,
+      iconUrl: discovered.iconUrl,
+      extensions: discovered.extensions,
     };
+    const parsed = storedResourceSchema.safeParse(rawEntry);
+    if (!parsed.success) {
+      console.warn(
+        `[catalog] rejected upsert for ${key}: ${parsed.error.issues[0]?.message ?? "failed schema validation"}`,
+      );
+      return false;
+    }
+    const entry: DiscoveryResource = sanitizeStoredResource(parsed.data);
+
+    // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
+    const isFirstCatalog = existing === undefined;
+    if (isFirstCatalog) {
+      // Ownership is recorded when the binding is ESTABLISHED (not at eviction),
+      // so it is durable from the moment it exists. Refused when frozen.
+      if (this.frozen === "ownership-unreadable" || !this.bindOwnership(key, requirements.payTo)) {
+        return false;
+      }
+    }
+    const boundPayTo = existing ? existing.boundPayTo : (this.ownership.get(key) ?? [requirements.payTo]);
     this.entries.set(key, {
       resource: entry,
-      stats: existing?.stats ?? { settlements: 0, payers: [] },
+      stats: existing?.stats ?? { settlements: 0, payers: [], observed: 0 },
+      boundPayTo,
+      verifiedOwner: existing?.verifiedOwner ?? false,
     });
+    this.evictToCap();
     this.save();
+    return isFirstCatalog;
   }
 
   /**
@@ -111,6 +533,7 @@ export class BazaarCatalog {
     const entry = this.entries.get(resourceUrl);
     if (!entry) return;
     entry.stats.settlements += 1;
+    entry.stats.observed += 1;
     entry.stats.lastSettled = new Date().toISOString();
     if (
       payer &&
@@ -196,34 +619,199 @@ export class BazaarCatalog {
   }
 
   private load(path: string): void {
+    let raw: unknown;
     try {
-      const raw = JSON.parse(readFileSync(path, "utf8")) as Array<
-        DiscoveryResource | StoredEntry
-      >;
-      for (const item of raw) {
-        if ("stats" in item && typeof item.resource === "object") {
-          // Current format: { resource, stats }.
-          this.entries.set(item.resource.resource, item);
-        } else {
-          // Pre-trust format: a bare DiscoveryResource — migrate with zero stats.
-          const resource = item as DiscoveryResource;
-          this.entries.set(resource.resource, {
-            resource,
-            stats: { settlements: 0, payers: [] },
-          });
-        }
-      }
+      raw = JSON.parse(readFileSync(path, "utf8"));
     } catch {
       // Missing or unreadable file: start empty. Corrupt persistence must
       // never prevent the facilitator from starting.
+      return;
+    }
+    if (!Array.isArray(raw)) return;
+
+    for (const item of raw) {
+      // Accept both the current { resource, stats } shape and the pre-binding
+      // bare-DiscoveryResource shape; validate, drop the malformed, sanitize.
+      const candidate =
+        item && typeof item === "object" && "stats" in item ? item : { resource: item };
+      const parsed = storedEntrySchema.safeParse(candidate);
+      if (!parsed.success) {
+        console.warn(`[catalog] load: dropped a malformed entry (${parsed.error.issues[0]?.message ?? "invalid"})`);
+        continue;
+      }
+      const parsedStats = parsed.data.stats;
+      const stats: SettlementStats = parsedStats
+        ? {
+            settlements: parsedStats.settlements,
+            payers: parsedStats.payers,
+            // Never read from the file: this counts only what we witness.
+            observed: 0,
+            ...(parsedStats.lastSettled !== undefined ? { lastSettled: parsedStats.lastSettled } : {}),
+          }
+        : { settlements: 0, payers: [], observed: 0 };
+      const stored: StoredEntry = {
+        resource: sanitizeStoredResource(parsed.data.resource),
+        stats,
+        boundPayTo: [],
+        verifiedOwner: false,
+      };
+      this.entries.set(stored.resource.resource, this.bindLoadedEntry(stored));
     }
   }
 
-  private save(): void {
+  /**
+   * Fix 0 Layer 1 enforcement at load time: a crafted CATALOG_FILE must not be
+   * able to plant a hijacked entry the ingestion path would have rejected. The
+   * owner is the payTo of the FIRST accepts entry (the TOFU winner); any later
+   * accepts entry whose payTo differs is quarantined (dropped) rather than
+   * served as authoritative. `boundPayTo` is re-derived from the surviving
+   * accepts, never trusted from the file.
+   */
+  private bindLoadedEntry(stored: StoredEntry): StoredEntry {
+    const accepts = stored.resource.accepts ?? [];
+    const ownerPayTo = accepts[0]?.payTo;
+    if (ownerPayTo === undefined) {
+      return {
+        ...stored,
+        resource: { ...stored.resource, accepts: [] },
+        boundPayTo: [],
+        verifiedOwner: false,
+      };
+    }
+    const kept = accepts.filter((a) => a.payTo === ownerPayTo);
+    if (kept.length !== accepts.length) {
+      console.warn(
+        `[catalog] load: quarantined ${accepts.length - kept.length} accepts entry(ies) for ` +
+          `${stored.resource.resource} with a payTo other than the bound owner ${ownerPayTo} (F11)`,
+      );
+    }
+    // Ownership tombstone wins over whatever the entry file claims; only seed it
+    // when there is none (first upgrade / bootstrap).
+    const authoritative = this.ownership.get(stored.resource.resource);
+    if (!authoritative) this.ownership.set(stored.resource.resource, [ownerPayTo]);
+    return {
+      resource: { ...stored.resource, accepts: kept },
+      stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
+      boundPayTo: authoritative ?? [ownerPayTo],
+      // Never trust a stored verified flag — a crafted file could forge it.
+      // Layer 2 re-verifies from the resource on the next settlement.
+      verifiedOwner: false,
+    };
+  }
+
+  /**
+   * Load the ownership store. Returns false when it is missing or unparseable,
+   * which the constructor treats as fail-closed. Validated by its own schema so
+   * a crafted file cannot inject a malformed binding.
+   */
+  private loadOwnership(path: string, bootstrap: boolean): boolean {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      // Missing or unreadable. A brand-new deployment has no ownership file yet
+      // AND no catalog file; that is the only benign case, handled by the caller
+      // seeing no catalog file either.
+      try {
+        readFileSync(this.persistPath!, "utf8");
+      } catch {
+        return true; // neither file exists: a genuinely fresh start
+      }
+      // A catalog file with NO ownership file is ambiguous: it is either a
+      // first upgrade from a version that had no ownership store, or an attacker
+      // (or half-finished deploy) removing it. These are indistinguishable, so
+      // the default is fail-closed and the migration must be opted into
+      // explicitly — never inferred.
+      if (!bootstrap) return false;
+      console.warn(
+        "[catalog] bootstrapping the ownership store from the existing catalog file " +
+          "(CATALOG_OWNERSHIP_BOOTSTRAP). Do this ONCE on upgrade. It derives bindings from a file " +
+          "an attacker could have written, so it grants no more trust than that file already had.",
+      );
+      return true; // bindings get derived per-entry in bindLoadedEntry
+    }
+    const parsed = ownershipFileSchema.safeParse(raw);
+    if (!parsed.success) return false;
+    for (const row of parsed.data) this.ownership.set(row.resource, row.boundPayTo);
+    return true;
+  }
+
+  /**
+   * Persist ownership SYNCHRONOUSLY and atomically. Never debounced: entries are
+   * reconstructible from settlement traffic, ownership is not — losing a
+   * tombstone silently reopens that URL to first-writer claim, which is the
+   * vulnerability F11 closed.
+   */
+  private saveOwnership(): void {
     if (!this.persistPath) return;
     try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      writeFileSync(this.persistPath, JSON.stringify([...this.entries.values()], null, 2));
+      const rows = [...this.ownership.entries()].map(([resource, boundPayTo]) => ({
+        resource,
+        boundPayTo,
+      }));
+      writeFileAtomic(ownershipPathFor(this.persistPath), JSON.stringify(rows));
+    } catch (err) {
+      console.error("[catalog] ownership persist FAILED — bindings are at risk:", err);
+    }
+  }
+
+  /** Record ownership for a URL. Returns false when frozen (cap reached), which
+   * refuses the binding rather than silently forgetting an older one. */
+  private bindOwnership(resourceUrl: string, payTo: string): boolean {
+    if (this.ownership.has(resourceUrl)) return true; // already bound
+    if (this.ownership.size >= MAX_TOMBSTONES) {
+      if (this.frozen !== "tombstone-cap") {
+        this.frozen = "tombstone-cap";
+      }
+      // Warn on EVERY rejection, not just the transition: an operator reading
+      // logs a week later must see this is still happening.
+      console.warn(
+        `[catalog] tombstone cap (${MAX_TOMBSTONES}) reached — REFUSING new binding for ${resourceUrl}. ` +
+          `Existing bindings still work and settlement is unaffected. Forgetting ownership would be a ` +
+          `silent security regression, so new URLs are refused instead.`,
+      );
+      return false;
+    }
+    this.ownership.set(resourceUrl, [payTo]);
+    this.saveOwnership();
+    return true;
+  }
+
+  /** Evict least-recently-updated entries down to MAX_ENTRIES. Ownership is NOT
+   * dropped — the tombstone outlives the entry, so an evicted URL cannot be
+   * reclaimed by a different payTo. */
+  private evictToCap(): void {
+    if (this.entries.size <= MAX_ENTRIES) return;
+    const byAge = [...this.entries.entries()].sort((a, b) =>
+      a[1].resource.lastUpdated.localeCompare(b[1].resource.lastUpdated),
+    );
+    let toDrop = this.entries.size - MAX_ENTRIES;
+    for (const [key] of byAge) {
+      if (toDrop-- <= 0) break;
+      this.entries.delete(key);
+    }
+  }
+
+  private saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Debounced, atomic entry persistence. Entries are reconstructible from
+   * settlement traffic, so coalescing writes is safe; ownership is written
+   * separately and synchronously. */
+  private save(): void {
+    if (!this.persistPath) return;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      this.flush();
+    }, PERSIST_DEBOUNCE_MS);
+    this.saveTimer.unref?.();
+  }
+
+  /** Write entries now (also used by tests and shutdown). */
+  flush(): void {
+    if (!this.persistPath) return;
+    try {
+      writeFileAtomic(this.persistPath, JSON.stringify([...this.entries.values()], null, 2));
     } catch (err) {
       // Persistence is best-effort; the in-memory catalog stays authoritative.
       console.error("[catalog] persist failed:", err);
@@ -239,6 +827,13 @@ function toItem(entry: StoredEntry): TrustedDiscoveryResource {
     trust: {
       settlements: entry.stats.settlements,
       uniquePayers: entry.stats.payers.length,
+      // Forged stats cannot be *rejected* — settlement history has no
+      // independent source — so they are DISCLOSED instead. observedSettlements
+      // counts only what this process saw; statsSource says whether any part of
+      // `settlements` was inherited from disk and is therefore unverifiable.
+      observedSettlements: entry.stats.observed,
+      statsSource:
+        entry.stats.settlements === entry.stats.observed ? ("observed" as const) : ("persisted" as const),
       ...(entry.stats.lastSettled ? { lastSettled: entry.stats.lastSettled } : {}),
     },
   };

@@ -1,0 +1,39 @@
+# F9 remediation — deploy gate. Runs on every push and PR so a bad commit is
+# caught before it reaches Render (which builds on push with no gate of its own).
+# typecheck + tests BLOCK; npm audit is reported but non-blocking, so a
+# newly-published upstream advisory can't turn the pipeline red without a code
+# change on our side (run `npm audit fix` deliberately when one appears).
+name: CI
+
+on:
+  push:
+    branches: [main, "security/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Reproducible install from the lockfile; fails if package-lock is stale.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Non-blocking supply-chain report. `|| true` keeps a fresh upstream
+      # advisory from failing the build; review the output and remediate
+      # deliberately with `npm audit fix`.
+      - name: Audit (report only)
+        run: npm audit --audit-level=high || true

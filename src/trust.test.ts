@@ -15,10 +15,13 @@ import {
 const VERIFIED_HASH = "ab".repeat(32);
 
 function historyResponse(status: string, outputHash?: string) {
+  const body = { records: [{ status, ...(outputHash ? { outputHash } : {}) }] };
   return {
     ok: true,
-    json: async () => ({ records: [{ status, ...(outputHash ? { outputHash } : {}) }] }),
-  } as Response;
+    headers: { get: () => null },
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
 }
 
 function fixedResolver(map: Record<string, "verified" | "unverified" | "unknown">): TrustResolver {
@@ -58,7 +61,11 @@ describe("createTrustResolver", () => {
     const fetchFn = vi.fn(async () => historyResponse("verified", VERIFIED_HASH));
     const resolver = createTrustResolver({ verificationApiUrl: "http://v/verification", fetchFn });
     expect(await resolver.assetStatus("CASSET")).toBe("verified");
-    expect(fetchFn).toHaveBeenCalledWith("http://v/verification/CASSET");
+    // Fix 5: fetch now carries an AbortSignal for the timeout.
+    expect(fetchFn).toHaveBeenCalledWith(
+      "http://v/verification/CASSET",
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it("maps failed / empty history to unverified", async () => {
@@ -70,7 +77,15 @@ describe("createTrustResolver", () => {
 
     const empty = createTrustResolver({
       verificationApiUrl: "http://v",
-      fetchFn: vi.fn(async () => ({ ok: true, json: async () => ({ records: [] }) }) as Response),
+      fetchFn: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            headers: { get: () => null },
+            json: async () => ({ records: [] }),
+            text: async () => JSON.stringify({ records: [] }),
+          }) as unknown as Response,
+      ),
     });
     expect(await empty.assetStatus("CB")).toBe("unverified");
   });
@@ -153,13 +168,18 @@ describe("annotateTrust precedence", () => {
   it("all assets verified ⇒ verified; any unverified ⇒ unverified; else unknown", async () => {
     const resolver = fixedResolver({ CV: "verified", CU: "unverified", CX: "unknown" });
 
-    const [allVerified] = await annotateTrust([item(["CV"])], resolver);
+    // Fix 0 Layer 3: "verified" now also requires the owner to have passed the
+    // Layer 2 402 challenge, so these precedence cases pass an owner-verified
+    // check. (Asset-precedence itself is unchanged: any unverified ⇒ unverified.)
+    const ownerVerified = () => true;
+
+    const [allVerified] = await annotateTrust([item(["CV"])], resolver, ownerVerified);
     expect(allVerified!.trust?.verification).toBe("verified");
 
-    const [mixed] = await annotateTrust([item(["CV", "CU"])], resolver);
+    const [mixed] = await annotateTrust([item(["CV", "CU"])], resolver, ownerVerified);
     expect(mixed!.trust?.verification).toBe("unverified");
 
-    const [withUnknown] = await annotateTrust([item(["CV", "CX"])], resolver);
+    const [withUnknown] = await annotateTrust([item(["CV", "CX"])], resolver, ownerVerified);
     expect(withUnknown!.trust?.verification).toBe("unknown");
   });
 
@@ -168,12 +188,14 @@ describe("annotateTrust precedence", () => {
     const withStats = item("CV", {
       trust: { settlements: 7, uniquePayers: 3, lastSettled: "2026-08-01T00:00:00Z" },
     });
-    const [annotated] = await annotateTrust([withStats], resolver);
+    const [annotated] = await annotateTrust([withStats], resolver, () => true);
     expect(annotated!.trust).toEqual({
       settlements: 7,
       uniquePayers: 3,
       lastSettled: "2026-08-01T00:00:00Z",
       verification: "verified",
+      acceptsVerification: ["verified"],
+      ownerVerified: true,
     });
   });
 });

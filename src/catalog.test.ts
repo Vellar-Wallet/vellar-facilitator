@@ -171,6 +171,7 @@ describe("BazaarCatalog", () => {
       const file = join(dir, "catalog.json");
       const catalog = new BazaarCatalog(file);
       catalog.upsertFromPayment(discovered(), requirements());
+      catalog.flush(); // entry writes are debounced; ownership is already durable
       const reloaded = new BazaarCatalog(file);
       expect(reloaded.size).toBe(1);
       expect(reloaded.list().items[0]!.resource).toBe("https://api.example.com/weather");
