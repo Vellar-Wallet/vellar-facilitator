@@ -392,6 +392,34 @@ export class BazaarCatalog {
     return this.entries.get(resourceUrl)?.boundPayTo.includes(payTo) ?? false;
   }
 
+  /**
+   * G-3: the catalog is keyed on the CANONICAL resource url that
+   * `extractDiscoveryInfo` derives — `origin + pathname`, query and fragment
+   * stripped. Callers holding a RAW payload url (notably `/settle`, which reads
+   * `paymentPayload.resource.url`) must go through this, or a merchant whose
+   * resource carries a query string reads as unbound on every settle.
+   *
+   * Kept here rather than in the route on purpose: the route re-deriving the key
+   * is precisely how the two drifted apart.
+   *
+   * Degrades to the raw string on an unparseable url — this is client-supplied,
+   * so it must not throw, and a non-url simply cannot match a binding.
+   */
+  static canonicalResourceKey(rawUrl: string): string {
+    try {
+      const u = new URL(rawUrl);
+      return `${u.origin}${u.pathname}`;
+    } catch {
+      return rawUrl;
+    }
+  }
+
+  /** `isBound`, but accepting a raw payload url. Prefer this at trust
+   * boundaries; `isBound` assumes the caller already holds a canonical key. */
+  isBoundResource(rawResourceUrl: string, payTo: string): boolean {
+    return this.isBound(BazaarCatalog.canonicalResourceKey(rawResourceUrl), payTo);
+  }
+
   /** Whether the resource's own 402 challenge has confirmed its bound owner
    * (Fix 0 Layer 2). Consumers should treat an entry's accepts as authoritative
    * only when this is true. */

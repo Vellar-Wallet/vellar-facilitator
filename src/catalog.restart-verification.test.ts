@@ -16,10 +16,11 @@ import type { TrustResolver, TrustedDiscoveryResource } from "./trust.js";
 // behaviour is correct. If you fix either gap these tests SHOULD fail; update
 // them and the audit doc together.
 //
-// G-1  `verifiedOwner` is not persisted and re-verification only fires on first
-//      catalog, so after a restart every previously-verified entry serves
-//      ownerVerified:false FOREVER — and `verified_only=true` serves an empty
-//      catalog. That is a wrong answer to agents, not a throttle.
+// G-1  `verifiedOwner` is never READ back from disk and re-verification only
+//      fires on first catalog, so after a restart every previously-verified
+//      entry serves ownerVerified:false — and `verified_only=true` serves an
+//      empty catalog. That is a wrong answer to agents, not a throttle.
+//      (It does recover if the entry is evicted past MAX_ENTRIES; see below.)
 //
 // G-2  A bound resource URL has NO payTo rotation path. A merchant rotating
 //      their payment address is refused, while settlement stats keep climbing
@@ -156,7 +157,7 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
     await appAfter.close();
   });
 
-  it("is PERMANENT: further settles for the same URL never re-verify", async () => {
+  it("does not recover under normal traffic: further settles never re-verify", async () => {
     const file = join(tmpDir(), "catalog.json");
     const before = new BazaarCatalog(file);
     before.upsertFromPayment(disc(), reqs(PAY_OLD));
@@ -164,7 +165,13 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
 
     // After restart the URL is already present, so upsertFromPayment reports
     // isFirstCatalog=false — and `if (firstCatalog)` in bazaar.ts is the ONLY
-    // trigger for verifyResourceOwnership. No amount of traffic re-verifies.
+    // trigger for verifyResourceOwnership.
+    //
+    // Precisely: there is exactly ONE path back, and it is not a usable one.
+    // evictToCap() removing the entry past MAX_ENTRIES (10,000) makes the next
+    // settle a first-catalog again, which does re-verify (verified by probe).
+    // So the honest statement is "does not recover below the eviction cap",
+    // NOT "never" — and nobody should mistake cache pressure for a fix.
     const after = new BazaarCatalog(file);
     for (let i = 0; i < 5; i++) {
       expect(

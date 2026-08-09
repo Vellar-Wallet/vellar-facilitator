@@ -156,12 +156,18 @@ export async function buildServer(
       // F12: budget against the DURABLE ownership binding, not verifiedOwner —
       // verifiedOwner is not persisted and resets on restart, so keying on it
       // would drop every merchant into the shared unbound pool after a reboot.
-      const resourceUrl =
+      // G-3: canonicalize to the catalog's own key (`origin + pathname`). The
+      // payload carries the RAW url, so without this a merchant on
+      // `/quote?symbol=AAPL` reads as unbound on every settle and lands in the
+      // shared unbound pool — and the per-URL budget could be multiplied by
+      // simply varying the query string.
+      const rawResourceUrl =
         (paymentPayload as unknown as { resource?: { url?: string } }).resource?.url ?? "";
+      const resourceUrl = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
       const verdict = policy.checkSettle({
         resourceUrl,
         payTo: payToKey,
-        bound: resourceUrl !== "" && catalog.isBound(resourceUrl, payToKey),
+        bound: rawResourceUrl !== "" && catalog.isBound(resourceUrl, payToKey),
       });
       reservation = verdict.reservation;
       if (!verdict.allowed) {

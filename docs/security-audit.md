@@ -456,6 +456,8 @@ change.
 | --- | --- | --- |
 | **G-1** | Ownership verification lost on restart, never recovers — and it is **served to agents** | **open** — latent until a persistent disk is attached. Remediation named below; the backoff value needs threshold sign-off. |
 | **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure exists and must be documented; the automated fix trades away F11's takeover resistance. |
+| **G-4** | `recordSettlement` lets anyone inflate a victim entry's trust stats | **open** — highest-value of the review findings; no `payTo` check, and it runs after a rejected upsert. |
+| **G-5**–**G-8** | Load-path squat, unbounded load, unpersisted bootstrap bindings, one-way tombstone cap | **open** — triaged below, none fixed. |
 | **F4-ts** | Verification API has no per-record timestamp | **external** — needs the API to emit one; consumer side is already forward-compatible. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
@@ -561,7 +563,23 @@ them fail — update the tests and this section together.
 `CATALOG_FILE` could forge it), so `load()` forces it `false`. But Layer 2
 verification fires only under `if (firstCatalog)` in `src/bazaar.ts`, and
 `isFirstCatalog` is `existing === undefined` — false for every entry loaded from
-disk. **Nothing re-verifies, ever.**
+disk. **Nothing re-verifies under normal traffic.**
+
+> **Precision, corrected.** An earlier draft of this section said *never* and
+> *forever*. That is wrong, and adversarial review caught it. There is exactly
+> one path back: `evictToCap()` removing the entry once the catalog exceeds
+> `MAX_ENTRIES` (10,000) makes the next settle a first-catalog again, which does
+> re-verify — confirmed by probe. It is not a usable recovery path (it needs
+> >10,000 entries and evicts the LRU victim), but it must not be mistaken for
+> one: **do not "fix" G-1 by relying on cache pressure.**
+
+> **Also corrected:** `verifiedOwner` *is* written to `CATALOG_FILE` — `flush()`
+> serializes whole `StoredEntry` objects. It is simply never read back (the load
+> schema cannot carry it). Four comment sites and `.env.example` say "not
+> persisted", which is imprecise: **written, never read**. An operator inspecting
+> the file will see `verifiedOwner: true` that the code deliberately refuses to
+> honour. The same is true of `boundPayTo` and `stats.observed`. Harmless today,
+> and exactly the shape that becomes RA-9 again if a future loader trusts them.
 
 It is **not** an internal signal. Every reader:
 
@@ -574,6 +592,7 @@ It is **not** an internal signal. Every reader:
 | `trust.verification` (strict min of the clamped verdicts) | Can never read `"verified"`. |
 | `filterVerifiedOnly` (`?verified_only=true`) | **Returns an empty catalog.** Reads as "this facilitator has no trustworthy resources". |
 | `rerankVerifiedFirst` (`/discovery/search`) | Every entry lands in the same `"unknown"` band, so trust-ranking silently flattens to input order. |
+| `applyVerifiedOnly` in `src/mcp.ts` (both MCP tools) | **A third consumer**, missed on the first pass and found by adversarial review. The MCP surface filters on the same clamped `trust.verification`, so agents reaching the catalog over MCP — the primary intended consumer — get the empty answer too. |
 
 This is a **wrong answer served to consumers**, not a throttle. An agent that
 trusts `verified_only` gets nothing; an agent that reads `ownerVerified` gets
@@ -641,6 +660,57 @@ the entry's trust signals keep climbing while it does.
 **Do not let a merchant discover this by not getting paid.** The manual procedure
 above should be in operator docs before any merchant is onboarded on a deployment
 with a persistent disk.
+
+### G-3 — Spend policy keyed on the RAW url, catalog keyed on the CANONICAL one — **High** — closed-by-test
+
+Found by adversarial review **of the F12 change itself**, before merge.
+
+`extractDiscoveryInfo` canonicalizes to `origin + pathname` — query string and
+fragment stripped — and that canonical string is the catalog key. But `/settle`
+read `paymentPayload.resource.url`, the **raw** url, and passed it straight to
+`policy.checkSettle` as both the per-URL budget key and the argument to
+`catalog.isBound`. The two never matched for any resource carrying a query
+string, which is the ordinary shape for an API (`/quote?symbol=AAPL`).
+
+Two consequences, both defeating the point of F12:
+
+- **Honest merchants were scored unbound on every settle** and dropped into the
+  shared unbound pool — 10/60s shared with every sprayer. Precisely the
+  starvation F12 was built to remove, reintroduced by the key mismatch.
+- **The per-URL budget was multipliable by varying the query string**, since each
+  variant minted its own budget bucket.
+
+**Fixed:** `BazaarCatalog.canonicalResourceKey()` plus `isBoundResource()`, with
+`/settle` canonicalizing once and using that for both the budget key and the
+bound check. Canonicalization lives behind `BazaarCatalog` deliberately — the
+route re-deriving the key is how the two drifted apart to begin with.
+
+Mutation-verified at **both** levels, because the catalog-level tests alone stay
+green when the route regresses (the RA-12 decorative-test failure mode):
+reverting `/settle` to the raw url fails 3 tests in
+`src/server.policykey.test.ts`.
+
+**Residual, deliberately not fixed:** when a resource declares a `routeTemplate`,
+the catalog key is `origin + routeTemplate` (e.g. `/users/{id}`), which no
+concrete request url canonicalizes to. Those entries still read unbound at
+settle. Matching a live path against a template is a fuzzy match at a trust
+boundary and is not worth the risk for the gain; the correct fix is to carry the
+canonical key on the payload rather than re-derive it. Recorded rather than
+guessed at.
+
+### Further findings from adversarial review — triage, not yet fixed
+
+Independent reviewers checking G-1/G-2 surfaced these. None is caused by F12.
+Listed so they are not lost; none is fixed on this branch.
+
+| ID | Finding | Assessment |
+| --- | --- | --- |
+| **G-4** | `recordSettlement` has no `payTo` check and runs *unconditionally* after a rejected upsert, so anyone settling against a cataloged URL inflates **that entry's** `settlements`/`uniquePayers`/`lastSettled` — and `statsSource` still reads `observed`, because they genuinely were. | **Real, and the most consequential of these.** Trust stats are attacker-inflatable for an arbitrary victim entry at the cost of one settlement each. It also underpins G-2's "the stale entry looks more trustworthy over time". |
+| **G-5** | An entry with `accepts: []` (schema-valid — no `.min(1)`) early-returns in `bindLoadedEntry` *before* the tombstone seeding, so it loads with `boundPayTo: []` and no ownership row, and then **every** payTo is refused forever. | Real. A permanent URL squat via a crafted `CATALOG_FILE`; reachable only by someone who can already write that file, so it ranks below G-4. |
+| **G-6** | `MAX_ENTRIES` is enforced only on the write path. `load()` sets every valid row with no bound, so a large `CATALOG_FILE` is an unbounded startup memory load. | Real; the F3 bound is a write-path bound only. |
+| **G-7** | `bindLoadedEntry` seeds `this.ownership` but never calls `saveOwnership()`, so bindings derived during a `CATALOG_OWNERSHIP_BOOTSTRAP` run live only in memory unless some later binding incidentally flushes. | Real, and it undercuts the documented one-boot bootstrap procedure. |
+| **G-8** | The tombstone cap is a one-way door: at `MAX_TOMBSTONES` all new bindings are refused permanently, with no reset short of deleting the ownership file — which itself trips the fail-closed guard. | Known and deliberate (fail-closed by design), but the *absence of any reset path* is worth an explicit operator procedure. |
+| **G-9** | `if (!trust) return response` in both discovery routes returns unfiltered results *before* filtering, so `verified_only=true` is silently ignored when no resolver is injected. | **Not reachable in production** — `src/server.ts` always constructs a resolver, and an unset `VERIFICATION_API_URL` yields one that answers `"unknown"` rather than `undefined`. Test-only shape; worth a guard so it stays that way. |
 
 ---
 
