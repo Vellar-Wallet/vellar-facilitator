@@ -402,6 +402,7 @@ first bite whenever someone sets `STELLAR_NETWORK=pubnet`. Revisit before that.
 
 | ID | Finding | Why |
 | --- | --- | --- |
+| **F12** | Spend accounting is global while rate limiting is per-IP — neither stops a distributed attacker | **open — first pubnet blocker.** See below. |
 | **F3** | Non-atomic `save()`, unbounded entries/`accepts` | Not fixed on any branch. Interacts with F11 — eviction drops ownership bindings. |
 | **F4-ts** | Verification API has no per-record timestamp | **external** — needs the API to emit one; consumer side is already forward-compatible. |
 | **F10-op** | `examples/.env.recording` holds a live testnet `AGENT_SECRET` | Operational; needs rotation and scrub. |
@@ -409,6 +410,40 @@ first bite whenever someone sets `STELLAR_NETWORK=pubnet`. Revisit before that.
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
 
 ---
+
+### F12 — Spend controls throttle honest load, not a distributed attacker — **High** — **OPEN**
+
+Surfaced while sizing the thresholds, and it is a shape problem rather than a
+number problem.
+
+The two spend controls are keyed on different, wrong things:
+
+- `SPEND_CEILING_STROOPS` is **global** — one bucket for the whole facilitator.
+- The per-IP rate limit is **per-IP**, and `SETTLE_RATE_MAX` is **per-payTo**.
+
+A self-dealing attacker spreads across many addresses and many source IPs. Each
+individual bucket stays under its limit, but the **global** ceiling is consumed
+regardless of who consumed it. At the current default (1 XLM / 60s at a 500,000
+stroop estimate) that is roughly **20 settlements per minute for the entire
+service**. The attacker pays almost nothing — the transfer nets to zero for a
+self-dealer — while the merchants who get refused are the honest ones arriving
+after the bucket is empty.
+
+So the controls do not stop the attack they were built for; they convert it from
+a sponsor-drain into a **denial of service against legitimate merchants**.
+Raising the ceiling does not fix this — it just moves the point at which honest
+traffic is refused, and re-widens the drain.
+
+**Structural fix:** account for spend **per-payTo or per-bound-URL**, keyed off
+the F11 ownership bindings. Those bindings did not exist when the spend policy
+was written; they do now, and they are exactly the stable identity the accounting
+needs — an attacker cannot rotate `payTo` under a bound URL, which was the reason
+per-payTo throttling was dismissed as a convenience-only control (RA-6/D6). A
+bound URL is a much harder identity to multiply than an address or an IP.
+
+**Sequencing: this is the first pubnet blocker after merge, ahead of the
+threshold review.** Reviewing the numbers before fixing the shape would produce a
+confidently-tuned control that still fails against the attacker it targets.
 
 ## What `main` is running today
 
