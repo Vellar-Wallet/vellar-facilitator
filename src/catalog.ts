@@ -553,13 +553,35 @@ export class BazaarCatalog {
   }
 
   /**
-   * Record one settled payment against a cataloged resource (no-op for
-   * unknown resources — stats exist only for catalog entries). Unique payers
-   * are deduped and capped; the settlement count is unbounded.
+   * Record one settled payment against a cataloged resource. Unique payers are
+   * deduped and capped; the settlement count is unbounded. Returns whether the
+   * settlement was counted.
+   *
+   * G-4: `settledPayTo` is REQUIRED and must be bound to the resource. Without
+   * it, any payer could move any entry's stats: `recordSettlement` ran
+   * unconditionally in bazaar.ts *after* `upsertFromPayment`, so a payment the
+   * catalog had just refused as an F11 hijack still incremented the victim's
+   * settlements, uniquePayers and lastSettled — while `statsSource` continued to
+   * read "observed", asserting a provenance the data did not have.
+   *
+   * The gate lives here rather than at the call site on purpose: a caller
+   * forgetting to check is exactly how this happened.
+   *
+   * What this does NOT prevent: a bound owner inflating their own stats by
+   * paying themselves. That is indistinguishable from real custom at this layer
+   * — see G-4 in docs/security-audit.md for the cost bound on it.
    */
-  recordSettlement(resourceUrl: string, payer?: string): void {
-    const entry = this.entries.get(resourceUrl);
-    if (!entry) return;
+  recordSettlement(resourceUrl: string, payer: string | undefined, settledPayTo: string): boolean {
+    const key = BazaarCatalog.canonicalResourceKey(resourceUrl);
+    const entry = this.entries.get(key);
+    if (!entry) return false;
+    if (!settledPayTo || !entry.boundPayTo.includes(settledPayTo)) {
+      console.warn(
+        `[catalog] refused settlement stat for ${key}: payTo ${settledPayTo || "(absent)"} is not bound ` +
+          `(bound: ${entry.boundPayTo.join(", ")}) — stats may only be moved by the resource's bound owner (G-4)`,
+      );
+      return false;
+    }
     entry.stats.settlements += 1;
     entry.stats.observed += 1;
     entry.stats.lastSettled = new Date().toISOString();
@@ -571,6 +593,7 @@ export class BazaarCatalog {
       entry.stats.payers.push(payer);
     }
     this.save();
+    return true;
   }
 
   /** GET /discovery/resources — filtered, offset-paginated listing. Items are

@@ -46,7 +46,12 @@ export function registerBazaar(
       const firstCatalog = catalog.upsertFromPayment(discovered, requirements);
       // Settlement ground truth (trust layer): count the settlement and the
       // distinct payer against the cataloged resource.
-      catalog.recordSettlement(discovered.resourceUrl, result.payer);
+      //
+      // G-4: this runs even when the upsert above was REJECTED, which is how a
+      // refused F11 hijack used to inflate the victim entry's stats. The payTo
+      // is now passed through and the catalog refuses any that is not bound, so
+      // the ordering here is no longer load-bearing for correctness.
+      catalog.recordSettlement(discovered.resourceUrl, result.payer, requirements.payTo);
 
       // Fix 0 Layer 2: on the FIRST catalog of a URL, verify ownership against
       // the resource's own 402 challenge — asynchronously, fire-and-forget.

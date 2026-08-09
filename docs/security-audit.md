@@ -644,11 +644,12 @@ the entry's trust signals keep climbing while it does.
 
 **Remediation (named):**
 
-- **Now — the manual operator path.** Rotation is possible today by stopping the
-  service, editing `<CATALOG_FILE>.ownership` to add the new `payTo`, and
-  restarting. This should be documented as the supported procedure. It is
-  deliberately operator-mediated: this repo has no auth layer by design, so there
-  is no safe in-band way to authorize a rotation request.
+- **Now — the manual operator path**, written up as procedure 1 in
+  [`docs/operator-runbook.md`](./operator-runbook.md) and referenced from
+  `render.yaml` beside the disk warning. It is deliberately operator-mediated:
+  this repo has no auth layer by design, so there is no safe in-band way to
+  authorize a rotation. The runbook leads with the confirm step because a
+  rotation and a hijack produce the **identical** log line.
 - **Later, and only with an explicit decision — automated re-challenge.** Re-run
   the 402 challenge when an unbound `payTo` appears for a bound URL, and append it
   if the resource's *current* challenge names it. This is the same proof used at
@@ -698,6 +699,61 @@ boundary and is not worth the risk for the gain; the correct fix is to carry the
 canonical key on the payload rather than re-derive it. Recorded rather than
 guessed at.
 
+### G-4 — Settlement stats were writable by anyone — **High** — closed-by-test
+
+The trust layer's own product. With `VERIFICATION_API_URL` deliberately unset,
+`trust.settlements` / `uniquePayers` / `lastSettled` are the **only** trust signal
+an agent can actually read — every verification verdict degrades to `"unknown"`.
+They were writable by any payer, against any entry.
+
+`recordSettlement` had no `payTo` check, and `src/bazaar.ts` called it
+**unconditionally after `upsertFromPayment`** — including when that upsert had
+just been *rejected* as an F11 hijack. So a payment the catalog had explicitly
+refused to associate with an entry still incremented that entry's counters. The
+ordering was the bug: the rejection was computed and then ignored.
+
+`statsSource` continued to read `"observed"` throughout, which is the sharper
+half. The label asserts *these settlements were witnessed for this entry* — and
+for forged increments that was false. The provenance disclosure added in RA-13
+was itself reporting laundered data.
+
+Measured before the fix: **one genuine settlement plus five attacker settlements
+produced `settlements: 6`** on the victim's entry, with the attacker counted as a
+unique payer and `lastSettled` refreshed.
+
+**Fixed** by requiring the settled `payTo` and refusing any that is not bound to
+the resource. The gate is in `BazaarCatalog.recordSettlement`, not at the call
+site, because a caller forgetting to check is precisely how this arose. The URL
+is canonicalized on the way in (G-3), so a query string cannot slip past it.
+
+**Does this make forged stats impossible, or merely marked?** Impossible, within
+a stated boundary — and the boundary matters:
+
+- **Cross-entity forgery is now impossible.** You cannot move an entry's stats at
+  all unless you are its bound owner. There is no "counted but flagged" path; the
+  increment does not happen.
+- **Self-inflation by the bound owner remains possible** and cannot be fixed at
+  this layer: a merchant paying themselves is indistinguishable on-chain from a
+  customer paying them. The cost bound is real but modest — `settlements` is free
+  to inflate beyond the sponsored fee, and `uniquePayers` costs roughly one
+  account reserve (~1 XLM, recoverable) per fake payer.
+
+So `settlements` should be read as *"this many settlements went to this
+resource's bound owner"* — not as *"this many distinct people found it useful"*.
+That is a genuine claim and it is now enforced; it is a weaker claim than the
+number's presentation implies. Raising `uniquePayers` above a courtesy signal
+would need payer reputation, which this repo does not have.
+
+Mutation-verified three ways: removing the gate, weakening it to "any binding
+exists" rather than "this payTo", and — the ordering-specific case — leaving the
+gate correct while the caller passes the entry's owner instead of the actual
+settled `payTo`. All three are detected.
+
+**Side effect on G-2:** a rotated merchant's settlements no longer accrue to the
+stale entry, so the "stale entry looks more trustworthy over time" hazard is
+gone. Their real settlements are now invisible to the catalog rather than
+credited to the wrong address — better, and still not a rotation path.
+
 ### Further findings from adversarial review — triage, not yet fixed
 
 Independent reviewers checking G-1/G-2 surfaced these. None is caused by F12.
@@ -705,7 +761,7 @@ Listed so they are not lost; none is fixed on this branch.
 
 | ID | Finding | Assessment |
 | --- | --- | --- |
-| **G-4** | `recordSettlement` has no `payTo` check and runs *unconditionally* after a rejected upsert, so anyone settling against a cataloged URL inflates **that entry's** `settlements`/`uniquePayers`/`lastSettled` — and `statsSource` still reads `observed`, because they genuinely were. | **Real, and the most consequential of these.** Trust stats are attacker-inflatable for an arbitrary victim entry at the cost of one settlement each. It also underpins G-2's "the stale entry looks more trustworthy over time". |
+| **G-4** | `recordSettlement` had no `payTo` check and ran *unconditionally* after a rejected upsert. | **closed-by-test** — see the full writeup below. |
 | **G-5** | An entry with `accepts: []` (schema-valid — no `.min(1)`) early-returns in `bindLoadedEntry` *before* the tombstone seeding, so it loads with `boundPayTo: []` and no ownership row, and then **every** payTo is refused forever. | Real. A permanent URL squat via a crafted `CATALOG_FILE`; reachable only by someone who can already write that file, so it ranks below G-4. |
 | **G-6** | `MAX_ENTRIES` is enforced only on the write path. `load()` sets every valid row with no bound, so a large `CATALOG_FILE` is an unbounded startup memory load. | Real; the F3 bound is a write-path bound only. |
 | **G-7** | `bindLoadedEntry` seeds `this.ownership` but never calls `saveOwnership()`, so bindings derived during a `CATALOG_OWNERSHIP_BOOTSTRAP` run live only in memory unless some later binding incidentally flushes. | Real, and it undercuts the documented one-boot bootstrap procedure. |
