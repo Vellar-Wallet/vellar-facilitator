@@ -398,6 +398,45 @@ first bite whenever someone sets `STELLAR_NETWORK=pubnet`. Revisit before that.
 | Per-IP rate limit | **60 / min** | `/health` exempt so the Render health check cannot trip. Keyed via `trustProxy: 1` — exactly one hop, because `true` is client-spoofable (RA-4). |
 | Body limit | **32 KiB** | Derived, not picked: largest real settlement envelope measured on-chain is 3,400 base64 chars (~2.5 KB), giving ~9.6x margin. |
 
+## Deployment posture — deliberate choices, not oversights
+
+### `VERIFICATION_API_URL` is deliberately UNCONFIGURED
+
+The hosted instance serves `"unknown"` for every trust verdict. **This is a
+decision, not a gap.** Configuring it makes that API a trust root — a compromised
+or merely wrong endpoint can assert `verified` — and two preconditions are
+unresolved:
+
+1. **Named precondition: the per-record timestamp.** The response carries no
+   timestamp, so "newest record" falls back to `records[0]`. A stale `verified`
+   can be read for a contract whose latest run actually failed. The consumer side
+   is already forward-compatible (`newestRecord()` sorts by `timestamp` /
+   `verifiedAt` / `createdAt` the moment any appears).
+2. The response is **unauthenticated** — no signature, no mTLS.
+
+`"unknown"` is the honest degrade. Enable it once (1) lands; do not enable it
+because it looks unset by accident.
+
+### `CATALOG_OWNERSHIP_BOOTSTRAP` is an escape hatch, not a feature
+
+Setting it derives ownership bindings from an existing catalog file when the
+companion ownership store is absent, and **disables the fail-closed protection**
+against a missing or deleted ownership store while set. It grants no more trust
+than that file already had — if an attacker wrote the file, they choose the
+owners.
+
+It is intentionally **absent from `render.yaml`**, off by default, and warns
+loudly on **every** boot while set (not only when exercised), on the same
+standard as the sibling repo's `ALLOW_INMEMORY`. Set it for a single boot to
+migrate a pre-existing catalog, then remove it.
+
+The trap it exists for: `render.yaml` points `CATALOG_FILE` at `/var/data`, but
+`plan: free` has no persistent disk — so today nothing survives and the
+fail-closed path never triggers. The first boot **after a disk is attached**
+finds a catalog with no ownership store and comes up healthy while serving an
+empty discovery catalog. `render.yaml` now carries that warning at the point of
+change.
+
 ## Still open
 
 | ID | Finding | Why |

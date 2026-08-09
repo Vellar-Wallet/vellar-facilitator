@@ -284,7 +284,9 @@ function isParseableTransactionXdr(payload: PaymentPayload): boolean {
 const isDirectRun = process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js");
 if (isDirectRun) {
   const config = loadConfig();
-  const catalog = new BazaarCatalog(config.catalogFile);
+  const catalog = new BazaarCatalog(config.catalogFile, {
+    bootstrapOwnership: config.catalogOwnershipBootstrap,
+  });
   const { createTrustResolver } = await import("./trust.js");
   const trust = createTrustResolver({
     verificationApiUrl: config.verificationApiUrl,

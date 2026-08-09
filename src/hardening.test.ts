@@ -21,6 +21,7 @@ const testConfig = {
   verificationApiUrl: undefined,
   spend: { rateMax: 30, rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
+  catalogOwnershipBootstrap: false,
 };
 
 function requirements(): PaymentRequirements {
