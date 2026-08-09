@@ -154,7 +154,10 @@ describe("registerBazaar — Layer 2 async ownership verification", () => {
     // Let the fire-and-forget microtask settle.
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(verify).toHaveBeenCalledWith("https://api.example.com/weather", requirements().payTo);
+    // G-1: the catalog now drives verification and passes the resource's whole
+    // BOUND set (a copy — the array aliases the ownership tombstone), so a
+    // rotated merchant with two bound addresses is settled in one fetch.
+    expect(verify).toHaveBeenCalledWith("https://api.example.com/weather", [requirements().payTo]);
     expect(catalog.isVerifiedOwner("https://api.example.com/weather")).toBe(true);
   });
 

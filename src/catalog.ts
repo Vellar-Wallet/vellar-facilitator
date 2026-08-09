@@ -11,6 +11,7 @@ import type {
   SearchDiscoveryResourcesParams,
   SearchDiscoveryResourcesResponse,
 } from "@x402/extensions/bazaar";
+import type { OwnershipVerdict } from "./ownership.js";
 import type { TrustedDiscoveryResource } from "./trust.js";
 
 const DEFAULT_LIMIT = 20;
@@ -31,6 +32,29 @@ const MAX_ACCEPTS = 20;
 /** Max ownership tombstones. At this cap the catalog FREEZES new bindings
  * rather than forgetting ownership — see `frozen`. */
 const MAX_TOMBSTONES = 100_000;
+/** G-1 retry floors. A `mismatch` is a DEFINITE answer, so retrying it buys
+ * nothing but outbound traffic — 24h makes it effectively terminal while still
+ * self-healing after a legitimate operator rotation. An `unverifiable` is
+ * UNCERTAIN (endpoint down, timeout, non-402), so it recovers far sooner. They
+ * deliberately do not share a floor. These are the brake on amplification. */
+const REVERIFY_COOLDOWN_MISMATCH_MS = 24 * 60 * 60 * 1000;
+const REVERIFY_COOLDOWN_UNVERIFIABLE_MS = 15 * 60 * 1000;
+
+function cooldownFor(verdict: OwnershipVerdict): number {
+  return verdict === "mismatch" ? REVERIFY_COOLDOWN_MISMATCH_MS : REVERIFY_COOLDOWN_UNVERIFIABLE_MS;
+}
+
+/** A catalog key derived from a client-declared routeTemplate, e.g.
+ * `https://h/quote/:symbol`. Such a key is not a fetchable URL. */
+function isTemplatedKey(key: string): boolean {
+  try {
+    const p = new URL(key).pathname;
+    return p.includes(":") || p.includes("{");
+  } catch {
+    return false;
+  }
+}
+
 /** Debounce window for the (reconstructible) entry file. Ownership is never
  * debounced. */
 const PERSIST_DEBOUNCE_MS = 250;
@@ -354,6 +378,10 @@ export class BazaarCatalog {
    * problem; forgetting ownership is a silent security one.
    */
   private frozen: false | "ownership-unreadable" | "tombstone-cap" = false;
+  /** G-1 verification scheduling state. In-memory ONLY: never persisted (RA-9)
+   * and never on the wire (no attacker-forceable signal for consumers). */
+  private readonly verifyState = new Map<string, { verdict: OwnershipVerdict; at: number }>();
+  private readonly verifyInFlight = new Set<string>();
 
   constructor(persistPath?: string, opts: { bootstrapOwnership?: boolean } = {}) {
     this.persistPath = persistPath;
@@ -418,6 +446,89 @@ export class BazaarCatalog {
    * boundaries; `isBound` assumes the caller already holds a canonical key. */
   isBoundResource(rawResourceUrl: string, payTo: string): boolean {
     return this.isBound(BazaarCatalog.canonicalResourceKey(rawResourceUrl), payTo);
+  }
+
+  /**
+   * G-1: re-run Layer 2 for an already-cataloged resource.
+   *
+   * `verifiedOwner` is never trusted from disk (RA-9), and Layer 2 used to fire
+   * only on first catalog, so a restored entry stayed unverified forever and
+   * `verified_only=true` served an empty catalog. This is the path
+   * `bindLoadedEntry` always claimed existed.
+   *
+   * The catalog owns this rather than exposing the binding, because
+   * `entry.boundPayTo` IS the ownership tombstone array — handing it out would
+   * put a durable rebinding primitive one `.push()` away. The verifier receives
+   * a COPY.
+   *
+   * Every gate below exists to bound outbound traffic. The settling payTo must
+   * already be bound, so a stranger cannot make the facilitator fetch a URL;
+   * note this is 1:1, not zero — under TOFU the bound owner is the first
+   * settler, not necessarily whoever controls the endpoint — which is exactly
+   * why the cooldowns, not the gate, are the real brake.
+   *
+   * Verdicts: `match` verifies; `mismatch` is a DEFINITE denial and parks the
+   * URL for 24h; `unverifiable` is UNCERTAIN and never downgrades an existing
+   * verification, retrying after 15min. No verdict ever touches a binding.
+   *
+   * State is in-memory only — never persisted (RA-9 stays closed) and never on
+   * the wire (nothing an attacker can force onto a victim's entry).
+   */
+  async reverify(
+    rawResourceUrl: string,
+    settlingPayTo: string,
+    verify: (url: string, payTos: string[]) => Promise<OwnershipVerdict>,
+    now: number = Date.now(),
+  ): Promise<"match" | "mismatch" | "unverifiable" | "skipped"> {
+    const key = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
+    const entry = this.entries.get(key);
+    if (!entry) return "skipped";
+    // Already verified: nothing to re-establish, and re-probing a good entry is
+    // pure outbound traffic. This is also what makes an existing verification
+    // undowngradable — the verifier is never consulted again — so the
+    // match-only write below can only ever act on an unverified entry.
+    if (entry.verifiedOwner) return "skipped";
+    // An entry that binds to nothing (bindLoadedEntry's empty-accepts branch)
+    // has no claim to test — asking would read back a false mismatch. Checked
+    // BEFORE the bound-owner gate: that gate would reject an empty binding too,
+    // which would make this line dead code that merely looks load-bearing.
+    if (entry.boundPayTo.length === 0) return "skipped";
+    // Only the bound owner's own settlement may trigger a probe. Note this is
+    // 1:1, not zero: under TOFU the bound owner is the FIRST SETTLER, not
+    // necessarily whoever controls the endpoint, so a stranger who bound a
+    // victim's URL can still cause one probe per settlement. The cooldowns
+    // below, not this gate, are the actual brake.
+    if (!settlingPayTo || !entry.boundPayTo.includes(settlingPayTo)) return "skipped";
+    // A routeTemplate key is `origin + /quote/:symbol`; fetching it would GET a
+    // literal `:symbol`. Structurally unverifiable, so never probe it.
+    if (isTemplatedKey(key)) return "skipped";
+    if (this.verifyInFlight.has(key)) return "skipped";
+
+    const last = this.verifyState.get(key);
+    if (last && now - last.at < cooldownFor(last.verdict)) return "skipped";
+
+    this.verifyInFlight.add(key);
+    try {
+      // Copy: the verifier must never receive the tombstone array itself.
+      const verdict = await verify(key, [...entry.boundPayTo]);
+      this.verifyState.set(key, { verdict, at: now });
+      if (verdict === "match") {
+        this.setVerifiedOwner(key, true);
+      } else if (verdict === "mismatch") {
+        console.warn(
+          `[catalog] ownership MISMATCH on re-verify for ${key}: the resource's 402 challenge no longer ` +
+            `names its bound owner. Left UNVERIFIED; binding unchanged. This reads the same as a merchant ` +
+            `who rotated and as a domain that changed hands — see docs/operator-runbook.md §1 (G-1/G-2).`,
+        );
+      }
+      return verdict;
+    } catch {
+      // A hostile or broken verifier is uncertainty, not a denial.
+      this.verifyState.set(key, { verdict: "unverifiable", at: now });
+      return "unverifiable";
+    } finally {
+      this.verifyInFlight.delete(key);
+    }
   }
 
   /** Whether the resource's own 402 challenge has confirmed its bound owner
@@ -745,11 +856,15 @@ export class BazaarCatalog {
       stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo: authoritative ?? [ownerPayTo],
       // Never trust a stored verified flag — a crafted file could forge it (RA-9).
+      // Layer 2 re-verifies from the resource on the bound owner's next
+      // settlement, via `reverify` (G-1).
       //
-      // NOTE: this does NOT re-verify. Layer 2 fires only when upsertFromPayment
-      // reports isFirstCatalog, which is false for any entry loaded from disk, so
-      // a restored entry serves ownerVerified:false permanently. See G-1 in
-      // docs/security-audit.md — that is a known gap, not the intended design.
+      // That sentence was in this file for a long time before it was true: Layer 2
+      // fired only on first catalog, which is never the case for a loaded entry, so
+      // a restored entry stayed unverified forever and `verified_only=true` served
+      // an empty catalog. It is now asserted end-to-end in
+      // src/catalog.reverify.test.ts — if the path is removed, that test fails and
+      // this comment stops being a claim nobody checks.
       verifiedOwner: false,
     };
   }

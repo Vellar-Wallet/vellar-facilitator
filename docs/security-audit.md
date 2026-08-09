@@ -60,9 +60,17 @@ code. Pre-fix `HIJACKED`; post-fix `BLOCKED`. Settle #2 **succeeded on-chain in
 both runs**, so "blocked" means the catalog refused it, not that the payment
 failed.
 
-Documented limitation: the TOFU binding is in-memory / on an ephemeral disk, so
-it resets on restart and every URL becomes claimable again until durable storage
-exists. Layer 2 is the control that survives a restart.
+Documented limitation: on the current free-tier deployment there is no persistent
+disk, so the TOFU binding resets on restart and every URL becomes claimable again
+until durable storage exists.
+
+> **Correction.** This section used to end "Layer 2 is the control that survives a
+> restart." That was **backwards**, and G-1 is the consequence. Layer **1** is what
+> survives: the `.ownership` tombstone file is durable once a disk exists. Layer 2
+> was the control that did *not* survive — `verifiedOwner` is never read back from
+> disk (RA-9) and re-verification fired only on first catalog, so it was lost at
+> every restart and never recovered. Since G-1 it recovers on the bound owner's
+> next settlement.
 
 ### F2 — Unauthenticated sponsor drain — **High** — closed-by-test
 
@@ -454,7 +462,6 @@ change.
 
 | ID | Finding | Why |
 | --- | --- | --- |
-| **G-1** | Ownership verification lost on restart, never recovers — and it is **served to agents** | **open** — latent until a persistent disk is attached. Remediation named below; the backoff value needs threshold sign-off. |
 | **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure exists and must be documented; the automated fix trades away F11's takeover resistance. |
 | **G-4** | `recordSettlement` lets anyone inflate a victim entry's trust stats | **open** — highest-value of the review findings; no `payTo` check, and it runs after a rejected upsert. |
 | **G-5**–**G-8** | Load-path squat, unbounded load, unpersisted bootstrap bindings, one-way tombstone cap | **open** — triaged below, none fixed. |
@@ -469,6 +476,7 @@ Closed since this table was first written (kept here so the history is not lost)
 | **F12** | Spend accounting was global while rate limiting was per-IP | **closed-by-test** — per-entity budgets keyed off the F11 bindings. See the control-scope table for what this does and does not achieve. |
 | **F3** | Non-atomic `save()`, unbounded entries/`accepts` | **closed-by-test** — atomic writes, bounds, and ownership tombstones so eviction cannot drop a binding. |
 | **F10-op** | `examples/.env.recording` held a live testnet `AGENT_SECRET` | **closed** — signer removed on-chain and confirmed `null`, local copies deleted. See the `argv` lesson above. |
+| **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement; settle-triggered only, cooldowns asserted in outbound fetches. |
 
 ---
 
@@ -557,7 +565,77 @@ Characterized end-to-end through the real routes in
 they pin current behaviour, not desired behaviour. Fixing either gap should make
 them fail — update the tests and this section together.
 
-### G-1 — Ownership verification is lost on restart and never recovers — **High (latent)** — **OPEN**
+### G-1 — Ownership verification is lost on restart — **High (latent)** — closed-by-test
+
+**Fixed** by `BazaarCatalog.reverify()`: Layer 2 now re-runs on the **bound
+owner's next settlement** while an entry is unverified, not only on first
+catalog. This is the path `bindLoadedEntry`'s comment always claimed existed; the
+comment is now asserted by test rather than merely asserted.
+
+Three design decisions, taken before implementing:
+
+- **Settle-triggered only — no background prober.** A timer that re-probes would
+  grant `verified` on *current domain control* with no contemporaneous payment,
+  which is the same inference refused for automated rotation (runbook §1). Every
+  fetch stays anchored to a real settlement. **The price, accepted explicitly:** a
+  zero-traffic resource stays unverified, so `verified_only` remains incomplete
+  after a restart until each merchant next settles.
+- **State is in-memory only** — never persisted (RA-9 stays closed) and never on
+  the wire, so there is no verification signal an attacker can force onto a
+  victim's entry.
+- **`mismatch` and `unverifiable` do not share a retry floor.** A mismatch is a
+  *definite* answer (24h, effectively terminal but still self-healing after a
+  legitimate rotation); an unverifiable is *uncertain* (15min).
+
+**The amplification rationale, corrected.** The first version of this design
+claimed the bound-owner gate *removes* the amplification vector. That is false,
+and red-teaming caught it: under TOFU the bound owner is whoever **settled
+first**, not whoever controls the endpoint — which is precisely why Layer 2
+exists. An attacker who settles once against a victim's URL becomes its bound
+owner and can then cause one probe per settlement. The gate yields **1:1, not
+zero**. The cooldowns, not the gate, are the brake — so they are asserted by
+**counting outbound fetches**, not by reading the bookkeeping field. 50
+settlements against a mismatching resource produce exactly **one** fetch.
+
+**Guards, each with a no-fetch test:** unbound settling payTo, empty binding
+(`bindLoadedEntry`'s no-accepts branch — passing no address read back as a false
+`mismatch`), `routeTemplate` keys (the canonical key is a literal
+`origin + /quote/:symbol`, which is not fetchable), uncataloged resources,
+already-verified entries, and in-flight duplicates.
+
+**The binding is never exposed.** `entry.boundPayTo` *is* the ownership tombstone
+array — red-teaming proved that one `.push()` on it reaches the ownership file on
+disk and survives a restart, which would be full takeover-rebinding. So the
+catalog owns `reverify` and hands the verifier a **copy**. A test mutates what
+the verifier receives and asserts the binding is unmoved.
+
+**No verdict can rebind.** Independently confirmed: `setVerifiedOwner` is the only
+catalog mutation a re-verify performs, the ownership map has no `delete`/`clear`
+anywhere in the file, and a tampered entry file cannot move a binding because the
+load schema strips `boundPayTo`. A test snapshots the ownership store, runs every
+verdict repeatedly across cooldown windows, and asserts it is byte-identical.
+
+**Hot path preserved, and the reason is now written down.** `@x402/core` *awaits*
+the afterSettle hook, so `void` + `.catch()` is load-bearing rather than
+stylistic. Two tests cover it: a verifier that never resolves must not delay
+settlement, and one that throws must not fail it.
+
+Mutation-verified: removing the cooldown, giving `mismatch` the 15-minute floor,
+dropping the bound-owner gate, handing out the real binding array, awaiting
+inside the hook, and removing the already-verified skip are all detected.
+*Reported honestly:* making the write unconditional (`setVerifiedOwner(key,
+verdict === "match")`) is **not** detected — it is an equivalent mutant, since a
+verified entry is never re-probed, so that write can only ever set `false` on an
+already-`false` entry, which `setVerifiedOwner` early-returns on.
+
+**What remains open:** a merchant who rotates (G-2) now reads as *unverified*
+rather than *stale-but-trusted*, which is the safe direction but still
+indistinguishable to agents from a domain takeover. Only the operator can
+separate them — see runbook §1, *What agents see while this is unresolved*.
+
+<details>
+<summary>Original finding (pre-fix)</summary>
+
 
 `verifiedOwner` is deliberately not trusted from disk (RA-9: a crafted
 `CATALOG_FILE` could forge it), so `load()` forces it `false`. But Layer 2
@@ -619,6 +697,8 @@ the two alternatives:
 resource that cannot be verified is not re-probed on every single settlement.
 That is a threshold value, so it belongs in the threshold review rather than
 being picked here.
+
+</details>
 
 ### G-2 — A bound URL has no `payTo` rotation path — **Medium** — **OPEN**
 

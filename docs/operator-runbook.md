@@ -130,6 +130,29 @@ memory and will overwrite a live hand-edit.
 
 3. Confirm the refusal log lines from the Symptom section have stopped.
 
+### What agents see while this is unresolved
+
+Once the facilitator re-checks the resource (it does so on the bound owner's next
+settlement — G-1), the entry's live 402 challenge will no longer name its bound
+address, and the entry is marked **unverified**: `trust.ownerVerified: false`,
+every verdict clamped to at most `"unknown"`, and the entry **disappears from
+`verified_only=true`** on `/discovery/*` and over MCP.
+
+**That is the same thing agents see for a domain that was taken over.** The wire
+carries a plain `false` — deliberately, because a three-state signal would be one
+an attacker could force onto a victim's entry. So:
+
+> **A merchant who rotated and a domain that changed hands are indistinguishable
+> to agents, and indistinguishable from the log line.** Only an operator, doing
+> the out-of-band confirmation in *Confirm it is a rotation and not a hijack*
+> above, can tell them apart. That confirmation is not a formality — it is the
+> only place in the system where the two cases are ever separated.
+
+The facilitator will not re-check a mismatching resource more than once every 24
+hours, so after you complete the rotation below the badge returns on the
+merchant's next settlement *after* that window — not instantly. Settlement,
+payment, and the merchant's money are unaffected throughout.
+
 ### Do NOT automate this
 
 > There is an obvious-looking improvement here: when an unbound `payTo` shows up
