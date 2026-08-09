@@ -96,6 +96,18 @@ export interface VerifyOptions {
   lookupFn?: LookupFn;
   timeoutMs?: number;
   maxBytes?: number;
+  /**
+   * TEST TRANSPORT ONLY — never set this in production.
+   *
+   * Relaxes the https-only requirement and the private-address block so the
+   * REAL path (default fetch -> pinned dispatcher -> socket -> 402 parse ->
+   * verdict) can be exercised against a local server. Without it, Layer 2 can
+   * only ever be tested with a mocked fetch — which is exactly how an undici
+   * incompatibility once left this control inert in production while 22 tests
+   * passed. The two checks it skips are covered directly by their own unit
+   * tests (see assertPublicHttpsUrl / isBlockedAddress).
+   */
+  __insecureTestTransport?: boolean;
 }
 
 /**
@@ -107,6 +119,7 @@ export interface VerifyOptions {
 export async function assertPublicHttpsUrl(
   rawUrl: string,
   lookupFn: LookupFn = defaultLookup,
+  insecureTestTransport = false,
 ): Promise<VettedAddress> {
   let url: URL;
   try {
@@ -114,7 +127,7 @@ export async function assertPublicHttpsUrl(
   } catch {
     throw new Error(`ownership: malformed URL: ${rawUrl}`);
   }
-  if (url.protocol !== "https:") {
+  if (url.protocol !== "https:" && !insecureTestTransport) {
     throw new Error(`ownership: refusing non-https URL (${url.protocol})`);
   }
   const host = url.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
@@ -122,7 +135,7 @@ export async function assertPublicHttpsUrl(
   // If the host is a literal IP, check it directly; otherwise resolve and check.
   const literal = isIP(host);
   const resolved = literal ? { address: host, family: literal } : await lookupFn(host);
-  if (isBlockedAddress(resolved.address)) {
+  if (isBlockedAddress(resolved.address) && !insecureTestTransport) {
     throw new Error(
       `ownership: host resolves to a blocked (private/loopback/link-local) address: ${resolved.address}`,
     );
@@ -156,7 +169,7 @@ export async function verifyResourceOwnership(
 
   let vetted: VettedAddress;
   try {
-    vetted = await assertPublicHttpsUrl(resourceUrl, lookupFn);
+    vetted = await assertPublicHttpsUrl(resourceUrl, lookupFn, opts.__insecureTestTransport === true);
   } catch {
     return "unverifiable";
   }

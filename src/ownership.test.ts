@@ -156,6 +156,77 @@ describe("verifyResourceOwnership — DNS-rebinding pin (D2)", () => {
 // Every existing test mocked fetch, so all 22 passed against a dead control.
 // This test uses the REAL default fetch and a REAL socket, so a future
 // version/implementation mismatch fails loudly instead of silently.
+// LAYER 2 END-TO-END. The prior regression guard exercised defaultFetch +
+// pinnedDispatcher DIRECTLY; it never called verifyResourceOwnership, so the
+// integrated control — guard -> pin -> real socket -> 402 parse -> verdict — was
+// still only ever tested with a mocked fetch. That is precisely the shape of the
+// bug that left this control inert in production while every test passed.
+// Nothing is mocked here.
+describe("Layer 2 end-to-end against a real server (no mocks)", () => {
+  async function serve(handler: (req: unknown, res: import("node:http").ServerResponse) => void) {
+    const server = http.createServer(handler as never);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    return { port, close: () => new Promise<void>((r) => server.close(() => r())) };
+  }
+
+  it("returns match: real fetch, real pin, real 402 challenge", async () => {
+    const challenge = Buffer.from(
+      JSON.stringify({ accepts: [{ payTo: "GOWNER" }] }),
+      "utf8",
+    ).toString("base64");
+    const s = await serve((_q, res) => {
+      res.writeHead(402, { "PAYMENT-REQUIRED": challenge });
+      res.end();
+    });
+    try {
+      const v = await verifyResourceOwnership(`http://owner.test:${s.port}/quote`, "GOWNER", {
+        lookupFn: fakeLookup("127.0.0.1"),
+        __insecureTestTransport: true,
+      });
+      expect(v).toBe("match");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("returns mismatch when the real challenge lists a different payTo", async () => {
+    const challenge = Buffer.from(
+      JSON.stringify({ accepts: [{ payTo: "GOWNER" }] }),
+      "utf8",
+    ).toString("base64");
+    const s = await serve((_q, res) => {
+      res.writeHead(402, { "PAYMENT-REQUIRED": challenge });
+      res.end();
+    });
+    try {
+      const v = await verifyResourceOwnership(`http://owner.test:${s.port}/quote`, "GATTACKER", {
+        lookupFn: fakeLookup("127.0.0.1"),
+        __insecureTestTransport: true,
+      });
+      expect(v).toBe("mismatch");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("returns unverifiable for a real non-402 response", async () => {
+    const s = await serve((_q, res) => {
+      res.writeHead(200);
+      res.end("ok");
+    });
+    try {
+      const v = await verifyResourceOwnership(`http://owner.test:${s.port}/quote`, "GOWNER", {
+        lookupFn: fakeLookup("127.0.0.1"),
+        __insecureTestTransport: true,
+      });
+      expect(v).toBe("unverifiable");
+    } finally {
+      await s.close();
+    }
+  });
+});
+
 describe("pinned dispatch actually works with the default fetch (D2 regression guard)", () => {
   it("completes a real request through the pinned dispatcher", async () => {
     const server = http.createServer((_req, res) => {
