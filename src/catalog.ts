@@ -693,8 +693,12 @@ export class BazaarCatalog {
       resource: { ...stored.resource, accepts: kept },
       stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo: authoritative ?? [ownerPayTo],
-      // Never trust a stored verified flag — a crafted file could forge it.
-      // Layer 2 re-verifies from the resource on the next settlement.
+      // Never trust a stored verified flag — a crafted file could forge it (RA-9).
+      //
+      // NOTE: this does NOT re-verify. Layer 2 fires only when upsertFromPayment
+      // reports isFirstCatalog, which is false for any entry loaded from disk, so
+      // a restored entry serves ownerVerified:false permanently. See G-1 in
+      // docs/security-audit.md — that is a known gap, not the intended design.
       verifiedOwner: false,
     };
   }

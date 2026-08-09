@@ -454,19 +454,27 @@ change.
 
 | ID | Finding | Why |
 | --- | --- | --- |
-| **F12** | Spend accounting was global while rate limiting was per-IP | **closed-by-test** — per-entity budgets keyed off the F11 bindings. See the control-scope table below for what this does and does not achieve. |
-| **F3** | Non-atomic `save()`, unbounded entries/`accepts` | Not fixed on any branch. Interacts with F11 — eviction drops ownership bindings. |
+| **G-1** | Ownership verification lost on restart, never recovers — and it is **served to agents** | **open** — latent until a persistent disk is attached. Remediation named below; the backoff value needs threshold sign-off. |
+| **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure exists and must be documented; the automated fix trades away F11's takeover resistance. |
 | **F4-ts** | Verification API has no per-record timestamp | **external** — needs the API to emit one; consumer side is already forward-compatible. |
-| **F10-op** | `examples/.env.recording` holds a live testnet `AGENT_SECRET` | Operational; needs rotation and scrub. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
 
+Closed since this table was first written (kept here so the history is not lost):
+
+| ID | Finding | Resolution |
+| --- | --- | --- |
+| **F12** | Spend accounting was global while rate limiting was per-IP | **closed-by-test** — per-entity budgets keyed off the F11 bindings. See the control-scope table for what this does and does not achieve. |
+| **F3** | Non-atomic `save()`, unbounded entries/`accepts` | **closed-by-test** — atomic writes, bounds, and ownership tombstones so eviction cannot drop a binding. |
+| **F10-op** | `examples/.env.recording` held a live testnet `AGENT_SECRET` | **closed** — signer removed on-chain and confirmed `null`, local copies deleted. See the `argv` lesson above. |
+
 ---
 
-### F12 — Spend controls throttle honest load, not a distributed attacker — **High** — **OPEN**
+### F12 — Spend controls throttle honest load, not a distributed attacker — **High** — closed-by-test
 
 Surfaced while sizing the thresholds, and it is a shape problem rather than a
-number problem.
+number problem. The analysis below is the original finding; the fix that followed
+it is per-entity budgeting keyed off the F11 bindings.
 
 The two spend controls are keyed on different, wrong things:
 
@@ -528,6 +536,113 @@ sponsor-exposure dial, not a security control — the balance guard is the contr
 **Sequencing: this is the first pubnet blocker after merge, ahead of the
 threshold review.** Reviewing the numbers before fixing the shape would produce a
 confidently-tuned control that still fails against the attacker it targets.
+
+---
+
+## Known gaps found while reviewing F12 — G-1, G-2
+
+Both surfaced from one question: *`verifiedOwner` is forced false on load — what
+else reads it, and what happens to a URL whose 402 challenge later changes?*
+Neither is caused by F12, and neither blocks it. Both are **latent on the current
+hosted deployment and become live the moment a persistent disk is attached** —
+the same upgrade that trips the fail-closed ownership trap described in
+`render.yaml`. On `plan: free` there is no disk, so every boot starts from an
+empty catalog, every URL is a first catalog again, and verification re-runs
+naturally. **Fix both before attaching a disk.**
+
+Characterized end-to-end through the real routes in
+`src/catalog.restart-verification.test.ts`. Those are *characterization* tests:
+they pin current behaviour, not desired behaviour. Fixing either gap should make
+them fail — update the tests and this section together.
+
+### G-1 — Ownership verification is lost on restart and never recovers — **High (latent)** — **OPEN**
+
+`verifiedOwner` is deliberately not trusted from disk (RA-9: a crafted
+`CATALOG_FILE` could forge it), so `load()` forces it `false`. But Layer 2
+verification fires only under `if (firstCatalog)` in `src/bazaar.ts`, and
+`isFirstCatalog` is `existing === undefined` — false for every entry loaded from
+disk. **Nothing re-verifies, ever.**
+
+It is **not** an internal signal. Every reader:
+
+| Reader | Post-restart behaviour |
+| --- | --- |
+| `catalog.isVerifiedOwner(url)` | Returns `false` for every restored entry, permanently. |
+| `annotateTrust(..., ownerVerifiedFn)` — both `/discovery/resources` and `/discovery/search` | Computes `ownerVerified: false`. |
+| `trust.ownerVerified` in the response body | **Served to agents as `false`** — a previously-verified merchant is now indistinguishable from one that failed verification. |
+| `clampByOwner` → `trust.acceptsVerification` | Every per-accepts `"verified"` is clamped down to `"unknown"`. |
+| `trust.verification` (strict min of the clamped verdicts) | Can never read `"verified"`. |
+| `filterVerifiedOnly` (`?verified_only=true`) | **Returns an empty catalog.** Reads as "this facilitator has no trustworthy resources". |
+| `rerankVerifiedFirst` (`/discovery/search`) | Every entry lands in the same `"unknown"` band, so trust-ranking silently flattens to input order. |
+
+This is a **wrong answer served to consumers**, not a throttle. An agent that
+trusts `verified_only` gets nothing; an agent that reads `ownerVerified` gets
+`false` for a merchant that passed.
+
+The `bindLoadedEntry` comment previously asserted *"Layer 2 re-verifies from the
+resource on the next settlement."* That was **false**, and it is why the gap
+stayed invisible — the intended recovery path was documented but never wired. The
+comment now states the actual behaviour and points here.
+
+**Remediation (named, not yet implemented): re-verify on settle when not
+currently verified** — widen the trigger in `src/bazaar.ts` from
+`if (firstCatalog)` to *"first catalog **or** not currently verified"*. This is
+completing the stated intent rather than changing policy. It is preferred over
+the two alternatives:
+
+- *Persist `verifiedOwner`* — reopens RA-9 directly. The flag becomes forgeable
+  again by anyone who can write either file. Rejected.
+- *Re-verify every loaded entry at boot* — an outbound request per entry at
+  startup (up to `MAX_ENTRIES`), a self-inflicted thundering herd, and it delays
+  readiness. Rejected in favour of self-healing on real traffic.
+
+**Needs sign-off before implementing:** a negative-result backoff interval, so a
+resource that cannot be verified is not re-probed on every single settlement.
+That is a threshold value, so it belongs in the threshold review rather than
+being picked here.
+
+### G-2 — A bound URL has no `payTo` rotation path — **Medium** — **OPEN**
+
+Confirmed: once `ownership.set(url, [payTo])` happens, the binding is never
+appended to or replaced except by reading the ownership file from disk. There is
+no method on `BazaarCatalog` and no route on the server that rotates it. A
+merchant rotating their payment address is refused by `upsertFromPayment`, and
+the F3 tombstone means waiting for eviction does not help either.
+
+**What the merchant actually loses is narrower — and sharper — than "payments
+break".** The rejection happens inside `onAfterSettle`, i.e. *after* settlement
+already succeeded on-chain, and `registerBazaar` swallows its own errors. So:
+
+- The payment **settles normally** and the merchant is paid at the new address.
+- The **catalog entry keeps advertising the old address** to every agent.
+- `recordSettlement` runs **unconditionally**, after the rejected upsert — so
+  settlements made to the *new* address still accrue to the entry advertising the
+  *old* one. **The stale entry looks more trustworthy over time.**
+
+That last point is the real hazard. A merchant who rotates away from a
+compromised or abandoned address cannot stop the catalog from advertising it, and
+the entry's trust signals keep climbing while it does.
+
+**Remediation (named):**
+
+- **Now — the manual operator path.** Rotation is possible today by stopping the
+  service, editing `<CATALOG_FILE>.ownership` to add the new `payTo`, and
+  restarting. This should be documented as the supported procedure. It is
+  deliberately operator-mediated: this repo has no auth layer by design, so there
+  is no safe in-band way to authorize a rotation request.
+- **Later, and only with an explicit decision — automated re-challenge.** Re-run
+  the 402 challenge when an unbound `payTo` appears for a bound URL, and append it
+  if the resource's *current* challenge names it. This is the same proof used at
+  first bind, **but it deliberately trades away exactly the property F11 was built
+  for**: a domain that has changed hands can serve the challenge, so takeover
+  becomes rebinding. Do not ship this as a convenience fix; it is a decision about
+  whether TOFU-permanent or TOFU-with-recovery is wanted.
+
+**Do not let a merchant discover this by not getting paid.** The manual procedure
+above should be in operator docs before any merchant is onboarded on a deployment
+with a persistent disk.
+
+---
 
 ## What `main` is running today
 
