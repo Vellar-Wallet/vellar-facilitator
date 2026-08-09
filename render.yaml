@@ -49,6 +49,14 @@ services:
       # deliberately not declared here: it derives ownership from a file an
       # attacker could have written, and it disables the fail-closed protection
       # while set. It warns loudly on every boot.
+      #
+      # STEP-BY-STEP for that migration, and for the two other problems a disk
+      # introduces (a merchant who cannot rotate their payment address; the
+      # tombstone cap), see docs/operator-runbook.md. Read procedure 1 BEFORE
+      # onboarding any merchant on a disk-backed deployment: a bound resource URL
+      # cannot rotate its payTo in band, and the manual procedure is the only
+      # path. That is deliberate — the runbook explains why automating it would
+      # give away the property F11 exists for.
       - key: CATALOG_FILE
         value: "/var/data/bazaar-catalog.json"
       # Deliberately NOT set: VERIFICATION_API_URL. Unset, every trust verdict

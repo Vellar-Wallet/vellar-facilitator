@@ -216,13 +216,18 @@ describe("G-2 — a bound URL has no payTo rotation path", () => {
     catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
     catalog.upsertFromPayment(disc(), reqs(PAY_NEW)); // refused
 
-    // recordSettlement runs UNCONDITIONALLY after the upsert in bazaar.ts, so
-    // settlements against the NEW address still accrue to the entry advertising
-    // the OLD one. The stale entry therefore looks MORE trustworthy over time.
-    catalog.recordSettlement(URL_X, "CPAYER1");
-    catalog.recordSettlement(URL_X, "CPAYER2");
-    const t = trustOf(catalog.list().items[0]);
-    expect(t?.settlements, "stats climb on the stale entry").toBe(2);
+    // G-4 narrowed this. recordSettlement still runs after the rejected upsert,
+    // but it now refuses any payTo that is not bound, so settlements to the NEW
+    // address no longer accrue to the entry advertising the OLD one — the stale
+    // entry stops looking more trustworthy over time.
+    expect(catalog.recordSettlement(URL_X, "CPAYER1", PAY_NEW), "rotated payTo must not count").toBe(false);
+    expect(catalog.recordSettlement(URL_X, "CPAYER2", PAY_NEW)).toBe(false);
+    expect(trustOf(catalog.list().items[0]).settlements, "stale entry no longer inflates").toBe(0);
+
+    // What REMAINS the G-2 problem: the entry still advertises the old address,
+    // and the merchant has no way to change it. Their real settlements are now
+    // simply invisible to the catalog rather than credited to the wrong address.
     expect((catalog.list().items[0] as TrustedDiscoveryResource).accepts[0]!.payTo).toBe(PAY_OLD);
+    expect(catalog.recordSettlement(URL_X, "CPAYER1", PAY_OLD), "only the bound owner counts").toBe(true);
   });
 });

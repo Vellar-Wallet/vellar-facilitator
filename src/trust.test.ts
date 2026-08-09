@@ -238,9 +238,9 @@ describe("catalog settlement stats", () => {
   it("counts settlements and dedupes unique payers", () => {
     const catalog = new BazaarCatalog();
     seed(catalog);
-    catalog.recordSettlement("https://api.example.com/weather", "CPAYER1");
-    catalog.recordSettlement("https://api.example.com/weather", "CPAYER1");
-    catalog.recordSettlement("https://api.example.com/weather", "CPAYER2");
+    catalog.recordSettlement("https://api.example.com/weather", "CPAYER1", "G");
+    catalog.recordSettlement("https://api.example.com/weather", "CPAYER1", "G");
+    catalog.recordSettlement("https://api.example.com/weather", "CPAYER2", "G");
 
     const trust = (catalog.list().items[0] as TrustedDiscoveryResource).trust;
     expect(trust?.settlements).toBe(3);
@@ -250,14 +250,14 @@ describe("catalog settlement stats", () => {
 
   it("ignores settlements for uncataloged resources", () => {
     const catalog = new BazaarCatalog();
-    catalog.recordSettlement("https://nowhere.example.com/x", "CPAYER");
+    catalog.recordSettlement("https://nowhere.example.com/x", "CPAYER", "G");
     expect(catalog.size).toBe(0);
   });
 
   it("stats survive re-upserts of the same resource", () => {
     const catalog = new BazaarCatalog();
     seed(catalog);
-    catalog.recordSettlement("https://api.example.com/weather", "CPAYER1");
+    catalog.recordSettlement("https://api.example.com/weather", "CPAYER1", "G");
     seed(catalog); // repeat payment re-catalogs the resource
     const trust = (catalog.list().items[0] as TrustedDiscoveryResource).trust;
     expect(trust?.settlements).toBe(1);

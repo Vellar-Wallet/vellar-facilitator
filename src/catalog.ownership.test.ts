@@ -69,7 +69,7 @@ describe("Fix 0 Layer 1 — TOFU ownership binding (upsertFromPayment)", () => {
   it("rejects an appended accepts entry from an UNBOUND payTo (hijack blocked)", () => {
     const cat = new BazaarCatalog();
     cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
-    cat.recordSettlement(URL_X, "GPAYER1");
+    cat.recordSettlement(URL_X, "GPAYER1", "GLEGIT_A");
 
     // Attacker settles the same URL with a different payTo.
     cat.upsertFromPayment(
