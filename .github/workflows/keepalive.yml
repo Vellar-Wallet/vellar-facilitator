@@ -1,0 +1,81 @@
+## Keep-alive ping for the hosted testnet facilitator.
+##
+## WHY THIS EXISTS — it is not a latency tweak.
+##
+## Render spins a Free web service down after 15 minutes without inbound
+## traffic. Spinning down DESTROYS the container, and with it the ephemeral
+## filesystem holding CATALOG_FILE and its companion ownership store. So every
+## idle period wipes the Bazaar catalog: a seller's listing disappears and the
+## trust-on-first-use URL bindings reset, reopening the claim race.
+##
+## Keeping the instance awake is therefore the *emptiness* fix for what a
+## developer actually experiences, not merely a cold-start fix. Between deploys,
+## the catalog survives.
+##
+## THE BUDGET, and why this is not 24/7 by default.
+##
+## Render grants 750 Free instance hours per WORKSPACE per calendar month —
+## workspace, not service. Exhausting it SUSPENDS EVERY Free web service in the
+## workspace until the 1st of the next month.
+##
+##   24/7 in a 31-day month = 744 h  ->  6 h of margin (<1%)
+##   20 h/day               = 620 h  ->  130 h of margin
+##
+## 24/7 fits arithmetically and only if this is the ONLY Free service in the
+## workspace. A second Free service, or one added later by anyone, blows the
+## budget and takes this one down with it. So the default below is 20 h/day.
+##
+## Outside the window the service sleeps as before: the first request takes
+## ~1 minute and the catalog comes back EMPTY, repopulating from the next
+## settled payment per resource.
+##
+## TO RUN 24/7 instead: change the cron to "*/10 * * * *" and first confirm this
+## is the only Free service in the workspace.
+##
+## RELIABILITY CAVEAT: GitHub's scheduled workflows are best-effort and can be
+## delayed well past their cron time under load. A delay beyond 15 minutes lets
+## the service sleep anyway. If the catalog needs to be reliably warm, use an
+## external uptime pinger (5-minute interval) instead of, or alongside, this.
+## GitHub also disables scheduled workflows on repositories with no activity for
+## 60 days.
+
+name: keepalive
+
+on:
+  schedule:
+    # Every 10 minutes, 05:00–23:59 UTC (20 h/day). See the budget note above.
+    - cron: "*/10 5-23 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health
+        env:
+          # /health is exempt from the per-IP rate limit, so this cannot throttle
+          # real traffic no matter how often it runs.
+          URL: https://vellar-facilitator.onrender.com/health
+        run: |
+          set -uo pipefail
+          # A cold start takes ~1 minute, so allow for it rather than failing the
+          # very request that is doing the waking up.
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 120 --retry 2 --retry-delay 15 "$URL" || echo 000)
+          echo "HTTP $code"
+          cat /tmp/body || true
+          if [ "$code" != "200" ]; then
+            echo "::warning::keepalive ping did not return 200 (got $code) — the service may be suspended or down"
+            exit 0   # never fail the workflow: a red X here is noise, not signal
+          fi
+          # Surface a frozen catalog, which is invisible from the outside otherwise.
+          if grep -q 'catalogFrozen' /tmp/body; then
+            echo "::warning::/health reports catalogFrozen — see docs/operator-runbook.md §2 and §3"
+          fi

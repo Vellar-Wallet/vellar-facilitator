@@ -402,6 +402,9 @@ export class BazaarCatalog {
    * and never on the wire (no attacker-forceable signal for consumers). */
   private readonly verifyState = new Map<string, { verdict: OwnershipVerdict; at: number }>();
   private readonly verifyInFlight = new Set<string>();
+  /** G-7: set when load() derives a binding that was not already in the
+   * ownership store, so the constructor can flush it exactly once. */
+  private ownershipSeededDuringLoad = false;
 
   constructor(persistPath?: string, opts: { bootstrapOwnership?: boolean } = {}) {
     this.persistPath = persistPath;
@@ -420,6 +423,16 @@ export class BazaarCatalog {
         return; // catalog stays empty; frozen blocks new bindings
       }
       this.load(persistPath);
+      // G-7: persist anything load() derived. Without this the bootstrap
+      // migration is a no-op on disk and the NEXT boot fails closed again.
+      if (this.ownershipSeededDuringLoad) {
+        this.saveOwnership();
+        console.warn(
+          `[catalog] wrote ${this.ownership.size} ownership binding(s) derived during load to ` +
+            `${ownershipPathFor(persistPath)}. If this was a CATALOG_OWNERSHIP_BOOTSTRAP migration, ` +
+            `verify that file now and REMOVE the flag before the next boot.`,
+        );
+      }
     }
   }
 
@@ -870,7 +883,16 @@ export class BazaarCatalog {
     // Ownership tombstone wins over whatever the entry file claims; only seed it
     // when there is none (first upgrade / bootstrap).
     const authoritative = this.ownership.get(stored.resource.resource);
-    if (!authoritative) this.ownership.set(stored.resource.resource, [ownerPayTo]);
+    if (!authoritative) {
+      this.ownership.set(stored.resource.resource, [ownerPayTo]);
+      // G-7: this seeding is the ENTIRE product of a CATALOG_OWNERSHIP_BOOTSTRAP
+      // migration, and unlike bindOwnership it used to write nothing. The
+      // migration therefore appeared to succeed and persisted nothing: the next
+      // boot found a catalog with no ownership file again and failed closed.
+      // Flushed once after the load loop rather than per entry — saving here
+      // would be O(n^2) over the catalog.
+      this.ownershipSeededDuringLoad = true;
+    }
     return {
       resource: { ...stored.resource, accepts: kept },
       stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },

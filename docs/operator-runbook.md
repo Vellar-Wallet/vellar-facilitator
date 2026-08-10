@@ -201,24 +201,57 @@ Determine which one you are in:
 - **Did the ownership file exist and then stop existing, with no deploy?** Treat
   it as tampering and investigate before continuing.
 
-### Steps — migration case only
+### Steps — first boot on a NEW disk (nothing to migrate)
 
-1. Set `CATALOG_OWNERSHIP_BOOTSTRAP=1` in the environment (dashboard, not
-   `render.yaml` — it is deliberately not declared there).
-2. Start the service **once**. It will derive each URL's owner from the first
-   `accepts` entry in the catalog file and warn loudly on every boot while set.
-3. **Remove the variable** and restart.
+If the disk is brand new and there was never a catalog file, there is nothing to
+do: with **neither** file present the loader treats it as a genuinely fresh start
+and the catalog comes up empty and unfrozen. You will not see the symptom above.
 
-Understand what you just granted: bootstrap trusts the catalog file to name each
-resource's owner. It grants **no more trust than that file already had** — but if
-that file was tampered with, you have now made the tampering durable. Only do
-this when you know where the file came from.
+### Steps — migration case (a catalog file exists, no ownership file)
 
-> Known gap (**G-7**): the bindings derived during a bootstrap run are seeded in
-> memory but are not immediately written to the ownership file. After the
-> bootstrap boot, confirm `<CATALOG_FILE>.ownership` actually exists and contains
-> a row per entry before removing the variable. If it does not, keep the variable
-> set for one more boot rather than restarting without it.
+This is the state the **first boot after attaching a disk** produces if a catalog
+file was restored alongside it.
+
+1. **Confirm where the catalog file came from.** Bootstrap trusts it to name each
+   resource's owner. It grants **no more trust than that file already had** — but
+   if it was tampered with, this makes the tampering durable. If you cannot
+   account for the file, delete it and start empty instead; the catalog rebuilds
+   from settlements.
+
+2. Set `CATALOG_OWNERSHIP_BOOTSTRAP=1` **in the Render dashboard**, not in
+   `render.yaml` — it is deliberately not declared there so it cannot be left on
+   by a merge.
+
+3. **Start the service once.** It warns on every boot while the flag is set, and
+   now also logs how many bindings it wrote:
+
+   ```
+   [catalog] wrote N ownership binding(s) derived during load to <path>.ownership
+   ```
+
+4. **Verify the file exists and is complete before going further:**
+
+   ```sh
+   cat /var/data/bazaar-catalog.json.ownership | python3 -m json.tool | head
+   ```
+
+   It must contain one `{resource, boundPayTo}` row per catalog entry. Spot-check
+   that a `boundPayTo` matches the address that resource actually bills to — this
+   is your only chance to catch a wrong owner before it becomes durable.
+
+5. **Remove `CATALOG_OWNERSHIP_BOOTSTRAP` and restart.** Do not skip this. While
+   it is set, the fail-closed protection against a missing or deleted ownership
+   store is DISABLED, so a later deletion would silently re-derive bindings from
+   whatever the catalog file says at that moment.
+
+6. **Confirm the removal took**: `/health` must report no `catalogFrozen`, and
+   the boot logs must no longer contain `CATALOG_OWNERSHIP_BOOTSTRAP`.
+
+> **G-7 (fixed).** Bindings derived during load used to be seeded in memory and
+> never written, so the migration silently persisted nothing and the *next* boot
+> failed closed again. They are now flushed once after load, and step 3's log
+> line is the confirmation. If you are running a build from before that fix, keep
+> the flag set for one more boot rather than restarting without it.
 
 ### Verify
 

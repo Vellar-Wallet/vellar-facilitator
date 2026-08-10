@@ -4,7 +4,11 @@
 # testnet account, never a mainnet key. Set it in the Render dashboard
 # (sync:false keeps it out of git).
 #
-# Free-tier caveat: the service sleeps after ~15 min idle (~1 min cold start).
+# Free-tier caveat: Render spins the service down after 15 min without inbound
+# traffic. Spin-down DESTROYS the container, so this is not merely a ~1 min cold
+# start — it wipes CATALOG_FILE and its ownership store, emptying the Bazaar
+# catalog and resetting every URL ownership binding. The keep-alive workflow
+# (.github/workflows/keepalive.yml) is what prevents that between deploys.
 # Fine for a testnet demo; upgrade the plan before any uptime commitment.
 
 services:
@@ -15,6 +19,36 @@ services:
     buildCommand: "npm install --omit=dev && npm install -g tsx"
     startCommand: "tsx src/server.ts"
     healthCheckPath: /health
+    # ── ATTACHING A PERSISTENT DISK — NOT THE CHOSEN PLAN ────────────────────
+    # Kept for reference only. A disk was REJECTED in favour of an external store
+    # (docs/milestone-durable-catalog.md): a disk costs money AND activates three
+    # findings that are dormant on an ephemeral filesystem (G-5, G-6, G-7), which
+    # a real store closes instead. Read that document before enabling any of this.
+    #
+    # If you do enable it: uncomment BOTH the `plan: starter` above (replacing `plan: free`) and the
+    # `disk:` block below, together. They are one change: Render only offers
+    # disks on paid instance types, so a disk block under `plan: free` fails to
+    # deploy.
+    #
+    # THIS STARTS BILLING on the next deploy. It is left commented so that
+    # merging this file is never itself the thing that starts charging.
+    #
+    # It fixes TWO independent causes of the empty catalog:
+    #   1. no disk  — nothing survives any restart (the disk fixes this);
+    #   2. idle-sleep — the free tier stops after ~15 min idle, so restarts
+    #      happen constantly (moving off `free` fixes this).
+    # A disk alone would not stop the sleeping, and not sleeping alone would not
+    # survive a deploy. You need both, which is why they are one change here.
+    #
+    # BEFORE the first boot with a disk, read docs/operator-runbook.md §2. The
+    # first boot finds a catalog file with no companion ownership store and
+    # FAILS CLOSED by design; the one-boot CATALOG_OWNERSHIP_BOOTSTRAP procedure
+    # is how you migrate, and it has a removal step that must not be skipped.
+    #
+    # disk:
+    #   name: vellar-facilitator-data
+    #   mountPath: /var/data      # must match the dirname of CATALOG_FILE below
+    #   sizeGB: 1                 # the catalog is small; 1 GB is ample
     envVars:
       - key: NODE_VERSION
         value: "22"
