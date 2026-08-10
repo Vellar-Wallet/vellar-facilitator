@@ -358,8 +358,17 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
      https://vellar-seller-demo.onrender.com/quote     # expect 402
    ```
 
-2. Confirm it advertises its PUBLIC address, not localhost. This is the failure
-   that made Layer 2 unreachable in production for the whole of its life:
+2. Confirm it advertises its PUBLIC address, not localhost — **one request**:
+
+   ```sh
+   curl -sS https://vellar-seller-demo.onrender.com/whoami | python3 -m json.tool
+   ```
+
+   `verifiable: true` is the precondition. `resourceUrl` must be public https;
+   `commit` tells you which build is serving. Do NOT read the boot log for this —
+   it was hardcoded and lied (D-3).
+
+   The longer form, if you want to see the challenge itself:
 
    ```sh
    curl -sS -D- -o /dev/null https://vellar-seller-demo.onrender.com/quote \
