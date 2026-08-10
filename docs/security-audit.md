@@ -408,7 +408,7 @@ backstop either way. The relationships between these numbers are now asserted in
 
 | Value | Default | Reasoning |
 | --- | --- | --- |
-| `MAX_TX_FEE_STROOPS` | **500,000** | The one value that IS measured. Worst real settlement observed on-chain: 127,808 stroops (a stacked double-policy smart-account payment). 500k is ~3.9x that and 2.5x the documented 200k floor, cutting worst-case drain per settle from 0.2 to 0.05 XLM. |
+| `MAX_TX_FEE_STROOPS` | **500,000** | Sized from on-chain data. **Hash-verifiable reference:** tx `1da6f9e6…` (2026-07-31 hosted settlement) charged **28,711 stroops** — 5.7% of the ceiling. A second figure of 127,808 is cited as the worst observed, but **carries no transaction hash and cannot be re-verified** (D-4). 500,000 clears both. Any future fee cited as measured must carry its hash. |
 | `SPEND_CEILING_STROOPS` | **5 XLM / 60s** | At the 500,000-stroop worst-case fee that is **100 settlements per window across ALL merchants**. Raising it helps honest throughput and costs a funded attacker nothing — they were never bound by it — so treat it as a sponsor-exposure dial, not a security control. |
 | `SETTLE_PER_PAYTO_MAX` | **50 / 60s per payTo** | Half the global capacity: no single payTo can consume the whole service, while a merchant can run 5 bound URLs at their full rate. **Consolidated from two budgets** — see the defect below. |
 | `SETTLE_PER_URL_MAX` | **10 / 60s per bound URL** | The F12 fairness control: one merchant can no longer starve another. |
@@ -533,6 +533,7 @@ Closed since this table was first written (kept here so the history is not lost)
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement. |
 | **D-1** | Seller had a hard boot dependency on the facilitator; the facilitator has none | **closed** — warm + bounded backoff in the seller. The dependency half (@x402/core retries 429 but not 502) is upstream and unfixed here. |
 | **D-2** | F7's rate limit sustained a crash loop it could not distinguish from an attack | **closed-by-doc** — the defence belongs in the dependent, not in a weaker limiter. |
+| **D-4** | New test wallet costs 674x the old one on identical wasm; fee ceiling exonerated | **open** — blocked on the wallet-side TTL/nonce answer. No threshold moved. |
 | **D-3** | Seller's boot log hardcoded `localhost`, imitating the exact symptom of F11 Layer 2 being decorative | **closed-by-test** — one `publicBase()` source of truth, plus `GET /whoami` making advertised state queryable. |
 | **G-3** | Spend policy keyed on the raw URL while the catalog keys on the canonical one | **closed-by-test** — found by red-teaming the F12 change before it merged. |
 | **G-4** | Settlement stats writable by anyone, against any entry | **closed-by-test** — gated on the bound owner; cross-entity forgery now impossible. |
