@@ -244,3 +244,38 @@ describe("documented rationale — module constants", () => {
     expect(SERVER_LIMITS.defaultRateMaxPerMinute).toBeLessThanOrEqual(globalPerWindow);
   });
 });
+
+// G-8's verdict ("stays a policy item, not a Turso prerequisite") rests on a
+// numeric argument, so it lives here rather than only in prose. The argument:
+// filling MAX_TOMBSTONES requires ~100,000 settlements of NEW urls, each gated
+// by the unbound pool and each costing the sponsor a fee — and /settle refuses
+// below the hard floor long before the cap is reachable. The sponsor balance,
+// not the tombstone cap, is what bounds tombstone growth.
+//
+// Raise the unbound pool, or drop the hard floor, and that stops being true.
+// These assertions fail if either happens, which is the point.
+describe("documented rationale — G-8 stays bounded by the sponsor balance", () => {
+  const c = loadConfig(base);
+
+  it("filling the tombstone cap is not on a realistic schedule", () => {
+    // THE argument, in one line: new urls are gated by the unbound pool, so the
+    // cap is days of SUSTAINED maximum away — and those days cost the sponsor
+    // ~1,278 XLM, which the hard floor refuses long before. Widen the pool and
+    // the cap comes within reach; that is when G-8 becomes a prerequisite.
+    const newUrlsPerDay = c.spend.unboundPoolMax * 60 * 24;
+    const daysToFillCap = CATALOG_LIMITS.maxTombstones / newUrlsPerDay;
+    expect(daysToFillCap, "cap reachable in under 5 days of max rate — redo the G-8 arithmetic").toBeGreaterThan(5);
+  });
+
+  it("new URLs stay gated by the unbound pool, well below global capacity", () => {
+    // Every brand-new url is unbound at settle time, so this pool is the rate
+    // limiter on tombstone creation. Widening it toward the global ceiling
+    // removes the constraint the G-8 arithmetic depends on.
+    const globalPerWindow = Math.floor(c.spend.ceilingStroops / c.maxTransactionFeeStroops);
+    expect(c.spend.unboundPoolMax).toBeLessThan(globalPerWindow / 5);
+  });
+
+  it("a hard floor is actually set — a zero floor removes the bound entirely", () => {
+    expect(c.balance.hardFloorStroops).toBeGreaterThan(0);
+  });
+});
