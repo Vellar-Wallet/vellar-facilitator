@@ -313,6 +313,13 @@ has forgotten all three. A dashboard variable is **not** reconciled by a
 blueprint sync, `render.yaml` declares `MAX_TX_FEE_STROOPS` with the safe value
 so a sync will not remove a dashboard override, and nothing warns.
 
+**Which number to compare it against.** The error names it for you:
+`simulation-derived fee N stroops exceeds ceiling M`. That `N` is the **bid**
+(`minResourceFee + BASE_FEE`, computed before submission) — *not* the fee the
+network charged. The charged fee runs roughly a third lower, so sizing this
+ceiling from a Horizon `fee_charged` figure tightens it by that much against a
+number the ceiling never sees. Full note in `src/config.ts` above the definition.
+
 Raising it is occasionally necessary — a smart account whose `__check_auth` is
 expensive can legitimately exceed the ceiling, and refusing it is the exact bug
 this project exists to fix. But left raised it silently widens the worst-case
