@@ -6,7 +6,10 @@ export interface FacilitatorConfig {
   sponsorSecretKey: string;
   maxTransactionFeeStroops: number;
   /** Optional JSON file path for Bazaar catalog persistence across restarts. */
-  catalogFile: string | undefined;
+  /** libSQL/Turso URL. `file:…` locally, `libsql://…` in production. Unset means
+   *  in-memory only: the catalog works but nothing survives a restart. */
+  catalogDbUrl: string | undefined;
+  catalogDbAuthToken: string | undefined;
   /** Base URL of the Vellar verification API (e.g. https://…/verification) for
    * the Bazaar trust layer. Unset ⇒ verification verdicts are "unknown". */
   verificationApiUrl: string | undefined;
@@ -41,7 +44,6 @@ export interface FacilitatorConfig {
    * first upgrade produces, and equally the state a tamperer produces. Off by
    * default; must be set deliberately and removed once the upgrade is done.
    */
-  catalogOwnershipBootstrap: boolean;
   /** Fix 3 sponsor balance guard floors, in stroops. */
   balance: {
     /** Warn below this (default 250_000_000 = 25 XLM). */
@@ -185,27 +187,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
   // Announce the escape hatch on EVERY boot while it is set, not only when it
   // is exercised. A quiet flag that silently downgrades a security control is
   // how "temporary" becomes permanent.
-  const catalogOwnershipBootstrap = /^(1|true)$/i.test(env.CATALOG_OWNERSHIP_BOOTSTRAP ?? "");
-  if (catalogOwnershipBootstrap) {
+  // CATALOG_OWNERSHIP_BOOTSTRAP is GONE. It existed only because an ownership
+  // FILE could be absent while a catalog FILE was present — indistinguishable
+  // between "first upgrade" and "someone deleted it", so the migration had to be
+  // opted into explicitly. A single database cannot be half-present, so the
+  // ambiguity the hatch resolved no longer exists. If the variable is still set
+  // anywhere, say so loudly rather than ignoring it: a stale escape hatch that
+  // silently does nothing is how an operator ends up believing a migration ran.
+  if (env.CATALOG_OWNERSHIP_BOOTSTRAP !== undefined) {
     console.warn(
-      "[config] CATALOG_OWNERSHIP_BOOTSTRAP is SET. On boot, if the catalog file exists without its " +
-        "companion ownership store, ownership bindings will be DERIVED FROM THAT CATALOG FILE. " +
-        "It grants no more trust than that file already had — if an attacker wrote the file, they " +
-        "choose the owners. This exists only to migrate a pre-existing catalog once; REMOVE IT " +
-        "immediately afterwards. While it is set, the fail-closed protection against a missing or " +
-        "deleted ownership store is DISABLED.",
+      "[config] CATALOG_OWNERSHIP_BOOTSTRAP is set but NO LONGER EXISTS. Durable storage removed the " +
+        "ambiguity it resolved (one database cannot be half-present). It is being IGNORED — remove it " +
+        "from the environment so nobody reads it as still doing something.",
+    );
+  }
+  if (env.CATALOG_FILE !== undefined) {
+    console.warn(
+      "[config] CATALOG_FILE is set but NO LONGER USED. The catalog is stored in libSQL/Turso — set " +
+        "CATALOG_DB_URL (and CATALOG_DB_AUTH_TOKEN for a remote database) instead. The file is being " +
+        "IGNORED, not migrated: there was never a durable catalog on the hosted instance to carry over, " +
+        "and an importer would have to trust a file to name each resource's owner.",
     );
   }
 
   return {
     port: Number(env.PORT ?? 4100),
-    catalogOwnershipBootstrap,
     host: env.HOST ?? "0.0.0.0",
     network,
     rpcUrl: env.STELLAR_RPC_URL,
     sponsorSecretKey,
     maxTransactionFeeStroops,
-    catalogFile: env.CATALOG_FILE,
+    catalogDbUrl: env.CATALOG_DB_URL,
+    catalogDbAuthToken: env.CATALOG_DB_AUTH_TOKEN,
     verificationApiUrl: env.VERIFICATION_API_URL,
     spend,
     balance,

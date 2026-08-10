@@ -121,7 +121,7 @@ describe.skipIf(!enabled)("LIVE — Layer 2 over a real network path (manual gat
     expect(verdict, "http must be unverifiable regardless of the host").toBe("unverifiable");
   }, 60_000);
 
-  it("uses undici's fetch, not the global one", () => {
+  it("uses undici's fetch, not the global one", async () => {
     // A version mismatch here silently disabled the whole control once before:
     // undici@8's Agent rejects Node's bundled fetch with UND_ERR_INVALID_ARG
     // before a socket opens, and the catch degraded every verdict to

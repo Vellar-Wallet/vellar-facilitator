@@ -31,13 +31,13 @@ function nowFn() {
 }
 
 describe("SpendPolicy — pubnet (fail-closed)", () => {
-  it("allows settlements under the per-payTo rate limit", () => {
+  it("allows settlements under the per-payTo rate limit", async () => {
     const clock = nowFn();
     const p = new SpendPolicy({ network: "stellar:pubnet", ...cfg }, clock.now);
     for (let i = 0; i < 3; i++) expect(p.checkSettle("GMERCHANT").allowed).toBe(true);
   });
 
-  it("rejects the 4th settlement from one payTo within the window", () => {
+  it("rejects the 4th settlement from one payTo within the window", async () => {
     const clock = nowFn();
     const p = new SpendPolicy({ network: "stellar:pubnet", ...cfg }, clock.now);
     for (let i = 0; i < 3; i++) p.checkSettle("GMERCHANT");
@@ -46,7 +46,7 @@ describe("SpendPolicy — pubnet (fail-closed)", () => {
     expect(verdict.reason).toBe("rate_limited_payto");
   });
 
-  it("does not let one payTo's rate limit affect another payTo", () => {
+  it("does not let one payTo's rate limit affect another payTo", async () => {
     const clock = nowFn();
     // Give spend headroom so the per-payTo RATE limit is what we isolate here.
     const p = new SpendPolicy(
@@ -59,7 +59,7 @@ describe("SpendPolicy — pubnet (fail-closed)", () => {
     expect(p.checkSettle("GMERCHANT_B").allowed).toBe(true);
   });
 
-  it("frees the rate limit after the window elapses", () => {
+  it("frees the rate limit after the window elapses", async () => {
     const clock = nowFn();
     const p = new SpendPolicy({ network: "stellar:pubnet", ...cfg }, clock.now);
     for (let i = 0; i < 3; i++) p.checkSettle("GM");
@@ -68,7 +68,7 @@ describe("SpendPolicy — pubnet (fail-closed)", () => {
     expect(p.checkSettle("GM").allowed).toBe(true);
   });
 
-  it("refuses with spend_ceiling once the global rolling XLM estimate is exceeded", () => {
+  it("refuses with spend_ceiling once the global rolling XLM estimate is exceeded", async () => {
     const clock = nowFn();
     // Give rate headroom so the SPEND ceiling is what trips.
     const p = new SpendPolicy(
@@ -84,7 +84,7 @@ describe("SpendPolicy — pubnet (fail-closed)", () => {
 });
 
 describe("SpendPolicy — bounded state (audit D10)", () => {
-  it("evicts elapsed per-payTo buckets instead of growing forever", () => {
+  it("evicts elapsed per-payTo buckets instead of growing forever", async () => {
     const clock = nowFn();
     const p = new SpendPolicy(
       { network: "stellar:pubnet", ...cfg, perPayToMax: 1000, spendCeilingStroops: 1e12 },
@@ -102,13 +102,13 @@ describe("SpendPolicy — bounded state (audit D10)", () => {
 });
 
 describe("SpendPolicy — testnet (fail-open)", () => {
-  it("never blocks on testnet, even over the limits (log-only)", () => {
+  it("never blocks on testnet, even over the limits (log-only)", async () => {
     const clock = nowFn();
     const p = new SpendPolicy({ network: "stellar:testnet", ...cfg }, clock.now);
     for (let i = 0; i < 20; i++) expect(p.checkSettle("GM").allowed).toBe(true);
   });
 
-  it("still reports what WOULD have tripped, for observability", () => {
+  it("still reports what WOULD have tripped, for observability", async () => {
     const clock = nowFn();
     const p = new SpendPolicy({ network: "stellar:testnet", ...cfg }, clock.now);
     for (let i = 0; i < 3; i++) p.checkSettle("GM");

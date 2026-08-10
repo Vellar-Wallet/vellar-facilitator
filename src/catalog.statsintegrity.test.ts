@@ -72,8 +72,8 @@ function payload(url: string, payTo: string): PaymentPayload {
 }
 
 /** A facilitator whose settlements are attributed to `payer`. */
-function build(payer: string) {
-  const catalog = new BazaarCatalog();
+async function build(payer: string) {
+  const catalog = await BazaarCatalog.create();
   const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme(payer));
   registerBazaar(facilitator, catalog);
   return { catalog, facilitator };
@@ -86,7 +86,7 @@ function stats(catalog: BazaarCatalog) {
 describe("G-4 — the REJECTED-upsert path must not move an entry's stats", () => {
   it("an unbound payTo settling against a cataloged URL leaves every stat untouched", async () => {
     // The victim establishes the entry with one genuine settlement.
-    const { catalog, facilitator } = build("CVICTIMPAYER");
+    const { catalog, facilitator } = await build("CVICTIMPAYER");
     await facilitator.settle(payload(VICTIM_URL, OWNER), reqs(OWNER));
     const before = stats(catalog);
     expect(before?.settlements, "precondition: the owner's own settlement counted").toBe(1);
@@ -110,7 +110,7 @@ describe("G-4 — the REJECTED-upsert path must not move an entry's stats", () =
     // statsSource:"observed" asserts these settlements were witnessed FOR this
     // entry. If refused settlements could increment it, the label would be
     // asserting a provenance the data does not have.
-    const { catalog, facilitator } = build("CVICTIMPAYER");
+    const { catalog, facilitator } = await build("CVICTIMPAYER");
     await facilitator.settle(payload(VICTIM_URL, OWNER), reqs(OWNER));
     const attacker = new x402Facilitator().register("stellar:testnet", stubScheme("CATTACKER"));
     registerBazaar(attacker, catalog);
@@ -122,7 +122,7 @@ describe("G-4 — the REJECTED-upsert path must not move an entry's stats", () =
   });
 
   it("does NOT create a false negative: the bound owner's settlements still count", async () => {
-    const { catalog, facilitator } = build("CPAYER1");
+    const { catalog, facilitator } = await build("CPAYER1");
     await facilitator.settle(payload(VICTIM_URL, OWNER), reqs(OWNER));
     // A second, different customer paying the SAME bound owner.
     const second = new x402Facilitator().register("stellar:testnet", stubScheme("CPAYER2"));
@@ -136,11 +136,11 @@ describe("G-4 — the REJECTED-upsert path must not move an entry's stats", () =
 });
 
 describe("G-4 — recordSettlement is gated at the catalog, not at the caller", () => {
-  it("refuses an unbound payTo even when called directly", () => {
+  it("refuses an unbound payTo even when called directly", async () => {
     // The gate lives in BazaarCatalog so a future caller cannot reintroduce the
     // bug by forgetting to check — which is exactly what bazaar.ts did.
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(
       { resourceUrl: VICTIM_URL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       reqs(OWNER),
     );
@@ -151,15 +151,15 @@ describe("G-4 — recordSettlement is gated at the catalog, not at the caller", 
     expect(stats(catalog)?.settlements).toBe(1);
   });
 
-  it("still ignores settlements for uncataloged resources", () => {
-    const catalog = new BazaarCatalog();
+  it("still ignores settlements for uncataloged resources", async () => {
+    const catalog = await BazaarCatalog.create();
     expect(catalog.recordSettlement("https://nowhere.example/x", "CPAYER", OWNER)).toBe(false);
     expect(catalog.size).toBe(0);
   });
 
-  it("canonicalizes the url, so a query string cannot bypass the gate", () => {
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(
+  it("canonicalizes the url, so a query string cannot bypass the gate", async () => {
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(
       { resourceUrl: VICTIM_URL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       reqs(OWNER),
     );

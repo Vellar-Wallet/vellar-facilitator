@@ -16,11 +16,11 @@ const testConfig = {
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
   maxTransactionFeeStroops: 2_000_000,
-  catalogFile: undefined,
+  catalogDbUrl: undefined,
+  catalogDbAuthToken: undefined,
   verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
-  catalogOwnershipBootstrap: false,
 };
 
 // A structurally VALID transaction envelope. /settle now shreds unparseable XDR
@@ -54,10 +54,11 @@ function discovered(over: Partial<DiscoveredResource> = {}): DiscoveredResource 
 }
 
 describe("facilitator server", () => {
-  const catalog = new BazaarCatalog();
+  let catalog: BazaarCatalog;
   let app: Awaited<ReturnType<typeof buildServer>>;
 
   beforeAll(async () => {
+    catalog = await BazaarCatalog.create();
     app = await buildServer(buildFacilitator(testConfig), catalog);
     await app.ready();
   });
@@ -159,7 +160,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 500_000,
     });
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
       const junk = () => ({
@@ -200,7 +201,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 1,
     });
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
       const withPayTo = (payTo: unknown) => {
@@ -237,7 +238,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 500_000,
     });
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
       // Structurally valid XDR, but an x402Version with no registered facilitator
@@ -263,7 +264,7 @@ describe("Fix 1 — spend policy on /settle", () => {
   // Prompt (Fix 1): "unset config preserves current behavior" — with no policy
   // passed, /settle must behave exactly as it did before Fix 1: never refused.
   it("preserves prior behavior when no spend policy is configured", async () => {
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     await app.ready();
     try {
       for (let i = 0; i < 8; i++) {
@@ -289,7 +290,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 1,
     });
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
       const emptyPayToBody = () => {
@@ -319,7 +320,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 2_000_000,
     });
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
       // First two are allowed through to the facilitator (which fails on the
@@ -346,7 +347,7 @@ describe("Fix 1 — spend policy on /settle", () => {
       spendWindowMs: 60_000,
       perSettleEstimateStroops: 2_000_000,
     });
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, policy);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
       for (let i = 0; i < 4; i++) {
@@ -381,7 +382,7 @@ describe("Fix 3 — sponsor balance guard on /settle", () => {
       intervalMs: 60_000,
     });
     await guard.refresh();
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     const app = await buildServer(buildFacilitator(testConfig), catalog, undefined, undefined, {}, guard);
     await app.ready();
     try {
@@ -406,7 +407,7 @@ describe("Fix 3 — sponsor balance guard on /settle", () => {
       intervalMs: 60_000,
     });
     await guard.refresh(); // errors → unknown → allowed
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, undefined, {}, guard);
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, undefined, {}, guard);
     await app.ready();
     try {
       const settle = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
@@ -418,14 +419,15 @@ describe("Fix 3 — sponsor balance guard on /settle", () => {
 });
 
 describe("discovery wire conformance (canonical withBazaar client, unmodified)", () => {
-  const catalog = new BazaarCatalog();
+  let catalog: BazaarCatalog;
   let app: Awaited<ReturnType<typeof buildServer>>;
   let bazaar: ReturnType<typeof withBazaar<HTTPFacilitatorClient>>["extensions"]["bazaar"];
 
   beforeAll(async () => {
+    catalog = await BazaarCatalog.create();
     app = await buildServer(buildFacilitator(testConfig), catalog);
-    catalog.upsertFromPayment(discovered(), requirements());
-    catalog.upsertFromPayment(
+    await catalog.upsertFromPayment(discovered(), requirements());
+    await catalog.upsertFromPayment(
       discovered({
         resourceUrl: "https://api.example.com/prices",
         serviceName: "PriceFeed",

@@ -76,38 +76,48 @@ memory and will overwrite a live hand-edit.
    /var/data/bazaar-catalog.json.ownership
    ```
 
-3. **Back both files up**, together, to the same timestamped directory:
+3. **Back the ownership rows up.** There are no files any more — the catalog
+   lives in libSQL/Turso.
    ```
-   cp /var/data/bazaar-catalog.json          /var/data/backup-$(date +%s)/
-   cp /var/data/bazaar-catalog.json.ownership /var/data/backup-$(date +%s)/
+   turso db shell <db> "SELECT resource_key, pay_to, bound_at FROM ownership \
+     WHERE resource_key = 'https://api.merchant.example/quote'"
    ```
-   Back up **both**. A catalog file without its companion ownership file makes
-   the service come up frozen — see procedure 2.
+   Keep that output. It is what you restore if step 4 goes wrong.
 
-4. **Edit the ownership file.** It is a JSON array of
-   `{ "resource": <canonical-url>, "boundPayTo": [<address>, ...] }`. Find the
-   row whose `resource` matches, and **append** the new address:
+4. **INSERT the new address. Do not UPDATE.** Ownership is one row per bound
+   payTo, so a rotation is an insert alongside the existing row, not an edit of
+   it:
 
-   ```json
-   { "resource": "https://api.merchant.example/quote",
-     "boundPayTo": ["GOLD...ADDRESS", "GNEW...ADDRESS"] }
+   ```sql
+   INSERT INTO ownership (resource_key, pay_to, bound_at)
+   VALUES ('https://api.merchant.example/quote', 'GNEW...ADDRESS', unixepoch()*1000);
    ```
 
-   **Append, do not replace.** Removing the old address is a separate decision:
-   any accepts entry still carrying it will be quarantined on the next load, and
-   if it was the *first* entry the whole binding re-derives from it. Adding is
-   reversible; removing is not.
+   **Append, do not replace**, and the reason is now structural: rows load
+   ordered by `bound_at`, and `boundPayTo[0]` is treated as the owner
+   everywhere downstream. An `UPDATE` that overwrites the original row hands
+   ownership to the new address outright; an `INSERT` adds a second acceptable
+   address while leaving the TOFU winner in place. Adding is reversible with a
+   `DELETE` of the row you just added; overwriting is not.
+
+   > **The schema exists for this procedure.** A one-row-per-URL table cannot
+   > represent `[OLD, NEW]`, and an early draft of the migration had exactly
+   > that — it would have silently removed the only recovery route a squatted
+   > URL has. Caught by `catalog.reverify.test.ts`, and pinned by a test that
+   > fails if the composite key is ever reverted.
 
    The `resource` value must be the **canonical** URL — `origin + pathname`, with
    no query string or fragment. If the merchant gave you a URL with `?...`, strip
    it. A row whose key has a query string will simply never match.
 
-5. **Check the JSON parses** before restarting. This matters more than it looks:
-   an unparseable ownership file does not fail loudly, it makes the catalog come
-   up **frozen and empty** (procedure 2).
+5. **Read the rows back** before restarting, and confirm BOTH addresses are
+   present with the original first:
    ```
-   python3 -m json.tool /var/data/bazaar-catalog.json.ownership > /dev/null && echo OK
+   turso db shell <db> "SELECT pay_to FROM ownership \
+     WHERE resource_key = 'https://api.merchant.example/quote' ORDER BY bound_at, rowid"
    ```
+   A row whose `pay_to` is not text (a blob, say) makes the catalog come up
+   **frozen as `ownership-invalid`** rather than failing loudly at insert time.
 
 6. **Start the service.**
 
@@ -117,8 +127,12 @@ memory and will overwrite a live hand-edit.
    ```
    curl -sS <base>/health
    ```
-   `catalogFrozen` must be `false`. If it reads `"ownership-unreadable"`, your
-   edit did not parse — restore from the backup in step 3 and try again.
+   `catalogFrozen` must be `false`. The two values you might see instead now say
+   different things:
+   - `"ownership-invalid"` — the store ANSWERED and a row is unusable. Your edit
+     is the likely cause; restore from step 3. **Do not restart in a loop.**
+   - `"ownership-unreachable"` — the database could not be reached after retries.
+     Nothing to do with your edit; wait and restart once it answers.
 
 2. Have the merchant settle once at the new address, then confirm the entry
    picked it up:

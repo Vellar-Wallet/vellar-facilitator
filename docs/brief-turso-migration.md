@@ -1,6 +1,39 @@
 # Brief — durable catalog on Turso
 
-**Status: brief. No code, and four numbers still to be chosen (§7).**
+**Status: BUILT. All four numbers approved 2026-08-11 and in `PROPOSED_TIMINGS`.**
+
+---
+
+## THE COST, STATED FIRST
+
+**Today a squatted URL self-heals. After this milestone it does not.**
+
+This is not a projection. On 2026-08-11 the catalog was empty after a restart, and
+a squat was run against the live deployment:
+
+| | |
+| --- | --- |
+| B settles first, declaring the victim's URL | `f5e16012…`, `successful: true`, sponsor-paid |
+| Catalog binds the URL to **B** | `accepts: ['GB74DDOZ…']`, `ownerVerified: false` |
+| **A — the real owner — then settles through its own seller** | `e4def312…`, `successful: true` |
+| Catalog after A's settlement | `accepts: ['GB74DDOZ…']` — **unchanged**. `settlements 1→1`, `uniquePayers 1→1` |
+
+**The real owner was locked out of its own URL, and its own payment did not
+correct it.** Today that resolves itself: nothing is durable, so the next
+spin-down clears the binding and the next settlement re-binds the rightful owner.
+
+**After this milestone, it does not resolve itself.** The binding survives
+restarts — that is the entire point — so a squat persists until an operator runs
+[`operator-runbook.md` §1](./operator-runbook.md) by hand. There is no in-band
+recovery, because the displacement variant is deliberately deferred (§1 below).
+
+**Anyone onboarding a real merchant before displacement ships is accepting that
+a squat on their URL requires manual operator recovery, and that the merchant's
+own payments will not fix it.** That is the trade, in one sentence, and it should
+be quoted to anyone who asks whether the facilitator is ready for a real
+merchant.
+
+---
 
 Builds on [`milestone-durable-catalog.md`](./milestone-durable-catalog.md), which
 established *why* Turso and *what it touches*. This brief covers what that
@@ -76,22 +109,15 @@ Two tables, because ownership and entries have genuinely different durability
 requirements (§3). One database, so they update in one transaction.
 
 ```sql
--- Ownership. The security-critical table: a row here is a claim that a specific
--- payTo owns a canonical resource URL. Write-before-relied-upon (§3).
+-- Ownership. The security-critical table: a row is the claim that `pay_to` owns
+-- `resource_key`. Durable-before-relied-upon (§3).
+--
+-- ONE ROW PER BOUND payTo — see "why the composite key" below.
 CREATE TABLE ownership (
-  resource_key   TEXT PRIMARY KEY,        -- canonical: origin + pathname, no query
-  pay_to         TEXT NOT NULL,
-  bound_at       INTEGER NOT NULL,        -- epoch ms
-  verified_owner INTEGER NOT NULL DEFAULT 0,
-  verified_at    INTEGER
-);
-
--- Tombstones. A resource_key that has EVER bound, so an unbind cannot silently
--- reopen a URL to first-writer claim. Separate from `ownership` because a
--- tombstone outlives its binding — that is the whole point of it.
-CREATE TABLE ownership_tombstone (
-  resource_key TEXT PRIMARY KEY,
-  created_at   INTEGER NOT NULL
+  resource_key TEXT NOT NULL,          -- canonical: origin + pathname, no query
+  pay_to       TEXT NOT NULL,
+  bound_at     INTEGER NOT NULL,       -- epoch ms; also the load order
+  PRIMARY KEY (resource_key, pay_to)
 );
 
 -- Catalog entries. Reconstructible from settlement traffic, so these get the
@@ -103,6 +129,43 @@ CREATE TABLE entry (
 );
 CREATE INDEX entry_last_updated ON entry (last_updated DESC);
 ```
+
+### Why the composite key — a defect this migration nearly shipped
+
+The first draft used `resource_key TEXT PRIMARY KEY` with a single `pay_to`.
+That is wrong, and it took a migrated test to say so: `boundPayTo` is an **array**
+because the rotation procedure (runbook §1) adds the merchant's new address
+**alongside** the old one, `[OLD, NEW]`. A one-row-per-URL table cannot hold it.
+
+The consequence would not have been a crash. It would have been the **silent
+removal of the only recovery route a squatted URL has** before displacement
+ships — found by an operator at the moment they needed it, which is the worst
+possible time to find it. A test now fails if the composite key is reverted.
+
+Row order is load-bearing too: rows load `ORDER BY bound_at, rowid` and
+`boundPayTo[0]` is treated as the owner downstream, so a load that reordered them
+would hand ownership to the operator-added address. Also asserted.
+
+### Why there is NO separate tombstone table
+
+The milestone document specified a second `ownership_tombstone` table. **It was
+deliberately not built, and this section exists so nobody re-adds it believing it
+was an oversight.**
+
+A tombstone answers one question: *has this URL ever been bound?* Here a binding
+row is **never deleted**, so that question is exactly *is there a row in
+`ownership`?* Two tables would carry identical information under different names,
+and the second could only ever drift from the first.
+
+The obvious objection is displacement — which is why the milestone proposed it —
+and it does not apply: displacement replaces a binding's `pay_to`, it does not
+delete the URL's rows. The record that the URL was once bound survives either way.
+
+**The condition that would change this:** if some future feature needs to DELETE
+a URL's last ownership row — a genuine unbind, an operator purge, an erasure
+request — then "has ever been bound" stops being derivable and the tombstone
+table becomes necessary. Nothing planned needs that. If you find yourself writing
+that DELETE, add the table in the same change.
 
 Three things this shape buys, none of which the file store can:
 
@@ -219,9 +282,11 @@ the broken version is not evidence:
 
 ---
 
-## 7. Decisions I need from you before any code
+## 7. The four numbers — APPROVED 2026-08-11
 
-Per the standing rule, I am not choosing these.
+All four as proposed. They live in `PROPOSED_TIMINGS` (`src/store.ts`) so a
+review is one diff, and so none of them can acquire a second, quietly-different
+value the way `SETTLE_RATE_MAX` once shadowed `SETTLE_PER_PAYTO_MAX`.
 
 1. **Connection/query timeout to Turso on the settle path.** Recommend **2000 ms**
    — it sits after on-chain settlement, so it delays a response but cannot fail a
