@@ -15,7 +15,36 @@ response. Simulation figures are marked provisional where they appear.
 | facilitator `/health` | `commit 17a6fbd`, `catalogSize 0`, not frozen |
 | seller `/whoami` | `commit 17a6fbd`, `verifiable: true` |
 | 402 vs `/whoami` | agree on resourceUrl, payTo, asset |
-| deployed vs `main` | `17a6fbd` vs `5bb45aa` — **docs-only delta**, no executable difference |
+| deployed vs `main` | `17a6fbd` vs `5bb45aa` — **docs-only delta**, verified below |
+
+### The build question, settled
+
+The deployed instance ran `17a6fbd` for the whole walkthrough and only moved to
+`5bb45aa` when the F3 flip restarted it. So every control below was observed
+against a build that was *not* the tip of `main`, which is worth resolving rather
+than asserting.
+
+```
+$ git diff --stat 17a6fbd 5bb45aa
+ docs/security-audit.md | 179 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 178 insertions(+), 1 deletion(-)
+
+$ git diff --stat 17a6fbd 5bb45aa -- src examples package.json \
+      package-lock.json render.yaml tsconfig.json .github
+ (empty)
+
+$ git merge-base --is-ancestor 17a6fbd 5bb45aa   # exit 0 — direct parent
+```
+
+**One commit, one file, docs only** — PR #23, the D-4 retraction. `src/`,
+`examples/`, dependencies, `render.yaml` and CI are byte-identical, and `17a6fbd`
+is a direct ancestor rather than a divergent build, so there is no possibility of
+a fix present in one and absent in the other.
+
+**No control was observed against the wrong code. Every result below stands.**
+The `commit` field on `/health` — added precisely because a pre-audit build had
+once been deployed unnoticed — is what made this answerable in one command
+instead of a guess.
 
 ## PROVEN LIVE
 
