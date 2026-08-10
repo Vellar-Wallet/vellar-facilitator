@@ -104,6 +104,15 @@ export async function buildServer(
   app.get("/health", async () => ({
     status: "ok",
     service: "vellar-facilitator",
+    // Spin-down observability. Render destroys the container after 15 min idle,
+    // which wipes the catalog — and gives no outside signal that it happened.
+    // A RESET uptimeSeconds between two observations is the ground truth for
+    // "it slept or redeployed"; catalogSize is the consequence a developer
+    // feels. Together they make the keep-alive verifiable from data instead of
+    // from someone reporting an empty listing. Neither leaks anything:
+    // catalogSize is already derivable from /discovery/resources.
+    uptimeSeconds: Math.round(process.uptime()),
+    catalogSize: catalog.size,
     // F3: surfaced so an operator sees a frozen catalog rather than wondering
     // why discovery stopped growing. Settlement is unaffected while frozen.
     ...(catalog.catalogFrozen ? { catalogFrozen: catalog.catalogFrozen } : {}),
