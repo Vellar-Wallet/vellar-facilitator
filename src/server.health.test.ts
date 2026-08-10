@@ -46,6 +46,27 @@ describe("/health carries enough to detect a spin-down", () => {
     await app.close();
   });
 
+  it("reports the deployed commit when the platform provides one", async () => {
+    // Render injects RENDER_GIT_COMMIT. Without this, "what is actually
+    // deployed?" can only be answered by fingerprinting behaviour — which is
+    // how a stale build went unnoticed twice in one session, and only works
+    // when a release happens to change something externally visible.
+    process.env.RENDER_GIT_COMMIT = "abc1234def5678";
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect(body.commit, "must be short enough to eyeball against git rev-parse").toBe("abc1234");
+    await app.close();
+    delete process.env.RENDER_GIT_COMMIT;
+  });
+
+  it("omits commit entirely when not deployed on a platform that sets it", async () => {
+    delete process.env.RENDER_GIT_COMMIT;
+    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect("commit" in body, "absent rather than a misleading placeholder").toBe(false);
+    await app.close();
+  });
+
   it("stays exempt from the rate limit so the pinger cannot throttle real traffic", async () => {
     const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, undefined, {
       rateMaxPerMinute: 2,

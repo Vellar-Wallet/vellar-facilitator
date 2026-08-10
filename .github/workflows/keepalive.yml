@@ -78,6 +78,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Needed only so `git rev-parse` below has a repo to read: the stale-deploy
+      # check compares the deployed commit against this branch's HEAD. Without
+      # it the comparison silently never runs.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Ping /health
         env:
           # /health is exempt from the per-IP rate limit, so this cannot throttle
@@ -104,6 +111,16 @@ jobs:
           # replaced since the last ping — i.e. it slept (or redeployed) and the
           # catalog was wiped. This is how we find out from DATA rather than
           # from a developer reporting an empty listing.
+          # Is the running build actually what is on this branch? /health reports
+          # the deployed commit, so a stale deploy is a string comparison rather
+          # than something discovered by probing for security headers.
+          deployed=$(sed -n 's/.*"commit":"\([0-9a-f]*\)".*/\1/p' /tmp/body)
+          expected=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
+          if [ -n "$deployed" ] && [ -n "$expected" ] && [ "$deployed" != "$expected" ]; then
+            echo "::warning::deployed commit is $deployed but this branch is at $expected — the running build is NOT current"
+          fi
+          echo "deployed=${deployed:-unknown} expected=${expected:-unknown}"
+
           up=$(sed -n 's/.*"uptimeSeconds":\([0-9]*\).*/\1/p' /tmp/body)
           size=$(sed -n 's/.*"catalogSize":\([0-9]*\).*/\1/p' /tmp/body)
           echo "uptimeSeconds=${up:-?} catalogSize=${size:-?}"
