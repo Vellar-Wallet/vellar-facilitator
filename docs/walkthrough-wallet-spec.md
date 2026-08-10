@@ -60,7 +60,7 @@ no behaviour (`buyer.mjs:55-63`).
 demo wallet refused every payment because a verified-recipient policy had the
 recipient in a revoked state, and it presented as an opaque `__check_auth`
 failure. Either attach no policy, or confirm the policy admits
-`GBDZH5KZSVX67MEWPTEMSOP6FBHKYX4GYOW4RRM4JENRC4XZF5UHTKOP` before handing over.
+`GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH` before handing over.
 
 `SignerLimits` must not exclude the SEP-41 `transfer` on the asset below.
 
@@ -75,8 +75,8 @@ exactly:
 | --- | --- |
 | resource | `https://vellar-seller-demo.onrender.com/quote` |
 | network | `stellar:testnet` |
-| asset | `CBIN4HTPJM2QLJ32DTRO6OCLIMM7TR7D74JDIPVQYLNYGL7SBWOXH5ND` (X402TST) |
-| payTo | `GBDZH5KZSVX67MEWPTEMSOP6FBHKYX4GYOW4RRM4JENRC4XZF5UHTKOP` |
+| asset | `CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR` (X402TST) |
+| payTo | `GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH` |
 | amount | `1000000` atomic |
 
 **Yes — the challenge names a specific asset, and it is not XLM.** The wallet must
@@ -108,6 +108,27 @@ SEP-41 `transfer` fails on-chain and nothing downstream runs. `seller.mjs`
 asserts it already is; verify rather than assume.
 
 ---
+
+## 2b. Provisioned values — 2026-08-10
+
+| | |
+| --- | --- |
+| `WALLET_CONTRACT_ID` | `CCXPXAP4CLGI6KFRGO7SRWIUIEAOJGMMCFGHIYFZYWH5AZPJAXRS6N3V` |
+| `SIM_SOURCE_ACCOUNT` | `GDLUJFOJOLKSJWONTP45LC5IFNO6R2HDUJVEHOZTUDNYRRXLEWRKUGUM` |
+| Recipient B (squat target) | `GB74DDOZVF4SX3SEB2HNXJTKDBEKI4PH7N6GUWAFLG76XJBX27AOW2YB` |
+| Agent signer (public) | `GAUUOEA6EOMFLQZSQFM6SUWT3ZZBTLYS5MH4GHBQEWL5A2RRRX7GV7GB` |
+| Wallet balance | 1,000,000,000 atomic — 20x the plan, so retries are free |
+
+Confirmed on-chain at provisioning: `get_signer` non-null for the agent key as
+**sole** Ed25519 Persistent unlimited admin (which is why the burn is key
+destruction, not signer removal — see §7), and both trustlines live (merchant
+10.0, recipient B 0.5).
+
+The wallet also carries stranded balances of two predecessor test assets from
+failed provisioning attempts. **Ignore them** — noted in `docs/decisions.md`.
+They are not the asset in §2 and settling against them would fail.
+
+**BURN DATE: 2026-08-24.**
 
 ## 3. What does not exist yet
 
@@ -243,6 +264,41 @@ evidence is about.
 | **G-1** (re-verify on settle) | G-1's specific path is *a **restored** entry recovering `verifiedOwner`*. Entries never survive a restart here — there is no persistent disk — so after any restart the next settle is a **first** catalog, which would have verified anyway. **G-1 cannot be distinguished from first-catalog verification on this deployment.** What I *can* prove, and what has never happened, is `trust.ownerVerified: true` arriving through the settle path end-to-end. I will report that as what it is, and leave G-1 itself unproven until durable storage exists. |
 | **F3** (balance guard) | Refusing below the hard floor requires the sponsor below 10 XLM. I will **not** drain it. The only honest alternative is a deliberate config flip: temporarily set `SPONSOR_HARD_FLOOR_STROOPS` above the sponsor's current balance, confirm `/settle` returns `503 settlement_refused` with `reason: sponsor_balance_low`, then revert. That needs your approval and a dashboard change — I will not do it unasked. |
 
+### RPC flakiness is not a control refusing — confirm before recording either way
+
+The testnet RPC load balancer was **badly inconsistent during provisioning**:
+four distinct stale-view errors, three attempts failed outright. That is the
+environment this walkthrough runs in, and it directly threatens the evidence,
+because **a settle that fails for RPC reasons and a settle refused by a control
+look identical from the client side** — both are a non-200 from `/settle`.
+
+Getting this wrong is worse than a failed run: recording RPC noise as "F11
+blocked the squat" would be a fabricated pass, and recording a real refusal as
+"RPC flake, retry" would erase a genuine result.
+
+**Protocol for every settle that does not cleanly succeed:**
+
+1. **Capture the response body verbatim.** A control refusal is a **503** with a
+   named `reason` (`sponsor_balance_low`, and on pubnet the policy reasons). A
+   stale-view or simulation failure is not.
+2. **Confirm against Horizon before recording anything**, not against the
+   `/settle` response:
+   ```sh
+   curl -sS "https://horizon-testnet.stellar.org/transactions/<hash>" \
+     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["successful"], d["fee_account"])'
+   ```
+3. **Classify explicitly:**
+   - tx exists and `successful: true` → the payment **went through**; anything
+     the catalog did afterwards is a genuine control decision
+   - tx absent, or `successful: false` → **infrastructure or signing**, not a
+     control. Retry; do not record it as evidence of anything
+4. **Retries are free.** The wallet holds 1,000,000,000 atomic — twenty times the
+   plan — so retrying is always cheaper than recording an ambiguous result.
+
+The F11 evidence rests entirely on *"the payment succeeded and the catalog
+refused it anyway"*. The `fee_account` in step 2 doubles as independent proof the
+facilitator sponsored the fee.
+
 ### The restart test
 
 After the settles above:
@@ -291,14 +347,32 @@ intention to clean up is not a plan.
       git status --short && git grep -lE 'S[A-Z2-7]{55}' -- . | grep -v test
       ```
 
-### On-chain
+### On-chain — read this before attempting a signer removal
 
-- [ ] **Remove the agent signer from the wallet**, and confirm `get_signer`
-      returns `null` on-chain — the same confirmation used for the previous
-      wallet. Do not treat the removal transaction as proof; read the state back.
-- [ ] The signer entry **remains visible in history afterwards**. That is
-      expected — the CC5ZSTLT precedent — and is not an incomplete burn. Removal
-      is proven by `get_signer` returning null, not by absence from history.
+**Corrected.** An earlier version of this checklist said "remove the agent signer
+and confirm `get_signer` returns null". **That step will fail, and following it
+wastes time looking for a fault that is not there.**
+
+The agent key is the wallet's **only** signer — sole Ed25519 Persistent unlimited
+admin — so `remove_signer` is refused by **`LastAdminSigner`**. The contract
+declines to strip its own last administrator, which is correct behaviour, not an
+error. This is the **CC5ZSTLT precedent**, already recorded in
+`docs/decisions.md`.
+
+So for this wallet:
+
+- [ ] **The burn IS the destruction of the secret.** Deleting the key file above
+      is the whole burn. Once the only copy is gone the wallet is unusable by
+      anyone, permanently — there is no second signer to reach it with.
+- [ ] **Do NOT attempt `remove_signer`.** It fails with `LastAdminSigner`.
+- [ ] **The signer entry stays visible on-chain, and `get_signer` keeps returning
+      non-null.** That is expected and is **not** an incomplete burn. Do not
+      treat a non-null `get_signer` here as unfinished cleanup — for the previous
+      wallet, where a second signer existed, null was the proof; here the proof is
+      that the secret no longer exists.
+- [ ] **Record it as burned-by-key-destruction** in `docs/decisions.md`, with the
+      distinction stated, so the next person does not go looking for a removal
+      transaction that was never possible.
 
 ### Configuration left behind
 
