@@ -69,7 +69,9 @@ describe("facilitator server", () => {
   it("GET /health responds ok", async () => {
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ok", service: "vellar-facilitator" });
+    // Shape-checked rather than deep-equal: uptimeSeconds/catalogSize were added
+    // for spin-down observability and are asserted in server.health.test.ts.
+    expect(res.json()).toMatchObject({ status: "ok", service: "vellar-facilitator" });
   });
 
   it("GET /supported lists the stellar exact scheme, sponsored fees, and the bazaar extension", async () => {

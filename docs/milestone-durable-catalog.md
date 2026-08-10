@@ -142,9 +142,40 @@ dance exist to manage **unrepresentable** rather than merely handled.
 
 - **G-2** — no in-band `payTo` rotation. Still operator-mediated (runbook §1), and
   the procedure changes from editing a file to updating a row.
-- **G-8** — the tombstone cap is a one-way freeze with no reset path. A store makes
-  the cap *reachable* (tombstones now accumulate instead of resetting on restart),
-  so this becomes **more** relevant, not less. Worth fixing in the same batch.
+- **G-8** — the tombstone cap is a one-way freeze with no reset path. Durable
+  storage does make the cap *accumulate* rather than reset, so this was raised as
+  a possible prerequisite. **The arithmetic says no.** See below.
+
+### G-8 under durable storage — worked out, not assumed
+
+A tombstone is created per distinct canonical URL that binds. A brand-new URL is
+by definition unbound at settle time, so it is gated by the **unbound pool**
+(`SETTLE_UNBOUND_POOL_MAX`, 10 per 60 s shared across all unbound URLs):
+
+| Quantity | Value |
+| --- | --- |
+| New-URL settlements per day at the cap | **14,400** |
+| Days of *sustained maximum* to reach `MAX_TOMBSTONES` (100,000) | **6.9** |
+| Sponsor XLM burned to get there (at the 127,808-stroop measured fee) | **~1,278 XLM** |
+| …per day at that rate | **~184 XLM/day** |
+
+Seven days looks alarming until you price it. **The binding constraint is the
+sponsor balance, not the tombstone cap.** `/settle` refuses below the 10 XLM hard
+floor, so at maximum rate the attack self-terminates in **~78 minutes** from a
+10 XLM surplus. Reaching the cap needs someone to keep refunding ~184 XLM/day for
+a week — which only the operator can do, and would notice.
+
+Organically, 100,000 distinct URLs is roughly 10,000 merchants at 10 endpoints
+each: a very large service, not a near-term state.
+
+**Verdict: G-8 stays a policy item and is NOT a prerequisite of this milestone.**
+The finding is real — a one-way freeze with no reset path is disproportionate to
+its trigger — but it is not on a schedule, and the sponsor balance guard bounds it
+roughly two orders of magnitude tighter than the cap does.
+
+One caveat to revisit if the numbers move: raising `SETTLE_UNBOUND_POOL_MAX`, or
+running with a much larger sponsor balance and no hard floor, removes the very
+constraint doing the work here. If either changes, redo this arithmetic.
 
 **New trust boundary:** a network dependency on the write path, credentials in the
 environment, and vendor availability coupled to catalog availability. That is a

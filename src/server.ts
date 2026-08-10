@@ -104,6 +104,25 @@ export async function buildServer(
   app.get("/health", async () => ({
     status: "ok",
     service: "vellar-facilitator",
+    // Spin-down observability. Render destroys the container after 15 min idle,
+    // which wipes the catalog — and gives no outside signal that it happened.
+    // A RESET uptimeSeconds between two observations is the ground truth for
+    // "it slept or redeployed"; catalogSize is the consequence a developer
+    // feels. Together they make the keep-alive verifiable from data instead of
+    // from someone reporting an empty listing. Neither leaks anything:
+    // catalogSize is already derivable from /discovery/resources.
+    uptimeSeconds: Math.round(process.uptime()),
+    catalogSize: catalog.size,
+    // Which build is actually serving. Render injects RENDER_GIT_COMMIT.
+    // Without this the only way to answer "is the deploy current?" is to
+    // fingerprint behaviour — probing for security headers or an error-message
+    // shape — which is archaeology, only works when a release happens to change
+    // something externally visible, and let a stale build go unnoticed twice.
+    // Now it is a string comparison against `git rev-parse --short HEAD`.
+    // Omitted rather than faked when unset, so local runs do not claim a build.
+    ...(process.env.RENDER_GIT_COMMIT
+      ? { commit: process.env.RENDER_GIT_COMMIT.slice(0, 7) }
+      : {}),
     // F3: surfaced so an operator sees a frozen catalog rather than wondering
     // why discovery stopped growing. Settlement is unaffected while frozen.
     ...(catalog.catalogFrozen ? { catalogFrozen: catalog.catalogFrozen } : {}),
