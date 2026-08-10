@@ -189,8 +189,10 @@ WALLET_CONTRACT_ID : C…
 agent signer (pub) : G…        # ed25519, secret never persisted
 SIM_SOURCE_ACCOUNT : G…
 asset              : CBIN4HTP… (X402TST)
-BURN DATE          : <date + 14d> — remove the signer on-chain and confirm
-                     get_signer returns null, as done for the previous wallet.
+BURN DATE          : <date + 14d> — DESTROY THE SECRET. Do NOT attempt
+                     remove_signer if this key is the wallet's only signer:
+                     LastAdminSigner refuses it and get_signer stays non-null,
+                     which is expected, not an incomplete burn. See §7.
 ```
 
 ---

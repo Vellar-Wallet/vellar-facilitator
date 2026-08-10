@@ -456,6 +456,47 @@ assertion ("the ceiling admits 100 per window", "per-payTo is half of global",
 "the hard floor exceeds one window"), so changing a value without revisiting its
 reasoning fails the build instead of quietly making a comment false.
 
+### Evidence lesson: a non-200 is ambiguous, and the failure mode is a FABRICATED PASS
+
+From the live walkthrough, and it generalises well beyond it.
+
+`/settle` returning a non-200 is **ambiguous between infrastructure and a control
+decision**. A stale-view error from the RPC load balancer and F11 refusing a
+resource-URL squat look identical from the client: both are simply "not 200".
+During wallet provisioning the testnet RPC produced four distinct stale-view
+errors and three outright failures, so this is the normal condition, not an edge
+case.
+
+**The danger is not a failed test. It is manufactured evidence for the claim you
+most want to be true.** Recording an RPC failure as "F11 blocked the squat"
+produces a *pass* — for the single most important control in the audit — that
+nothing downstream would ever contradict. The inverse error, dismissing a real
+refusal as "flake, retry", quietly erases a genuine result. Both are worse than
+an inconclusive run, because both look like knowledge.
+
+**Horizon is the arbiter, not the `/settle` response.** For any settle that does
+not cleanly succeed:
+
+- tx exists and `successful: true` → the payment went through, so whatever the
+  catalog did next is a **real control decision** and may be recorded
+- tx absent or `successful: false` → **infrastructure or signing**; retry, and
+  record nothing
+
+`fee_account` on the same Horizon read doubles as independent proof the
+facilitator sponsored the fee — which the F11 evidence depends on anyway, since
+the whole claim is "the payment succeeded *and* the catalog refused it".
+
+**Retrying is always cheaper than recording an ambiguity.** The test wallet was
+funded at twenty times the plan specifically so that no result ever has to be
+guessed at. Fund for retries, not for the happy path.
+
+This sits alongside the other evidence lessons here — [decorative tests
+(RA-12)](#ra-12--decorative-tests--high--closed-by-test), where eight tests
+passed against deliberately broken code, and [live evidence vs unit
+tests](#live-evidence-vs-unit-tests--what-has-actually-been-exercised-in-production).
+The common thread is that **a green result is not self-validating**: something
+independent has to be able to contradict it.
+
 ### Operational lesson: secrets in `argv`
 
 During the F11 reproduction, throwaway secrets were passed as command-line
