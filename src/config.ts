@@ -12,18 +12,25 @@ export interface FacilitatorConfig {
   verificationApiUrl: string | undefined;
   /** Fix 1 sponsorship spend control. Enforced on pubnet, log-only on testnet. */
   spend: {
-    /** Max settlements per payTo per window (default 30). */
-    rateMax: number;
-    /** Per-payTo rate window in ms (default 60_000). */
+    /** Shared window for ALL per-entity budgets below, in ms (default 60_000). */
     rateWindowMs: number;
-    /** Global rolling sponsor-spend ceiling in stroops (default 5 XLM). */
+    /** Global rolling sponsor-spend ceiling in stroops (default 50_000_000 = 5 XLM). */
     ceilingStroops: number;
     /** Global spend window in ms (default 60_000). */
     windowMs: number;
     /** F12: settles/window for one BOUND resource URL (default 10). */
     perUrlMax: number;
-    /** F12: settles/window per payTo (default 100 = global; a ratchet that only
-     * starts binding if the global ceiling is later raised). */
+    /**
+     * F12: settles/window per payTo (default 50). The ONLY per-payTo budget —
+     * `SETTLE_RATE_MAX` used to be a second one on the same key and window, and
+     * being tighter it shadowed this entirely, so this dimension never ran.
+     *
+     * 50 is half the global capacity (see `documented rationale` in
+     * src/config.thresholds.test.ts, which asserts that relationship). It is a
+     * real ratchet — no single payTo can consume the whole service — and it no
+     * longer taxes an honest merchant running several bound URLs, who gets
+     * `perUrlMax` on each up to this total.
+     */
     perPayToMax: number;
     /** F12: settles/window shared by ALL unbound URLs (default 10). */
     unboundPoolMax: number;
@@ -37,9 +44,10 @@ export interface FacilitatorConfig {
   catalogOwnershipBootstrap: boolean;
   /** Fix 3 sponsor balance guard floors, in stroops. */
   balance: {
-    /** Warn below this (default 10 XLM). */
+    /** Warn below this (default 250_000_000 = 25 XLM). */
     softFloorStroops: number;
-    /** Refuse /settle below this (default 2 XLM). */
+    /** Refuse /settle below this (default 100_000_000 = 10 XLM). Must exceed
+     * `ceilingStroops`; enforced at boot (fatal on pubnet). */
     hardFloorStroops: number;
     /** Poll interval in ms (default 60_000). */
     intervalMs: number;
@@ -76,21 +84,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
   }
 
   const spend = {
-    rateMax: positiveIntEnv(env.SETTLE_RATE_MAX, 30, "SETTLE_RATE_MAX"),
     rateWindowMs: positiveIntEnv(env.SETTLE_RATE_WINDOW_MS, 60_000, "SETTLE_RATE_WINDOW_MS"),
-    // 1 XLM = 10,000,000 stroops per window. Chosen so the GLOBAL ceiling binds
-    // before the per-payTo rate limit: 30 settles x 500,000 stroops = 1.5 XLM,
-    // so 1 XLM trips first. That is ~20 settles/minute globally across ALL
-    // merchants — deliberately tight, and unreviewed against real pubnet
-    // traffic. See docs/security-audit.md before raising STELLAR_NETWORK=pubnet.
+    // 50,000,000 stroops = 5 XLM per window. At the 500,000-stroop worst-case
+    // fee that is 100 settlements per window across ALL merchants, and
+    // perPayToMax (50) is deliberately half of it.
+    //
+    // These numbers are asserted in src/config.thresholds.test.ts rather than
+    // only described here: an earlier version of this comment still reasoned
+    // about "1 XLM / ~20 settles per minute" long after the value had moved to
+    // 5 XLM, so anyone reading it was reasoning about a system that did not
+    // exist. Unreviewed against real pubnet traffic — see docs/security-audit.md.
     ceilingStroops: positiveIntEnv(env.SPEND_CEILING_STROOPS, 50_000_000, "SPEND_CEILING_STROOPS"),
     windowMs: positiveIntEnv(env.SPEND_WINDOW_MS, 60_000, "SPEND_WINDOW_MS"),
     // F12 per-entity budgets. Keyed on the DURABLE F11 ownership binding, never
     // on verifiedOwner (not persisted; resets on restart).
     perUrlMax: positiveIntEnv(env.SETTLE_PER_URL_MAX, 10, "SETTLE_PER_URL_MAX"),
-    perPayToMax: positiveIntEnv(env.SETTLE_PER_PAYTO_MAX, 100, "SETTLE_PER_PAYTO_MAX"),
+    perPayToMax: positiveIntEnv(env.SETTLE_PER_PAYTO_MAX, 50, "SETTLE_PER_PAYTO_MAX"),
     unboundPoolMax: positiveIntEnv(env.SETTLE_UNBOUND_POOL_MAX, 10, "SETTLE_UNBOUND_POOL_MAX"),
   };
+
+  // A retired knob that still parses is the next dead control: SETTLE_RATE_MAX
+  // was a SECOND per-payTo budget over the same key and window, and being the
+  // tighter of the two it shadowed SETTLE_PER_PAYTO_MAX so that F12's per-payTo
+  // dimension never ran at all. It is gone rather than aliased, because an alias
+  // would leave two names for one dimension — exactly how the shadowing arose.
+  if (env.SETTLE_RATE_MAX !== undefined) {
+    console.warn(
+      `[config] SETTLE_RATE_MAX is RETIRED and is being IGNORED (you set ${env.SETTLE_RATE_MAX}). ` +
+        `It was a second per-payTo budget that shadowed SETTLE_PER_PAYTO_MAX. Use SETTLE_PER_PAYTO_MAX ` +
+        `instead — note the effective per-payTo limit is now that value, not the one you set here.`,
+    );
+  }
 
   // Balance floors. INVARIANT: the hard floor must exceed the maximum XLM a
   // single spend window can drain, because the balance verdict is up to one
@@ -103,12 +127,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     intervalMs: positiveIntEnv(env.SPONSOR_BALANCE_INTERVAL_MS, 60_000, "SPONSOR_BALANCE_INTERVAL_MS"),
   };
   if (balance.hardFloorStroops <= spend.ceilingStroops) {
-    console.warn(
-      `[config] sponsor hard floor (${balance.hardFloorStroops} stroops) does not exceed the spend ceiling ` +
-        `(${spend.ceilingStroops} stroops per window): the floor CANNOT HOLD — a single window can drain the ` +
-        `sponsor through it before the next balance check. Raise SPONSOR_HARD_FLOOR_STROOPS above ` +
-        `SPEND_CEILING_STROOPS, or lower the ceiling.`,
-    );
+    const detail =
+      `sponsor hard floor (${balance.hardFloorStroops} stroops) does not exceed the spend ceiling ` +
+      `(${spend.ceilingStroops} stroops per window): the floor CANNOT HOLD — a single window can drain the ` +
+      `sponsor through it before the next balance check. Raise SPONSOR_HARD_FLOOR_STROOPS above ` +
+      `SPEND_CEILING_STROOPS, or lower the ceiling.`;
+    // Fail CLOSED on pubnet, matching the spend policy itself. This is the one
+    // misconfiguration that silently disables the sponsor's last protection, and
+    // boot is the cheapest place to catch it — a warning on a free-tier instance
+    // nobody is tailing is not a control.
+    if (network === "stellar:pubnet") throw new Error(`[config] ${detail}`);
+    console.warn(`[config] ${detail}`);
   }
 
   // Announce the escape hatch on EVERY boot while it is set, not only when it

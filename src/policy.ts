@@ -53,7 +53,6 @@ export interface SettleIdentity {
 export interface SpendPolicyConfig {
   network: "stellar:testnet" | "stellar:pubnet";
   /** Max settlements per payTo per window (default 30). */
-  rateMax: number;
   /** Per-payTo rate window in ms (default 60_000). */
   rateWindowMs: number;
   /** Global rolling sponsor-spend ceiling in stroops (default 5 XLM = 50_000_000). */
@@ -150,7 +149,9 @@ export class SpendPolicy {
    */
   private evaluate(id: SettleIdentity, t: number): SettleRejectReason | undefined {
     const payToRecent = prune(this.perPayTo.get(id.payTo) ?? [], t - this.cfg.rateWindowMs);
-    if (payToRecent.length >= this.cfg.rateMax) return "rate_limited_payto";
+    // ONE per-payTo budget. There used to be two (rateMax and perPayToMax) over
+    // the same key and window, so the tighter silently shadowed the looser and
+    // F12's per-payTo dimension never ran.
     if (payToRecent.length >= this.cfg.perPayToMax) return "rate_limited_payto";
 
     if (id.bound && id.resourceUrl) {
@@ -247,7 +248,6 @@ function prune(times: number[], cutoff: number): number[] {
 /** Build a policy from config values, applying defaults. */
 export function createSpendPolicy(input: {
   network: "stellar:testnet" | "stellar:pubnet";
-  rateMax?: number;
   rateWindowMs?: number;
   spendCeilingStroops?: number;
   spendWindowMs?: number;
@@ -258,13 +258,12 @@ export function createSpendPolicy(input: {
 }): SpendPolicy {
   return new SpendPolicy({
     network: input.network,
-    rateMax: input.rateMax ?? 30,
     rateWindowMs: input.rateWindowMs ?? 60_000,
     spendCeilingStroops: input.spendCeilingStroops ?? 50_000_000, // 5 XLM
     spendWindowMs: input.spendWindowMs ?? 60_000,
     perSettleEstimateStroops: input.perSettleEstimateStroops,
     perUrlMax: input.perUrlMax ?? 10,
-    perPayToMax: input.perPayToMax ?? 100,
+    perPayToMax: input.perPayToMax ?? 50,
     unboundPoolMax: input.unboundPoolMax ?? 10,
   });
 }

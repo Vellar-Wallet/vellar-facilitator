@@ -29,7 +29,7 @@ const testConfig = {
   maxTransactionFeeStroops: 2_000_000,
   catalogFile: undefined,
   verificationApiUrl: undefined,
-  spend: { rateMax: 30, rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
+  spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
   catalogOwnershipBootstrap: false,
 };

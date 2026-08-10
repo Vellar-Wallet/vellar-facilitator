@@ -11,13 +11,12 @@ import { SpendPolicy } from "./policy.js";
 // Enforcement is fail-OPEN on testnet (log-only) and fail-CLOSED on pubnet.
 
 const cfg = {
-  rateMax: 3,
   rateWindowMs: 1000,
   spendCeilingStroops: 600, // 3 settles * 200 estimate = 600 exactly at ceiling
   spendWindowMs: 1000,
   perSettleEstimateStroops: 200,
   perUrlMax: 1000,
-  perPayToMax: 1000,
+  perPayToMax: 3, // was `rateMax: 3` — the effective per-payTo budget
   unboundPoolMax: 1000,
 };
 
@@ -73,7 +72,7 @@ describe("SpendPolicy — pubnet (fail-closed)", () => {
     const clock = nowFn();
     // Give rate headroom so the SPEND ceiling is what trips.
     const p = new SpendPolicy(
-      { network: "stellar:pubnet", ...cfg, rateMax: 100 },
+      { network: "stellar:pubnet", ...cfg, perPayToMax: 100 },
       clock.now,
     );
     // 3 settles * 200 = 600 == ceiling; the 4th exceeds it.
@@ -88,7 +87,7 @@ describe("SpendPolicy — bounded state (audit D10)", () => {
   it("evicts elapsed per-payTo buckets instead of growing forever", () => {
     const clock = nowFn();
     const p = new SpendPolicy(
-      { network: "stellar:pubnet", ...cfg, rateMax: 1000, spendCeilingStroops: 1e12 },
+      { network: "stellar:pubnet", ...cfg, perPayToMax: 1000, spendCeilingStroops: 1e12 },
       clock.now,
     );
     // 500 distinct payTos (the rotation vector) all settle at t0.

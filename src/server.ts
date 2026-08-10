@@ -311,7 +311,6 @@ if (isDirectRun) {
   // simulated fee is not exposed on the verify response — over-counting fails safe.
   const policy = createSpendPolicy({
     network: config.network,
-    rateMax: config.spend.rateMax,
     rateWindowMs: config.spend.rateWindowMs,
     spendCeilingStroops: config.spend.ceilingStroops,
     spendWindowMs: config.spend.windowMs,

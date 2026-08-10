@@ -18,7 +18,7 @@ const testConfig = {
   maxTransactionFeeStroops: 2_000_000,
   catalogFile: undefined,
   verificationApiUrl: undefined,
-  spend: { rateMax: 30, rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
+  spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
   catalogOwnershipBootstrap: false,
 };
@@ -151,7 +151,7 @@ describe("Fix 1 — spend policy on /settle", () => {
   it("does not let unsubmittable payloads exhaust the spend ceiling", async () => {
     const policy = createSpendPolicy({
       network: "stellar:pubnet",
-      rateMax: 1000,
+      perPayToMax: 1000,
       rateWindowMs: 60_000,
       spendCeilingStroops: 2_000_000, // room for ~4 settles at the estimate
       spendWindowMs: 60_000,
@@ -192,7 +192,7 @@ describe("Fix 1 — spend policy on /settle", () => {
   it("normalizes non-string and oversized payTo into the shared bucket", async () => {
     const policy = createSpendPolicy({
       network: "stellar:pubnet",
-      rateMax: 2,
+      perPayToMax: 2,
       rateWindowMs: 60_000,
       spendCeilingStroops: 1_000_000_000,
       spendWindowMs: 60_000,
@@ -229,7 +229,7 @@ describe("Fix 1 — spend policy on /settle", () => {
   it("refunds the reservation when facilitator.settle throws (zero-cost outage)", async () => {
     const policy = createSpendPolicy({
       network: "stellar:pubnet",
-      rateMax: 1000,
+      perPayToMax: 1000,
       rateWindowMs: 60_000,
       spendCeilingStroops: 1_500_000, // 3 slots at 500k
       spendWindowMs: 60_000,
@@ -281,7 +281,7 @@ describe("Fix 1 — spend policy on /settle", () => {
     // it is the durable evidence that the "<no-payto>" bucket is being enforced.
     const policy = createSpendPolicy({
       network: "stellar:pubnet",
-      rateMax: 2,
+      perPayToMax: 2,
       rateWindowMs: 60_000,
       spendCeilingStroops: 1_000_000_000, // ample: isolate the rate dimension
       spendWindowMs: 60_000,
@@ -311,7 +311,7 @@ describe("Fix 1 — spend policy on /settle", () => {
     // Pubnet policy, rateMax 2 so the 3rd settle from one payTo is refused.
     const policy = createSpendPolicy({
       network: "stellar:pubnet",
-      rateMax: 2,
+      perPayToMax: 2,
       rateWindowMs: 60_000,
       spendCeilingStroops: 50_000_000,
       spendWindowMs: 60_000,
@@ -338,7 +338,7 @@ describe("Fix 1 — spend policy on /settle", () => {
   it("never returns 503 on testnet (fail-open), even past the limit", async () => {
     const policy = createSpendPolicy({
       network: "stellar:testnet",
-      rateMax: 1,
+      perPayToMax: 1,
       rateWindowMs: 60_000,
       spendCeilingStroops: 1,
       spendWindowMs: 60_000,
