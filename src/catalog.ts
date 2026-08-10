@@ -11,6 +11,8 @@ import type {
   SearchDiscoveryResourcesParams,
   SearchDiscoveryResourcesResponse,
 } from "@x402/extensions/bazaar";
+import { isIP } from "node:net";
+import { isBlockedAddress } from "./ownership.js";
 import type { OwnershipVerdict } from "./ownership.js";
 import type { TrustedDiscoveryResource } from "./trust.js";
 
@@ -52,6 +54,36 @@ function isTemplatedKey(key: string): boolean {
     return p.includes(":") || p.includes("{");
   } catch {
     return false;
+  }
+}
+
+/**
+ * A catalog key Layer 2 can NEVER verify, decidable without DNS: the guard is
+ * https-only, refuses loopback/private literals, and a routeTemplate key is not
+ * a fetchable URL at all.
+ *
+ * This is deliberately distinct from "not verified yet". With
+ * VERIFICATION_API_URL unset every entry already reads unverified, so that flag
+ * carries no information — whereas this says the entry can never become
+ * verified however long you wait. examples/seller.mjs advertising
+ * `http://localhost:<port>` made ownership verification vacuous in production
+ * for its entire life, and nothing surfaced it.
+ */
+function isStructurallyUnverifiable(key: string): boolean {
+  try {
+    const u = new URL(key);
+    if (u.protocol !== "https:") return true;
+    if (isTemplatedKey(key)) return true;
+    if (u.hostname === "localhost") return true;
+    // Bare IP literals only. isBlockedAddress fails CLOSED on anything that is
+    // not a parseable IP, which is right where it guards a resolved address but
+    // would flag every healthy hostname here — so gate it on isIP first.
+    // Hostnames need DNS and are left to the live check, making this count a
+    // LOWER BOUND: it never over-reports.
+    if (isIP(u.hostname) !== 0 && isBlockedAddress(u.hostname)) return true;
+    return false;
+  } catch {
+    return true;
   }
 }
 
@@ -405,6 +437,9 @@ export class BazaarCatalog {
   /** G-7: set when load() derives a binding that was not already in the
    * ownership store, so the constructor can flush it exactly once. */
   private ownershipSeededDuringLoad = false;
+  /** URLs already warned about, so the log fires once per resource rather than
+   * once per settlement. */
+  private readonly warnedUnverifiable = new Set<string>();
 
   constructor(persistPath?: string, opts: { bootstrapOwnership?: boolean } = {}) {
     this.persistPath = persistPath;
@@ -442,6 +477,15 @@ export class BazaarCatalog {
   }
 
   /** Number of cataloged resources. */
+  /** Entries whose URL can NEVER pass Layer 2 (see isStructurallyUnverifiable).
+   * Surfaced on /health: a non-zero value means those sellers are advertising an
+   * address the facilitator cannot reach, not that verification is pending. */
+  get unverifiableCount(): number {
+    let n = 0;
+    for (const key of this.entries.keys()) if (isStructurallyUnverifiable(key)) n++;
+    return n;
+  }
+
   get size(): number {
     return this.entries.size;
   }
@@ -691,6 +735,17 @@ export class BazaarCatalog {
       boundPayTo,
       verifiedOwner: existing?.verifiedOwner ?? false,
     });
+    // Active half of the signal: /health carries a standing count, but nothing
+    // polls it now that the keep-alive is off, so say it once per URL in the log.
+    if (isStructurallyUnverifiable(key) && !this.warnedUnverifiable.has(key)) {
+      this.warnedUnverifiable.add(key);
+      console.warn(
+        `[catalog] ${key} can never be ownership-verified: the resource advertises an address the ` +
+          `facilitator cannot fetch (https-only, no loopback/private literals, no route templates). ` +
+          `The entry is served but permanently unverified. If this is your seller, set PUBLIC_BASE_URL ` +
+          `to the address it is actually reachable at — see docs/operator-runbook.md §4.`,
+      );
+    }
     this.evictToCap();
     this.save();
     return isFirstCatalog;

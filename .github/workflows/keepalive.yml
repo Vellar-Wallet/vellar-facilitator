@@ -60,10 +60,27 @@
 
 name: keepalive
 
+# DISABLED ON PURPOSE — no `schedule:` trigger. Manual only.
+#
+# The workspace has EIGHT services sharing one 750-hour monthly pool, and
+# exhausting it suspends EVERY free service in the workspace — including
+# vellar-backend and the frontend, which do real work and have nothing to do
+# with this facilitator.
+#
+# What a keep-alive buys is a demo catalog that stays warm between deploys.
+# What it risks is taking down unrelated production services. Even a 4 h/day
+# window is 124 h/month of that exposure for a convenience. Off is the correct
+# default until the instance types are confirmed and the real divisor is known;
+# it can be re-enabled then with an informed number.
+#
+# TO RE-ENABLE, once you know how many free WEB services share the pool (static
+# sites and databases do NOT draw instance hours, so the divisor is likely
+# smaller than the service count): add back a `schedule:` block, e.g.
+#     schedule:
+#       - cron: "*/10 5-23 * * *"   # 20 h/day = 620 h  -> 83% of the pool
+#       - cron: "*/10 9-12 * * *"   #  4 h/day = 124 h  -> 17% of the pool
+# and re-do the arithmetic against the CURRENT number of free web services.
 on:
-  schedule:
-    # Every 10 minutes, 05:00–23:59 UTC (20 h/day). See the budget note above.
-    - cron: "*/10 5-23 * * *"
   workflow_dispatch: {}
 
 permissions:

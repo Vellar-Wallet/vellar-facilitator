@@ -994,6 +994,51 @@ assumed newest, an ordering the API never promised.
 is the right posture, not a gap to close. Every verdict degrading to `"unknown"`
 is the honest answer while no verdict can be produced.
 
+## Live evidence vs unit tests — what has actually been exercised in production
+
+Added 2026-08-10 after the first live Layer 2 run. Every control below is
+closed-by-test in CI; this table is about something narrower and more important:
+**which ones have ever executed against the deployed service with real traffic.**
+
+### Has live evidence
+
+| Control | Evidence |
+| --- | --- |
+| **F11 Layer 2** — 402-challenge ownership verification | `match` against `https://vellar-seller-demo.onrender.com/quote` with the SSRF guard fully armed: real DNS (`216.24.57.7`), the pin taken from the guard's own resolution, TLS validated against the hostname (Google Trust Services), and a **control** proving an unrelated `payTo` returns `mismatch`. Repeatable via `src/ownership.live.test.ts` (manual gate, runbook §4). |
+| **F7 baseline hardening** | Probed against the deployed service: helmet headers present, `x-ratelimit-limit: 60`, and junk XDR returning a clean `400 invalid_payload` rather than the pre-audit `500` that leaked an internal `TypeError`. |
+
+### Unit tests ONLY — never executed live
+
+**Everything on the settle path.** These are the controls built during this
+engagement, and not one of them has run against the deployed service, because
+every one of them only executes when a real payment settles:
+
+| Control | What has never been observed live |
+| --- | --- |
+| **F11 Layer 1** — TOFU ownership binding | A real settlement establishing a binding; a second `payTo` being refused. |
+| **F12** — per-entity spend budgets | Any of the three budgets recording or refusing under real traffic. |
+| **G-3** — canonical resource key | `/settle` keying the policy on `origin + pathname` for a real payload. |
+| **G-4** — settlement-stat integrity | A rejected upsert failing to move a victim entry's stats. |
+| **G-1** — re-verify on settle | A restored entry recovering `verifiedOwner` on the bound owner's next settlement. |
+| **F3** — balance guard | `/settle` refused below the hard floor. |
+
+**Why it has never run:** `examples/buyer.mjs` requires a deployed Vellar smart
+account (`WALLET_CONTRACT_ID` plus an attached ed25519 agent signer). Its
+signature format is smart-account-specific, so a fresh keypair is not sufficient
+— a keypair is not a wallet — and the contract and its deploy flow live in the
+wallet repository, not here.
+
+**Why this matters more than it looks.** The pattern this engagement kept hitting
+is controls that are green in CI and inert in production: Layer 2 was decorative
+for its entire life because the example seller advertised `localhost`; the
+threshold sweep found a per-payTo budget that never ran because another budget
+shadowed it; RA-12 found eight tests that passed against deliberately broken
+code. Unit-test coverage has repeatedly failed to predict live behaviour in this
+codebase, and the settle path is where every remaining unverified control sits.
+
+**This is an OPEN item, not a footnote.** It closes when a real payment settles
+through the deployed facilitator and the six rows above are observed.
+
 ## What `main` is running today
 
 **Merged, as of 2026-08-10:** every finding above marked closed-by-test or

@@ -78,3 +78,29 @@ describe("/health carries enough to detect a spin-down", () => {
     await app.close();
   });
 });
+
+describe("/health surfaces structurally unverifiable entries", () => {
+  it("reports the count when a seller advertises an unfetchable address", async () => {
+    const catalog = new BazaarCatalog();
+    catalog.upsertFromPayment(
+      { resourceUrl: "http://localhost:10000/quote", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      { scheme: "exact", network: "stellar:testnet", asset: "CA", amount: "1", payTo: "GA", maxTimeoutSeconds: 60, extra: {} } as never,
+    );
+    const app = await buildServer(buildFacilitator(testConfig), catalog);
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect(body.unverifiableEntries, "the seller.mjs failure must be visible").toBe(1);
+    await app.close();
+  });
+
+  it("stays quiet when every entry is fetchable", async () => {
+    const catalog = new BazaarCatalog();
+    catalog.upsertFromPayment(
+      { resourceUrl: "https://seller.example/quote", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      { scheme: "exact", network: "stellar:testnet", asset: "CA", amount: "1", payTo: "GA", maxTimeoutSeconds: 60, extra: {} } as never,
+    );
+    const app = await buildServer(buildFacilitator(testConfig), catalog);
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect("unverifiableEntries" in body, "a healthy catalog must not add noise").toBe(false);
+    await app.close();
+  });
+});
