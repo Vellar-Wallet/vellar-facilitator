@@ -100,3 +100,39 @@ services:
       # See docs/security-audit.md (F4) for the precondition before enabling.
       - key: SPONSOR_SECRET_KEY
         sync: false
+
+  # ── DEMO SELLER — for the end-to-end ownership-verification walkthrough ────
+  #
+  # WHY THIS EXISTS. Layer 2 ownership verification (F11) fetches the resource's
+  # OWN 402 challenge over the network. It has never once succeeded against a
+  # real public endpoint: every match-asserting test either relaxes the SSRF
+  # guard (__insecureTestTransport) or stubs fetch and DNS, and the recorded
+  # runs used RESOURCE_URL=http://localhost:4031/quote, which the guard rejects
+  # for being non-https before a socket is opened. So the control is unproven on
+  # the path it was built for. This service gives the seller a real public
+  # hostname with a valid certificate so that path can finally be exercised.
+  #
+  # NOT an always-on service. It sleeps like any free instance; wake it, run the
+  # walkthrough, let it sleep. Free instance hours are pooled per WORKSPACE
+  # (750/month), so a few hours here is negligible — but note it does mean the
+  # facilitator's keep-alive should stay at 20 h/day rather than 24/7:
+  #   20 h/day (620 h) + a few hours of seller  -> ~127 h of margin
+  #   24/7     (744 h) + a few hours of seller  -> over budget
+  #
+  # No healthCheckPath: the only route is /quote, which correctly returns 402
+  # when unpaid. Render falls back to port-binding detection, which is what we
+  # want — a 402 is the seller working, not failing.
+  - type: web
+    name: vellar-seller-demo
+    runtime: node
+    plan: free
+    rootDir: examples
+    buildCommand: "npm install"
+    startCommand: "node seller.mjs"
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Point the seller's resource server at the hosted facilitator, so the
+      # walkthrough exercises the deployed build rather than a local one.
+      - key: FACILITATOR_URL
+        value: "https://vellar-facilitator.onrender.com"

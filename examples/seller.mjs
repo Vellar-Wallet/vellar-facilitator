@@ -32,7 +32,12 @@ const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://vellar-facilitat
 const PAYTO = "GBDZH5KZSVX67MEWPTEMSOP6FBHKYX4GYOW4RRM4JENRC4XZF5UHTKOP";
 const ASSET = "CBIN4HTPJM2QLJ32DTRO6OCLIMM7TR7D74JDIPVQYLNYGL7SBWOXH5ND"; // X402TST bound token
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
-const PORT = Number(process.env.SELLER_PORT || 4031);
+// PORT first: Render (and most PaaS) inject it and health-check that port, so
+// binding SELLER_PORT there would fail the deploy. SELLER_PORT still wins
+// locally when PORT is unset, so `docs/guide.md`'s walkthrough is unchanged.
+// This is the ONLY deployment concession in this file — the 402 challenge, the
+// discovery declaration and the payment path are untouched.
+const PORT = Number(process.env.PORT || process.env.SELLER_PORT || 4031);
 
 const coreServer = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL }))
   .register("stellar:testnet", new ExactStellarScheme())
