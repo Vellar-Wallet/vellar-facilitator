@@ -369,6 +369,77 @@ The output names the stage. Read it literally:
 
 ---
 
+## 5. "The catalog is empty after the service was idle"
+
+**This is designed behaviour on the free tier.** Render spins a free web service
+down after 15 minutes without traffic, and spin-down destroys the container's
+filesystem — which is where `CATALOG_FILE` and its ownership store live. Entries
+and bindings go with it.
+
+**Do not treat it as a fault, and do not fix it with a keep-alive.**
+
+`.github/workflows/keepalive.yml` exists and is deliberately left with no
+`schedule:` trigger. Free instance hours are pooled per **workspace** (750/month,
+shared by every free service), and exhausting the pool **suspends every free
+service in the workspace** — including services unrelated to this one. Keeping
+this facilitator warm 20 h/day would consume 83% of that pool; even 4 h/day is
+124 h/month of exposure. The thing being bought is a warm demo catalog; the thing
+being risked is unrelated production.
+
+Re-enable it only with a known divisor. Count the **free web services** in the
+workspace — static sites and databases do not draw instance hours, so the divisor
+is usually smaller than the service count — then pick a window and record the
+arithmetic beside the cron.
+
+### Verify rather than assume
+
+```sh
+curl -sS <base>/health
+```
+
+`catalogSize: 0` with a low `uptimeSeconds` means the container was recently
+replaced: expected. Each resource returns on its next settled payment.
+
+The permanent fix is durable storage, scoped in
+[`docs/milestone-durable-catalog.md`](./milestone-durable-catalog.md).
+
+---
+
+## 6. "`/health` reports `unverifiableEntries`"
+
+A non-zero `unverifiableEntries` means one or more sellers advertise a
+`resource.url` the facilitator **can never fetch** — so those entries are
+permanently unverified, no matter how long you wait.
+
+This is distinct from "not verified yet". While `VERIFICATION_API_URL` is unset
+every entry reads unverified, so that flag carries no information; this count
+does.
+
+### Cause, in order of likelihood
+
+1. **The seller advertises `http://localhost:…`.** This was the default in
+   `examples/seller.mjs` and it made ownership verification vacuous in production
+   for the whole of its life. Fix: set `PUBLIC_BASE_URL` on the seller to the
+   address it is actually reachable at.
+2. **The seller advertises a private or loopback literal** over https.
+3. **The resource declared a `routeTemplate`**, so the catalog key is
+   `origin + /quote/:symbol` — not a fetchable URL. Structural; nothing to fix.
+
+### Confirm which
+
+```sh
+curl -sS '<base>/discovery/resources' | python3 -m json.tool | grep '"resource"'
+```
+
+Any entry whose URL is not public https is one of the above. The log also names
+each one once, when it is first cataloged:
+
+```
+[catalog] <url> can never be ownership-verified: ...
+```
+
+---
+
 ## Related
 
 - `docs/security-audit.md` — findings F1–F12 and G-1…G-9, with what each control

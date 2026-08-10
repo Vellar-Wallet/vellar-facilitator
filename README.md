@@ -26,7 +26,7 @@ without hardcoded integrations.
 | `GET /supported` | Advertise scheme/network/extensions/signers to sellers |
 | `GET /discovery/resources` | List cataloged x402 resources (filters: `type`, `payTo`, `scheme`, `network`, `extensions`, `verified_only`; `limit`/`offset`) |
 | `GET /discovery/search` | Keyword search over the catalog — tokenized and relevance-scored, not semantic (`query`, same filters, cursor-paginated) |
-| `GET /health` | Liveness, plus `catalogFrozen` when the catalog has stopped accepting new bindings |
+| `GET /health` | Liveness, plus the deployed `commit`, `uptimeSeconds`, `catalogSize`, `catalogFrozen` when bindings are frozen, and `unverifiableEntries` when any seller advertises an address the facilitator cannot fetch |
 
 **Smart accounts welcome.** Policy-governed smart-account payments cost ~130k
 stroops of simulation fee (the policy contract runs inside `__check_auth`);
@@ -53,6 +53,12 @@ before you build on it:
   may include a base loaded from `CATALOG_FILE`, which has no independent source
   of truth; `observedSettlements` counts only what this process witnessed. If you
   need a number you can rely on, use that one.
+- **If you are a seller, advertise your PUBLIC address.** The `resource.url` in
+  your 402 is what gets cataloged and what ownership verification re-fetches. A
+  `http://localhost:…` value (the default in `examples/seller.mjs`) can never be
+  verified — it is not https and not reachable — so your entry is served
+  permanently unverified. `PUBLIC_BASE_URL` is how the example declares its real
+  address; `/health` reports `unverifiableEntries` when any entry is in this state.
 - **Verification verdicts read `"unknown"` unless `VERIFICATION_API_URL` is set**,
   and `?verified_only=true` then returns an empty list. That is the honest
   default, not a fault — see F4-ts in the audit for why it is deliberately
@@ -72,13 +78,19 @@ Refusals are deliberately loud and carry a reason. Spend controls are **log-only
 on testnet and enforced on pubnet**, so a testnet client will see them in logs
 before it ever sees a 503.
 
-**On the hosted instance, the catalog is only as durable as the container.**
-Render spins a free service down after 15 minutes without traffic, and spin-down
-destroys the filesystem holding the catalog — so an idle period empties it and
-resets URL ownership bindings. A keep-alive keeps it warm between deploys
-(`.github/workflows/keepalive.yml`); durable storage is scoped in
-[`docs/milestone-durable-catalog.md`](./docs/milestone-durable-catalog.md). Your
-listing returns automatically on your next settled payment either way.
+**On the hosted instance, an empty catalog after an idle period is expected —
+not a fault.** Render spins a free service down after 15 minutes without
+traffic, and spin-down destroys the container's filesystem, so the catalog and
+its URL ownership bindings go with it. Your listing returns automatically on your
+next settled payment; nothing is lost that a payment does not restore.
+
+There is a keep-alive workflow that would prevent this, and it is **deliberately
+disabled**. Free instance hours are pooled per Render *workspace*, and running
+this one warm would consume most of that pool — exhausting it suspends **every**
+free service in the workspace, including unrelated production ones. A warm demo
+catalog is not worth that blast radius. Durable storage, which fixes this
+properly, is scoped in
+[`docs/milestone-durable-catalog.md`](./docs/milestone-durable-catalog.md).
 
 **Resource-URL ownership is trust-on-first-use.** The first settlement for a
 canonical URL (`origin + pathname`) binds it to that payment's `payTo`; later

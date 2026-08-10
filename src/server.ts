@@ -113,6 +113,11 @@ export async function buildServer(
     // catalogSize is already derivable from /discovery/resources.
     uptimeSeconds: Math.round(process.uptime()),
     catalogSize: catalog.size,
+    // Non-zero means those sellers advertise an address the facilitator cannot
+    // fetch, so their entries are permanently unverified — distinct from "not
+    // verified yet", which every entry reads as while VERIFICATION_API_URL is
+    // unset. Omitted at zero so a healthy catalog stays quiet.
+    ...(catalog.unverifiableCount > 0 ? { unverifiableEntries: catalog.unverifiableCount } : {}),
     // Which build is actually serving. Render injects RENDER_GIT_COMMIT.
     // Without this the only way to answer "is the deploy current?" is to
     // fingerprint behaviour — probing for security headers or an error-message
