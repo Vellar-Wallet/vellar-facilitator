@@ -456,6 +456,183 @@ assertion ("the ceiling admits 100 per window", "per-payTo is half of global",
 "the hard floor exceeds one window"), so changing a value without revisiting its
 reasoning fails the build instead of quietly making a comment false.
 
+### D-1 — Boot-dependency asymmetry: the facilitator survives a cold dependency, the seller did not
+
+The seller failed to deploy in a self-sustaining crash loop:
+
+```
+facilitator asleep -> seller GET /supported -> 502 -> seller exits
+-> Render restarts -> retries at once -> restart storm
+-> F7's 60/min limit returns 429 -> still cannot boot
+```
+
+**The facilitator boots without any dependency.** Traced through the whole
+startup path: `loadConfig()` is pure, `BazaarCatalog` touches only the
+filesystem, `createTrustResolver` performs no fetch at construction,
+`BalanceGuard.start()` is explicitly fire-and-forget. `src/balance.ts` states the
+intent in the code — *"Does not await the first check — startup is not blocked"*.
+
+**The seller had the mirror image, and nobody chose it.** `examples/seller.mjs`
+did `await httpServer.initialize()` at module scope with no catch. A top-level
+await rejection kills the process, so a facilitator that was merely *asleep*
+killed the merchant permanently. No comment, no fallback, no degraded mode — the
+default behaviour of an `await` nobody revisited.
+
+**That contrast is the finding**: one property deliberately engineered and
+documented, its mirror image present by omission, in the same repo.
+
+**Dependency half.** Read from source: `@x402/core`'s `getSupported()` retries 3
+times and honours `Retry-After` on **429**, but throws immediately on any other
+non-ok status — **502 included**. Backwards for this topology: a 502 from a
+cold-starting upstream is the textbook retryable case; a 429 is a deliberate
+refusal.
+
+**Fixed** in `examples/seller.mjs`: warm via `/health`, then bounded retries with
+backoff and jitter, deferring to the library on 429 by sitting out the full
+window rather than re-consuming the bucket. Capped at 5 attempts, then a loud
+exit naming the facilitator URL and what it returned.
+
+### D-2 — Topology lesson: a load-shedding control can shed the traffic that would have recovered the system
+
+**No component misbehaved.** F7 refused a request flood — its job. Render
+restarted a crashing service — its job. Together they formed a closed cycle. The
+bug was in the **topology**.
+
+> **A rate limiter cannot distinguish an attack from a dependent service
+> failing.** Any control that sheds load will, under the right topology, shed the
+> traffic that would have recovered the system.
+
+**The defence lives in the dependent, not in a weaker limiter.** Loosening F7
+would trade a real control for a deployment convenience and would not fix the
+class — the next dependent with an unbounded retry recreates it. Dependents must
+not turn a transient upstream failure into unbounded retries.
+
+Consequence: **`/health`'s rate-limit exemption is load-bearing.** It is the only
+route that can wake the facilitator without consuming the bucket the caller
+needs. Anyone tidying the limiter config must move that exemption deliberately.
+
+### D-3 — A hardcoded log line that imitated a real defect
+
+`examples/seller.mjs` printed its banner as a hardcoded string —
+`http://localhost:${PORT}/quote` — never consulting `PUBLIC_BASE_URL`, which was
+read only inside `getUrl`. A correctly-configured deployed seller announced
+localhost while its actual 402 carried the public URL.
+
+**Why this is the worst of the artifacts we wrote:**
+
+| Artifact | What it did |
+| --- | --- |
+| `bindLoadedEntry`'s comment | claimed a path that did not exist — misleading |
+| The §4 burn template | gave an instruction that would fail — wasted effort |
+| **This log line** | printed **the precise symptom of the most serious defect in this repo**, on a service that was working correctly |
+
+It did not merely misinform — it **imitated a specific failure**, producing a
+false positive for the defect we had spent the day fixing, on the one service
+where that defect would have invalidated the walkthrough. The correct response
+(stop, settle nothing) was triggered by a problem that was not there.
+
+**Rule:** anything that reports state must report the state it actually has. A
+hardcoded string that *resembles* a real value is worse than no output — no
+output prompts a check, a plausible wrong value ends one.
+
+**Fixed structurally.** One `publicBase()` function is the only source of the
+advertised address, read by the 402 builder, the boot log and `/whoami` alike —
+three consumers that cannot disagree, because drift between exactly two of them
+caused this. `GET /whoami` makes the running state queryable rather than
+inferred, with a computed `verifiable` flag.
+
+### D-4 — RETRACTED: the 26M fee never existed. The finding is that a simulation has no arbiter
+
+**The original D-4 claimed a test wallet cost 674x the spike wallet on identical
+wasm. That number does not exist.** It was a stale simulation from an unhealthy
+testnet RPC node, and it no longer reproduces from the same script, same wallet,
+same asset, with nothing in the repo changed.
+
+| | |
+| --- | --- |
+| Originally measured | 26,222,858 — reproduced 4x within one window |
+| Re-measured later, fresh processes | **32,655** — four times, identical |
+| Wallet agent's leg A, independent path | **32,655** |
+| Deployed `/verify` | **`isValid: true`** |
+
+`MAX_TX_FEE_STROOPS = 500,000` was never exceeded by a real payment. No threshold
+needed changing. [`decision-fee-thresholds.md`](./decision-fee-thresholds.md) is
+moot as a decision and survives only as cascade analysis for a future real case.
+
+#### The methodological finding, which is the substance
+
+**A simulation result has no independent arbiter.** A settlement can be checked
+against Horizon — a hash, a `fee_charged`, an immutable record. A simulation can
+only be checked against another simulation. There is nothing outside the RPC to
+appeal to.
+
+So: **repeatability within one window is not evidence of correctness.** Four
+consistent readings felt like measurement. They were four answers from the same
+unhealthy node — consistency is precisely what a stale backend produces, so the
+property that felt reassuring was the one that should have raised suspicion.
+
+This engagement already had the rule for settlements — *Horizon is the arbiter,
+retry rather than record an ambiguity*. **It was never extended to simulations**,
+because simulations have no Horizon to appeal to, and the gap went unnoticed.
+
+#### Protocol change, not just a lesson
+
+> **Any simulation-derived number a decision rests on must be re-measured from a
+> fresh process at a later time — ideally against a different RPC endpoint —
+> before it counts as evidence.**
+
+Two readings minutes apart from one process prove nothing. The check costs
+seconds and would have caught this before two agents spent hours eliminating
+hypotheses against a phantom.
+
+Corollary: **a simulation number that has not been re-measured is an observation,
+not a measurement.** Record it as such; rest no decision on it.
+
+#### The eliminations: kept, but reclassified as METHOD
+
+The work done against the phantom was sound, and it is the right checklist if a
+genuine fee anomaly ever appears. It is **method, not findings about
+`CCXPXAP4…`**:
+
+1. **Compare the wasm hash** — identical code eliminates contract differences.
+2. **Check `restorePreamble` and instance TTL** — eliminates archival restoration.
+3. **Enumerate the footprint by contract** — shows whether stray state is
+   actually touched. It was not.
+4. **Compare instructions and bytes against the fee** — a 196x fee on 1.8x
+   instructions and flat bytes means the cost is not work.
+5. **Price `extendFootprintTtl` by simulation** — bounds rent without submitting.
+6. **Compare the network's rate card against observed resources** — the predicted
+   17,714 vs a returned 26,222,858 was a **1,480x gap**.
+7. **Read signer entries from the footprint** — separates real signer anomalies
+   from normal dual-durability lookup.
+8. **Compare rent parameters across networks** — testnet and pubnet are
+   identical, so "testnet repriced something" was never plausible.
+
+**Point 6 deserves emphasis.** A rate card disagreeing with a simulation by three
+orders of magnitude was evidence *the reading was wrong*. It was read instead as
+evidence the system was strange. When the arithmetic says a number is impossible,
+suspect the number.
+
+#### What made 32,655 trustworthy
+
+Not repetition — **independent derivation.** The wallet agent's four-leg
+experiment produced 32,655 for leg A; re-measurement here produced 32,655 to the
+stroop, from a different process, machine and construction path.
+
+**Two independent paths agreeing is evidence. One path repeating is not.** That
+distinction is the whole finding.
+
+#### A distinct species in the artifact-lies tally
+
+The others were **artifacts asserting something untrue** — `bindLoadedEntry`'s
+comment, the §4 template, D-3's hardcoded log line. All were things *we wrote*,
+and all were catchable by reading our own work against reality.
+
+**This one was the environment lying.** No amount of care in the repo would have
+caught it, because nothing in the repo was wrong. The defence is different in
+kind: not *"check what you wrote"* but **"check when and where you measured"** —
+a different process, a later time, ideally a different endpoint.
+
 ### Evidence lesson: a non-200 is ambiguous, and the failure mode is a FABRICATED PASS
 
 From the live walkthrough, and it generalises well beyond it.
@@ -574,7 +751,7 @@ Closed since this table was first written (kept here so the history is not lost)
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement. |
 | **D-1** | Seller had a hard boot dependency on the facilitator; the facilitator has none | **closed** — warm + bounded backoff in the seller. The dependency half (@x402/core retries 429 but not 502) is upstream and unfixed here. |
 | **D-2** | F7's rate limit sustained a crash loop it could not distinguish from an attack | **closed-by-doc** — the defence belongs in the dependent, not in a weaker limiter. |
-| **D-4** | New test wallet costs 674x the old one on identical wasm; fee ceiling exonerated | **open** — blocked on the wallet-side TTL/nonce answer. No threshold moved. |
+| **D-4** | **RETRACTED** — the 26M fee was a stale RPC reading, not a real cost | **closed** — real figure 32,655, independently confirmed by two paths. Survives as a methodological finding: a simulation has no arbiter, so it must be re-measured from a fresh process later before it counts. |
 | **D-3** | Seller's boot log hardcoded `localhost`, imitating the exact symptom of F11 Layer 2 being decorative | **closed-by-test** — one `publicBase()` source of truth, plus `GET /whoami` making advertised state queryable. |
 | **G-3** | Spend policy keyed on the raw URL while the catalog keys on the canonical one | **closed-by-test** — found by red-teaming the F12 change before it merged. |
 | **G-4** | Settlement stats writable by anyone, against any entry | **closed-by-test** — gated on the bound owner; cross-entity forgery now impossible. |
