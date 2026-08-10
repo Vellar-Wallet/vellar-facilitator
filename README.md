@@ -72,6 +72,14 @@ Refusals are deliberately loud and carry a reason. Spend controls are **log-only
 on testnet and enforced on pubnet**, so a testnet client will see them in logs
 before it ever sees a 503.
 
+**On the hosted instance, the catalog is only as durable as the container.**
+Render spins a free service down after 15 minutes without traffic, and spin-down
+destroys the filesystem holding the catalog — so an idle period empties it and
+resets URL ownership bindings. A keep-alive keeps it warm between deploys
+(`.github/workflows/keepalive.yml`); durable storage is scoped in
+[`docs/milestone-durable-catalog.md`](./docs/milestone-durable-catalog.md). Your
+listing returns automatically on your next settled payment either way.
+
 **Resource-URL ownership is trust-on-first-use.** The first settlement for a
 canonical URL (`origin + pathname`) binds it to that payment's `payTo`; later
 settlements with a different `payTo` are refused from the catalog, though the
