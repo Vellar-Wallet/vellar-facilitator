@@ -75,7 +75,55 @@ const routes = {
 };
 
 const httpServer = new x402HTTPResourceServer(coreServer, routes);
-await httpServer.initialize();
+
+// `initialize()` fetches /supported from the facilitator and THROWS if it can't,
+// which killed this process on every boot and produced a crash loop:
+//
+//   seller boots -> GET /supported -> facilitator is cold-starting -> 502
+//   -> seller exits -> Render restarts it -> immediately retries -> ...
+//   -> the retry storm hits the facilitator's own 60/min rate limit -> 429
+//
+// Two things we built collided. The facilitator sleeps (free tier, and the
+// keep-alive is deliberately disabled), so a boot fetch during its ~1 min cold
+// start reliably 502s. And F7's rate limit — which exempts /health but NOT
+// /supported — then turned a transient failure into a persistent one by
+// throttling the restarts.
+//
+// A merchant whose service dies permanently because its facilitator was briefly
+// asleep is fragile in a way any real deployment would hit, so this is a real
+// fix rather than a test accommodation.
+async function initializeWithRetry() {
+  // /health IS rate-limit exempt, so waking the facilitator this way cannot
+  // contribute to the 429 that made the loop persistent.
+  const base = FACILITATOR_URL.replace(/\/+$/, "");
+  try {
+    console.error("[seller] warming the facilitator (cold start can take ~1 min)…");
+    await fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) });
+  } catch {
+    // Warming is best-effort; the retries below are what actually guarantee it.
+  }
+
+  let delay = 2_000;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    try {
+      await httpServer.initialize();
+      console.error(`[seller] facilitator reachable (attempt ${attempt})`);
+      return;
+    } catch (err) {
+      if (attempt === 6) throw err;
+      // Backoff with jitter. A tight retry is what produced the 429; retrying
+      // without backing off would recreate the storm this exists to prevent.
+      const wait = delay + Math.floor(Math.random() * 1_000);
+      console.error(
+        `[seller] facilitator not ready (attempt ${attempt}/6): ${err?.cause?.message ?? err?.message ?? err}` +
+          ` — retrying in ${Math.round(wait / 1000)}s`,
+      );
+      await new Promise((r) => setTimeout(r, wait));
+      delay = Math.min(delay * 2, 30_000);
+    }
+  }
+}
+await initializeWithRetry();
 
 function adapter(req) {
   return {
