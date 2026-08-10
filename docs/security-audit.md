@@ -20,9 +20,12 @@ Status vocabulary:
 | **deferred** | Understood, deliberately not fixed yet, with a stated trigger. |
 | **external** | Blocked on a system outside this repo. |
 
-> **All of this is fixed on `security/pubnet-blockers` only.** `main` — which the
-> hosted Render instance runs — carries the full unmitigated surface. See
-> [What `main` is running today](#what-main-is-running-today).
+> **As of 2026-08-10 every fix below is merged to `main`** (PRs #1–#6). This banner
+> previously said the opposite — that `main` carried the full unmitigated surface —
+> and stayed that way across six merges. It is called out rather than quietly
+> corrected, because it is a fourth instance of the rot pattern described below,
+> this time inside the document that describes it. Merge status is not deployment
+> status: see [What `main` is running today](#what-main-is-running-today).
 
 ---
 
@@ -515,7 +518,7 @@ change.
 | **G-7** | Bootstrap-derived bindings are seeded in memory but not written | **open** — undercuts the one-boot bootstrap procedure; runbook §2 tells the operator to verify the file before removing the flag. |
 | **G-8** | Tombstone cap is a one-way freeze with no reset path | **open** — deliberate fail-closed, but the absence of a reset needs an operator procedure (runbook §3 says escalate). |
 | **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
-| **F4-ts** | Verification API has no per-record timestamp | **external** — see the dependency note below. Consumer side already forward-compatible. |
+| **F4-ts** | Verification API is not deployed at all; the worker-service has never run hosted | **external, blocked on wallet-repo M5** — not a missing field. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 multisig attestor. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
 | **F8** | Unvalidated operator-supplied URLs | deferred; operator-supplied, not attacker-supplied. |
@@ -943,45 +946,71 @@ the floor cannot hold against the ceiling.
   security-*positive*: configuring it makes that API a trust root. It is a
   product gap, not a security one.
 
-### The `F4-ts` dependency, stated precisely
+### F4-ts — blocked on a service that has never run hosted, not on a field
 
-What this repo needs is small and entirely on the producer side: **each record in
-the verification history response must carry a timestamp.** The consumer is
+Corrected 2026-08-10 with information from the wallet repo. The earlier framing
+here — "waiting on one timestamp field" — understated it by a long way.
+
+The verification API is the wallet repo's **verification-service plus
+worker-service**. The worker polls the shared database, rebuilds contracts in a
+sandboxed container, compares wasm hashes, and mirrors verdicts on chain. **It is
+deployed nowhere:** no deploy manifest references it, and `ATTESTOR_SECRET_KEY` is
+absent from `.env.example` and every manifest. Verification jobs therefore sit at
+`status='submitted'` indefinitely and no attestation is ever written.
+
+So the missing timestamp is not the blocker. There is no record to timestamp.
+
+**The dependency chain, in order:**
+
+1. This facilitator can serve a real `"verified"` only if the verification API
+   returns a verdict.
+2. A verdict exists only if the **worker-service is deployed** and processing the
+   queue.
+3. The worker can attest only if **`ATTESTOR_SECRET_KEY` is provisioned**.
+4. That single-key attestor is itself a **deferred mainnet blocker (wallet repo
+   M5)**, awaiting a multisig design.
+
+**Therefore: the earliest this facilitator can serve a genuine `"verified"` badge
+is after M5 lands in the wallet repo.** Everything downstream of that — including
+the per-record timestamp — is a smaller problem that only becomes relevant once a
+verdict can exist at all.
+
+**Consumer requirements for whoever designs the M5 multisig attestor.** Two
+properties this repo needs are decided *during* that design, not bolted on after,
+so they are recorded here to be read as requirements rather than discovered later:
+
+| Requirement | Why this repo needs it |
+| --- | --- |
+| **The verdict endpoint must be authenticated** | It is currently unauthenticated. This facilitator reads it on the discovery path and clamps every served badge by it, so anyone who can answer as that endpoint can mint `"verified"` for any asset. |
+| **Configuring it makes that API a trust root** | The moment `VERIFICATION_API_URL` is set, this service's badge is only as trustworthy as that endpoint and its key custody. A single-key attestor makes the badge a single-key claim — which is exactly what M5 exists to fix, and why this repo will not enable it before then. |
+
+Third, smaller, and unchanged: **each record needs a timestamp.** The consumer is
 already forward-compatible — `src/trust.ts` accepts `timestamp`, `verifiedAt`, or
-`createdAt`, as an ISO string or an epoch number, and sorts by it **only when
-every record carries one**, falling back to array order otherwise.
+`createdAt`, ISO string or epoch number, and sorts by it **only when every record
+carries one**, falling back to array order otherwise. Until then `records[0]` is
+assumed newest, an ordering the API never promised.
 
-So the ask is one field, any of three names, on every record. Until then
-`records[0]` is assumed newest, which is an ordering the API never promised.
-
-Two further preconditions before enabling it at all, independent of the
-timestamp: the endpoint is **unauthenticated**, and pointing at it makes it a
-**trust root** for every badge served. Neither is fixed by the timestamp.
-
-**Owner: unknown from this repo.** Nothing here records where the verification
-API is hosted or which codebase implements it — `VERIFICATION_API_URL` is
-deliberately unset and appears in no deploy config. If it is a service that is
-not deployed anywhere, then `F4-ts` is not "waiting on a field", it is waiting on
-a service, and should be tracked as such rather than as an external ticket.
+**Status: external, and correctly blocked.** Leaving `VERIFICATION_API_URL` unset
+is the right posture, not a gap to close. Every verdict degrading to `"unknown"`
+is the honest answer while no verdict can be produced.
 
 ## What `main` is running today
 
-`main` is the deployed branch. **None of the above is fixed there.** Verified by
-reading `main`, not by inference:
+**Merged, as of 2026-08-10:** every finding above marked closed-by-test or
+closed-by-doc is on `main`. 257 tests, typecheck clean, CI gating each PR.
 
-| Control | `main` |
-| --- | --- |
-| Resource-URL ownership binding | **none** — `upsertFromPayment` keys on `discovered.resourceUrl` with no ownership check |
-| Rate limiting / helmet / CORS / body limit | **none** — Fastify default 1 MiB body, no plugins |
-| Catalog load validation | **blind-cast** `JSON.parse(...) as ...` |
-| Ingest/load sanitization | **none** — `description` and `extensions` stored verbatim |
-| Trust resolver timeout / size cap / validation | **none** |
-| `MAX_TX_FEE_STROOPS` | **2,000,000**, with **no spend accounting** |
-| CI gating deploy | **none** |
+**Deployed: unconfirmed from this repo.** `render.yaml` sets no `autoDeploy` key,
+so Render's default (deploy on push to the connected branch) applies — but which
+branch is connected, and whether a deploy has run since these merges, is dashboard
+state this repository cannot observe. Confirm there before treating the hosted
+instance as carrying any of the above.
 
-Test files: 5 on `main` vs 14 on the branch.
+Two things stay true of the hosted instance regardless of deploy status, both
+deliberate:
 
-`VERIFICATION_API_URL` is **not configured** on the deployed instance (absent from
-`render.yaml`), so the trust layer serves `"unknown"` for every result — the
-documented degrade mode, not a fault, but worth knowing when reading discovery
-output.
+- `plan: free` has **no persistent disk**, so the catalog and its ownership
+  bindings do not survive a restart or the ~15-minute idle sleep. That is pubnet
+  blocker **B1**; on testnet it is the documented behaviour.
+- `VERIFICATION_API_URL` is **not configured**, so every trust verdict is
+  `"unknown"` and `verified_only` returns empty. Per F4-ts this is not a
+  configuration oversight and cannot be fixed by setting the variable.
