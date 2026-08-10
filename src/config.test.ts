@@ -16,16 +16,25 @@ describe("loadConfig", () => {
     expect(config.rpcUrl).toBeUndefined();
   });
 
-  // The invariant that matters: the ceiling must clear the real cost of a
-  // policy-governed smart-account settlement. Measured on testnet from the
-  // dedicated facilitator sponsor's own history, the worst REAL settlement was
-  // 127,808 stroops (higher-fee txs on dev accounts are contract deploys and
-  // add_signer calls, which never flow through /settle). 500k is ~3.9x that and
-  // 2.5x the documented 200k floor — while cutting worst-case sponsor drain per
-  // settle from 0.2 XLM to 0.05 XLM.
-  it("fee ceiling default clears the worst observed real settlement (127,808 stroops)", () => {
+  // The invariant that matters: the ceiling must clear the BID — the
+  // simulation-derived fee (minResourceFee + BASE_FEE) that @x402/stellar
+  // compares against. It never sees the CHARGED fee, so sizing this against the
+  // charge would tighten it by ~31% against a number it does not consume. See
+  // the three-quantities note in src/config.ts.
+  //
+  // Two bids, with their provenance deliberately kept distinct:
+  //   32,655  MEASURED, two independent simulations of the walkthrough wallet.
+  //           Hashless, and necessarily so — an unsubmitted bid leaves no chain
+  //           record. 500k clears it 15.3x.
+  //  127,808  CITED as the worst case for a heavier policy contract. NO HASH and
+  //          never re-derived; retained because it is conservative, NOT because
+  //          it is verified. 500k clears it 3.9x.
+  // Plus 2.5x the documented 200k floor, and worst-case sponsor drain per settle
+  // capped at 0.05 XLM.
+  it("fee ceiling default clears both the measured bid and the cited worst-case bid", () => {
     const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
-    expect(config.maxTransactionFeeStroops).toBeGreaterThan(127_808);
+    expect(config.maxTransactionFeeStroops).toBeGreaterThan(32_655); // measured bid
+    expect(config.maxTransactionFeeStroops).toBeGreaterThan(127_808); // cited, unverified
     expect(config.maxTransactionFeeStroops).toBeGreaterThanOrEqual(200_000); // documented floor
   });
 

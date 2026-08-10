@@ -64,20 +64,53 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
 
   const network = env.STELLAR_NETWORK === "pubnet" ? "stellar:pubnet" : "stellar:testnet";
 
+  // ==========================================================================
+  // "THE FEE" IS THREE DIFFERENT NUMBERS. Read this before touching any
+  // threshold below, and name the quantity whenever you cite one.
+  //
+  //   CHARGED   what the network actually deducted (Horizon `fee_charged`).
+  //             Consumer: the SPONSOR'S BALANCE — so the balance guard, the
+  //             hard floor, and any "how long can this be sustained" argument.
+  //             Measured: 22,579 stroops, four Horizon-confirmed settlements
+  //             (8c0d9682…, 9726d45e…, 867632de…, c4ee7bdd…, 2026-08-10).
+  //
+  //   BID       minResourceFee + BASE_FEE, computed from simulation BEFORE
+  //             submission. Consumer: MAX_TX_FEE_STROOPS immediately below —
+  //             which compares against EXACTLY THIS and never sees the charge
+  //             (@x402/stellar/dist/cjs/exact/facilitator/index.js:487-489).
+  //             Measured: 32,655, two independent simulations. It carries NO
+  //             transaction hash AND NONE IS OBTAINABLE — a bid that is never
+  //             submitted leaves no chain record. That is a property of the
+  //             quantity, not a gap in the evidence.
+  //
+  //   ESTIMATE  a constant used for spend accounting, currently the ceiling
+  //             itself (500,000). Consumer: SPEND_CEILING_STROOPS. Not a
+  //             measurement at all.
+  //
+  // The charged fee runs ~31% BELOW the bid, which is normal: simulation
+  // over-reserves. Sizing this ceiling against the charged fee would tighten it
+  // by that much against a number it never sees. Sizing the balance guard
+  // against the bid would overstate the burn. Conflating the three is what
+  // produced the 127,808 confusion recorded in docs/security-audit.md.
+  // ==========================================================================
+  //
   // Raised well above @x402/stellar's 50_000 default: policy-governed
   // smart-account payments run the policy contract inside __check_auth, which
-  // pushes the simulation-derived fee to ~130k stroops. Rejecting those was the
-  // exact hosted-facilitator bug that motivated this project — so this ceiling
-  // must never dip toward 50k.
+  // pushes the BID to ~130k stroops on a policy-governed account. Rejecting
+  // those was the exact hosted-facilitator bug that motivated this project — so
+  // this ceiling must never dip toward 50k.
   //
-  // Sized from MEASURED testnet data rather than guessed: across the dedicated
-  // facilitator sponsor's settlement history the worst real settlement charged
-  // 127,808 stroops (higher-fee transactions on shared dev accounts are contract
-  // deploys and add_signer calls, which never reach /settle). 500,000 clears that
-  // by ~3.9x and stays 2.5x above the documented 200k floor, while cutting the
-  // worst-case sponsor drain per settle from 0.2 XLM to 0.05 XLM. Raise via
-  // MAX_TX_FEE_STROOPS if a heavier policy ever legitimately exceeds it — the
-  // failure is loud (fee_exceeds_maximum), not silent.
+  // Sizing, with provenance stated per figure:
+  //   - measured BID for the walkthrough wallet: 32,655 -> 500,000 clears it 15.3x
+  //   - cited worst-case bid: 127,808 -> 500,000 clears it 3.9x. THIS FIGURE
+  //     CARRIES NO HASH and has never been re-derived; it is retained because it
+  //     is the conservative one and describes a heavier policy contract than the
+  //     wallet we measured, NOT because it has been verified. Do not cite it as
+  //     measured.
+  // The ceiling also stays 2.5x above the documented 200k floor, and caps the
+  // worst-case sponsor drain per settle at 0.05 XLM. Raise via MAX_TX_FEE_STROOPS
+  // if a heavier policy ever legitimately exceeds it — the failure is loud
+  // (fee_exceeds_maximum), not silent.
   const maxTransactionFeeStroops = Number(env.MAX_TX_FEE_STROOPS ?? 500_000);
   if (!Number.isInteger(maxTransactionFeeStroops) || maxTransactionFeeStroops <= 0) {
     throw new Error(`MAX_TX_FEE_STROOPS must be a positive integer, got: ${env.MAX_TX_FEE_STROOPS}`);
@@ -85,9 +118,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
 
   const spend = {
     rateWindowMs: positiveIntEnv(env.SETTLE_RATE_WINDOW_MS, 60_000, "SETTLE_RATE_WINDOW_MS"),
-    // 50,000,000 stroops = 5 XLM per window. At the 500,000-stroop worst-case
-    // fee that is 100 settlements per window across ALL merchants, and
-    // perPayToMax (50) is deliberately half of it.
+    // 50,000,000 stroops = 5 XLM per window. Accounted at the ESTIMATE (500,000,
+    // see the three-quantities note above), so that is 100 settlements per window
+    // across ALL merchants, and perPayToMax (50) is deliberately half of it.
+    //
+    // OPEN (pubnet tuning, deliberately NOT changed here): the estimate is 22x
+    // the measured CHARGED fee, so this ceiling trips after 100 settles having
+    // actually spent ~0.23 XLM of the 5 XLM it names — 4.5%. It fails safe and
+    // the over-count is deliberate (server.ts), but honest throughput is
+    // throttled ~22x earlier than sponsor exposure requires. Tracked in
+    // docs/security-audit.md under "Still open".
     //
     // These numbers are asserted in src/config.thresholds.test.ts rather than
     // only described here: an earlier version of this comment still reasoned

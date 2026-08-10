@@ -129,9 +129,22 @@ describe("threshold review — documented rationale, made executable", () => {
     );
   });
 
-  it("the fee ceiling stays above the worst settlement actually measured", () => {
-    // Worst real settle observed from this sponsor's history: 127,808 stroops.
-    expect(c.maxTransactionFeeStroops).toBeGreaterThan(127_808);
+  it("the fee ceiling stays above both bids — the measured one and the cited one", () => {
+    // NAME THE QUANTITY. This ceiling gates the BID (minResourceFee + BASE_FEE,
+    // pre-submission), never the CHARGED fee. 22,579 is the charged figure and
+    // is the wrong number for this assertion, however many hashes it carries.
+    expect(c.maxTransactionFeeStroops).toBeGreaterThan(32_655); // measured bid, 2 sims
+    expect(c.maxTransactionFeeStroops).toBeGreaterThan(127_808); // cited worst case, NO hash
+  });
+
+  it("the charged fee is not what this ceiling is sized against", () => {
+    // Pins the distinction that produced two separate errors: the 127,808
+    // confusion, and an instruction to re-size everything onto the charged fee.
+    // If someone ever "corrects" the ceiling down onto 22,579, this fails.
+    const CHARGED = 22_579; // Horizon fee_charged, four settlements, 2026-08-10
+    const MEASURED_BID = 32_655; // two independent simulations
+    expect(MEASURED_BID).toBeGreaterThan(CHARGED); // simulation over-reserves — normal
+    expect(c.maxTransactionFeeStroops).toBeGreaterThan(MEASURED_BID * 10);
   });
 });
 

@@ -491,6 +491,34 @@ the **bid**, confirmed by two simulations and inherently hashless. The **charged
 fee is 22,579, with four Horizon hashes. Both are real; they are different
 quantities.
 
+## Read this before citing "the fee": it is THREE numbers
+
+Placed here, at the thresholds, rather than only in the provenance audit — because
+this ambiguity is what produced the 127,808 confusion *and* the instruction to
+"recompute everything against 22,579", which would have tightened
+`MAX_TX_FEE_STROOPS` by 31% against a number that threshold never sees. The same
+note is in `src/config.ts` directly above the definitions.
+
+| Name it | What it is | Which threshold consumes it | Evidence |
+| --- | --- | --- | --- |
+| **CHARGED** | what the network actually deducted (Horizon `fee_charged`) | the **sponsor's balance** — balance guard, hard floor, every "how long can this be sustained" argument (G-8) | **22,579**, four Horizon-confirmed settlements |
+| **BID** | `minResourceFee + BASE_FEE`, from simulation, **before** submission | **`MAX_TX_FEE_STROOPS`**, which compares against exactly this and never sees the charge (`@x402/stellar/…/facilitator/index.js:487-489`) | **32,655**, two independent simulations |
+| **ESTIMATE** | a constant, currently the ceiling itself | **`SPEND_CEILING_STROOPS`** accounting (`server.ts:344`, `policy.ts:196`) | **500,000** — not a measurement |
+
+Three rules follow, and they are the durable part:
+
+1. **Never write "the fee".** Write charged, bid, or estimate. A sentence that
+   does not say which quantity it means cannot be checked by the next reader.
+2. **The charged fee runs ~31% below the bid, and that is normal** — simulation
+   over-reserves. It is not a discrepancy to reconcile.
+3. **A bid that is never submitted CANNOT carry a transaction hash, and none can
+   ever be produced for it.** That is a property of the quantity, not a gap in the
+   evidence. Where a number cannot have a hash, say so *at the point of use* —
+   otherwise the next reader either hunts for one that does not exist, or assumes
+   the omission means the number is unverified in the way 127,808 is. 127,808 is
+   unverified because nobody recorded its source; 32,655 is hashless because the
+   chain never saw it. Different failures, and only the first is a defect.
+
 ## Policy values — UNREVIEWED against real traffic
 
 Every value below is a **placeholder**, chosen from reasoning rather than
@@ -834,6 +862,7 @@ change.
 | **G-8** | Tombstone cap is a one-way freeze with no reset path | **open** — deliberate fail-closed, but the absence of a reset needs an operator procedure (runbook §3 says escalate). |
 | **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
 | **F4-ts** | Verification API is not deployed at all; the worker-service has never run hosted | **external, blocked on wallet-repo M5** — not a missing field. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 multisig attestor. |
+| **G-10** | The spend ceiling throttles honest throughput **22× earlier than sponsor exposure requires** | **open — pubnet tuning, deliberately NOT changed.** Spend is accounted at the ESTIMATE (500,000) while the measured CHARGED fee is 22,579, so the ceiling refuses the 101st settle in a window having actually spent **~0.23 XLM of the 5 XLM it names — 4.5%**. It **fails safe**, and the over-count is deliberate (`server.ts:344`: the real simulated fee is not exposed on the verify response). But the dial does not mean what its name implies. Fixing it means either exposing the bid to the policy or setting the estimate from measurement — both are pubnet decisions with real downside if the estimate ever *under*-counts, which is why nothing is being changed on the strength of one wallet's measurement. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
 | **F8** | Unvalidated operator-supplied URLs | deferred; operator-supplied, not attacker-supplied. |
@@ -848,7 +877,7 @@ Closed since this table was first written (kept here so the history is not lost)
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement. |
 | **D-1** | Seller had a hard boot dependency on the facilitator; the facilitator has none | **closed** — warm + bounded backoff in the seller. The dependency half (@x402/core retries 429 but not 502) is upstream and unfixed here. |
 | **D-2** | F7's rate limit sustained a crash loop it could not distinguish from an attack | **closed-by-doc** — the defence belongs in the dependent, not in a weaker limiter. |
-| **D-4** | **RETRACTED** — the 26M fee was a stale RPC reading, not a real cost | **closed** — real figure 32,655, independently confirmed by two paths. Survives as a methodological finding: a simulation has no arbiter, so it must be re-measured from a fresh process later before it counts. |
+| **D-4** | **RETRACTED** — the 26M fee was a stale RPC reading, not a real cost | **closed** — the real **bid** is 32,655, confirmed by two independent simulations; the real **charged** fee is 22,579 with four Horizon hashes. Two quantities, both real — see the three-numbers note at the thresholds. Survives as a methodological finding: a simulation has no arbiter, so it must be re-measured from a fresh process later before it counts. |
 | **D-3** | Seller's boot log hardcoded `localhost`, imitating the exact symptom of F11 Layer 2 being decorative | **closed-by-test** — one `publicBase()` source of truth, plus `GET /whoami` making advertised state queryable. |
 | **G-3** | Spend policy keyed on the raw URL while the catalog keys on the canonical one | **closed-by-test** — found by red-teaming the F12 change before it merged. |
 | **G-4** | Settlement stats writable by anyone, against any entry | **closed-by-test** — gated on the bound owner; cross-entity forgery now impossible. |
