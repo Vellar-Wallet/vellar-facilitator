@@ -121,27 +121,42 @@ current.
 
 ---
 
-## 4. Key-handling constraints — not negotiable
+## 4. Key-handling constraints — written to be followable
 
-From the earlier cleanup, where throwaway secrets survived their test run in
-shell history, `ps` output, and a world-readable harness log:
+Amended after the first attempt to follow them. The original rule was **"no
+secret to disk"**, and it was unachievable: an agent's shell state does not
+survive between tool calls, so a key that must persist across a provisioning wait
+has nowhere in memory to live. A rule that cannot be followed gets quietly
+broken instead of followed, and the quiet part is the danger. These are the
+properties that actually matter, and they are all achievable:
 
-1. **No secret to disk.** Do not create `examples/.env.recording`. `buyer.mjs`
-   loads it only if present (`:39-41`), and exported environment variables work
-   identically.
-2. **No secret on a command line.** Never `node buyer.mjs --secret S…`, and never
-   `export AGENT_SECRET=S…` typed literally — that lands in shell history.
-   Generate and export in one step so the value is a *result*, never an argument:
+1. **Never printed.** Not to stdout, not into a log, and above all not into a
+   conversation transcript. The transcript is the worst destination available —
+   it is retained, it is searchable, and it is exactly how throwaway keys
+   outlived their test run last time.
+2. **Never an argument.** No `node buyer.mjs --secret S…`, no
+   `export AGENT_SECRET=S…` typed literally. Command lines reach shell history,
+   `ps` output, and harness logs. Generate and store in ONE process so the value
+   is a *result*, never an argument:
 
    ```sh
-   export AGENT_SECRET=$(node -e 'import("@stellar/stellar-sdk").then(s=>console.log(s.Keypair.random().secret()))')
-   export AGENT_PUBLIC=$(node -e "import('@stellar/stellar-sdk').then(s=>console.log(s.Keypair.fromSecret(process.env.AGENT_SECRET).publicKey()))")
+   node -e '
+     const {Keypair}=require("@stellar/stellar-sdk"), fs=require("fs");
+     const kp=Keypair.random();
+     fs.writeFileSync(process.env.SCRATCH+"/agent.key", kp.secret(), {mode:0o600});
+     console.log("AGENT_PUBLIC="+kp.publicKey());   // public key ONLY
+   '
    ```
-
-   The command enters history; the secret does not.
-3. **One shell session.** When it closes, the secret is gone. Do not persist it.
-4. **Record only PUBLIC values** — contract id, agent public key, sim source
-   public key — plus a **burn date**. Never the secret.
+3. **Never across a session boundary.** Whoever generates it holds it. It is not
+   handed to another person, another agent, or another repo — only the `G…`
+   public key travels.
+4. **If it must persist, `0600` in a `0700` directory OUTSIDE the repo.** Never
+   in the working tree, where it can be committed; never in `/tmp` proper, which
+   is world-readable and is where the last live secret was found. A
+   session-scoped scratchpad is the right home.
+5. **A deletion step tied to the run's end** — see the completion checklist in
+   §7. An intention to delete is not a plan; the last cleanup found a live secret
+   nobody had scheduled to remove.
 
 ### Register it as a test wallet
 
@@ -246,3 +261,59 @@ After the settles above:
 Concurrency, sustained load, sequence-number behaviour under bursts, or anything
 about pubnet. It is one payer, one merchant, on testnet — the same boundary
 `docs/decisions.md` states for the original smoke, and it does not move.
+
+---
+
+## 7. Completion checklist — the run is not done until every box is ticked
+
+Written here, at the end of the procedure, because the previous cleanup found a
+live secret in world-readable `/tmp` that **nobody had scheduled to remove**. It
+was not forgotten through carelessness; it was never written down as a step. An
+intention to clean up is not a plan.
+
+### Secret material
+
+- [ ] **Delete the agent key file** and confirm it is gone:
+      ```sh
+      rm -f "$SCRATCH/agent.key" && ls -l "$SCRATCH/agent.key" 2>&1 | grep -q 'No such file' \
+        && echo "agent.key deleted"
+      ```
+- [ ] **Sweep for any other secret material** left by the run — the last sweep is
+      the reason this line exists:
+      ```sh
+      grep -rlE 'S[A-Z2-7]{55}' "$SCRATCH" /tmp 2>/dev/null | head
+      ```
+      Any hit must be checked with `Keypair.fromSecret` — a string of the right
+      *shape* is not necessarily a key, and the repo's own test fixture fails
+      checksum validation. Delete anything that parses.
+- [ ] **Confirm no secret entered the repo:**
+      ```sh
+      git status --short && git grep -lE 'S[A-Z2-7]{55}' -- . | grep -v test
+      ```
+
+### On-chain
+
+- [ ] **Remove the agent signer from the wallet**, and confirm `get_signer`
+      returns `null` on-chain — the same confirmation used for the previous
+      wallet. Do not treat the removal transaction as proof; read the state back.
+- [ ] The signer entry **remains visible in history afterwards**. That is
+      expected — the CC5ZSTLT precedent — and is not an incomplete burn. Removal
+      is proven by `get_signer` returning null, not by absence from history.
+
+### Configuration left behind
+
+- [ ] **`SPONSOR_HARD_FLOOR_STROOPS` reverted to `100000000`** if the F3 flip was
+      run. Nothing reconciles a dashboard variable and nothing warns about it —
+      see the sibling-trap box in `docs/operator-runbook.md` §2. Confirm a settle
+      succeeds afterwards, rather than assuming the revert took.
+- [ ] **`CATALOG_OWNERSHIP_BOOTSTRAP` unset**, if it was ever set.
+- [ ] **The demo seller can be left running** — it holds no secret and sleeps on
+      its own. Only its instance hours matter, and they are pooled per workspace.
+
+### Record
+
+- [ ] **Append the wallet to `docs/decisions.md`** with public values only and a
+      **burn date**, per §4.
+- [ ] **Record the walkthrough results against §6's pre-agreed evidence** —
+      including the controls that came back unproven. A result that only lists
+      what passed is the failure mode this whole exercise exists to avoid.
