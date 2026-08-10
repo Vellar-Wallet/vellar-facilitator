@@ -4,3 +4,26 @@ node_modules/
 !.env.example
 !.env.recording.example
 *.log
+
+# Scratch and provisioning scripts — never commit.
+#
+# These are the files that HANDLE key material even when they do not contain it:
+# provisioning scripts hold secrets in process memory, take them on stdin, and
+# print public values. A stray `git add -A` commits the code path, and the next
+# person to edit it has no signal that it is throwaway.
+#
+# Deliberately broad so siblings are covered without anyone remembering to add a
+# rule: `.provision-tmp.mjs` was the file that prompted this, but the next one
+# will be called something else. Verified against `git ls-files` — these patterns
+# match nothing currently tracked.
+#
+# If you need a scratch file to persist, put it in the session scratchpad OUTSIDE
+# the repo (docs/walkthrough-wallet-spec.md §4), not here. This rule stops an
+# accident; it is not a place to keep secrets.
+*provision-tmp*
+*.provision.mjs
+*.scratch.*
+.scratch/
+scratch/
+*-tmp.mjs
+*.tmp.mjs
