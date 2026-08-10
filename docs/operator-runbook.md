@@ -306,6 +306,47 @@ that is refused, and only the 503 body names the reason.
 
 ---
 
+### Sibling trap 2: `MAX_TX_FEE_STROOPS`, raised for an investigation
+
+**Exactly the same hazard as the two above**, and it will be met by someone who
+has forgotten all three. A dashboard variable is **not** reconciled by a
+blueprint sync, `render.yaml` declares `MAX_TX_FEE_STROOPS` with the safe value
+so a sync will not remove a dashboard override, and nothing warns.
+
+Raising it is occasionally necessary — a smart account whose `__check_auth` is
+expensive can legitimately exceed the ceiling, and refusing it is the exact bug
+this project exists to fix. But left raised it silently widens the worst-case
+sponsor drain per settlement, and **it cascades**:
+
+> `perSettleEstimateStroops` **is** `maxTransactionFeeStroops`
+> (`src/server.ts`), so the fee ceiling also drives the spend policy's estimate.
+> Raising the fee ceiling shrinks how many settlements fit under
+> `SPEND_CEILING_STROOPS` in a window. At 30,000,000 stroops per settle, a 5 XLM
+> ceiling admits **one settlement per minute** for the entire service.
+
+So a raise that looks local is three thresholds: the fee ceiling, the spend
+ceiling that must accommodate it, and the hard floor that must exceed the spend
+ceiling.
+
+**Procedure:**
+
+1. Record the current value first — the shipped default is `500000`.
+2. Set the new value in the dashboard. Note the deploy restarts the service.
+3. Do the investigation. Keep it short; every settlement in this window can drain
+   up to the raised ceiling.
+4. **REVERT to `500000`** and confirm with a settle that a normal payment still
+   succeeds. Do not defer to the end of a session.
+
+**Symptom if left raised:** nothing obvious. Settlements succeed, `/health` is
+clean, and the only signal is a sponsor balance falling faster than it should —
+plus `spend_ceiling` refusals appearing at a fraction of the expected rate,
+because each settlement now reserves far more of the window's budget than it
+used to. `/health` looks entirely normal in this state —
+`status: ok`, no `catalogFrozen` — because the catalog is fine. It is settlement
+that is refused, and only the 503 body names the reason.
+
+---
+
 ## 3. "New resources stop being cataloged and the logs mention a tombstone cap"
 
 ### Symptom
