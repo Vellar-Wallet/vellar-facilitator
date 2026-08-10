@@ -32,10 +32,29 @@
 ## TO RUN 24/7 instead: change the cron to "*/10 * * * *" and first confirm this
 ## is the only Free service in the workspace.
 ##
-## RELIABILITY CAVEAT: GitHub's scheduled workflows are best-effort and can be
-## delayed well past their cron time under load. A delay beyond 15 minutes lets
-## the service sleep anyway. If the catalog needs to be reliably warm, use an
-## external uptime pinger (5-minute interval) instead of, or alongside, this.
+## RELIABILITY CAVEAT — READ BEFORE RELYING ON THIS.
+##
+## GitHub's scheduled workflows are best-effort and can be delayed well past
+## their cron time under load. A delay beyond 15 minutes lets the service sleep
+## anyway, so this is a keep-alive that *mostly* works — the failure mode is
+## silent and intermittent. An external uptime monitor (UptimeRobot free tier:
+## 50 monitors, 5-minute checks, ~5 minutes to set up, no code) is dependable in
+## a way this is not. Recommended arrangement: external monitor as primary, this
+## workflow as backup.
+##
+## BUDGET INTERACTION — the pinger schedule is not free to choose.
+## An external monitor checking every 5 minutes runs 24/7 by default, which keeps
+## the instance awake 24/7 = 744 h/month against a 750 h WORKSPACE allowance.
+## That silently overrides the 20 h/day decision below and leaves <1% margin. If
+## you add an external monitor, either configure its maintenance window to match
+## the gap here, or accept 24/7 and first confirm this is the only Free service
+## in the workspace.
+##
+## HOW TO TELL IF IT IS WORKING: /health reports `uptimeSeconds`. A value shorter
+## than the ping interval means the container was replaced since the last ping —
+## the step below warns on it. That is the data signal; do not wait for a
+## developer to report an empty catalog.
+##
 ## GitHub also disables scheduled workflows on repositories with no activity for
 ## 60 days.
 
@@ -78,4 +97,16 @@ jobs:
           # Surface a frozen catalog, which is invisible from the outside otherwise.
           if grep -q 'catalogFrozen' /tmp/body; then
             echo "::warning::/health reports catalogFrozen — see docs/operator-runbook.md §2 and §3"
+          fi
+
+          # Did it actually stay awake? /health reports process uptime, so a
+          # value shorter than the ping interval means the container was
+          # replaced since the last ping — i.e. it slept (or redeployed) and the
+          # catalog was wiped. This is how we find out from DATA rather than
+          # from a developer reporting an empty listing.
+          up=$(sed -n 's/.*"uptimeSeconds":\([0-9]*\).*/\1/p' /tmp/body)
+          size=$(sed -n 's/.*"catalogSize":\([0-9]*\).*/\1/p' /tmp/body)
+          echo "uptimeSeconds=${up:-?} catalogSize=${size:-?}"
+          if [ -n "$up" ] && [ "$up" -lt 900 ]; then
+            echo "::warning::instance uptime is ${up}s — it was replaced since the last ping, so the catalog was wiped. If this recurs outside deploy windows the keep-alive is not holding (GitHub cron delay); switch to an external 5-minute pinger."
           fi
