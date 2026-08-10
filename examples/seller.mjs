@@ -74,7 +74,15 @@ function adapter(req) {
     getHeader: (name) => req.get(name),
     getMethod: () => req.method,
     getPath: () => req.path,
-    getUrl: () => `http://localhost:${PORT}${req.originalUrl}`,
+    // The resource URL a paying client echoes back, and therefore the key the
+    // facilitator catalogs and later re-fetches for F11 Layer 2 ownership
+    // verification. Hardcoding localhost here meant every settled payment
+    // cataloged `http://localhost:<port>/quote` — a URL no agent can pay, and
+    // one the SSRF guard rejects as non-https before opening a socket. That is
+    // why Layer 2 had never succeeded in production: not the network, this line.
+    // PUBLIC_BASE_URL is how a deployed merchant declares its own address.
+    getUrl: () =>
+      `${process.env.PUBLIC_BASE_URL ?? `http://localhost:${PORT}`}${req.originalUrl}`,
     getAcceptHeader: () => req.get("accept") || "",
     getUserAgent: () => req.get("user-agent") || "",
     getQueryParams: () => req.query,

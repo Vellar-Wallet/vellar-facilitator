@@ -136,3 +136,11 @@ services:
       # walkthrough exercises the deployed build rather than a local one.
       - key: FACILITATOR_URL
         value: "https://vellar-facilitator.onrender.com"
+      # The address this merchant advertises in its own 402 challenge, and
+      # therefore the key the facilitator catalogs and re-fetches for F11
+      # Layer 2. Without it seller.mjs falls back to http://localhost:<port>,
+      # which is what made Layer 2 unreachable in production: the guard rejects
+      # a non-https URL before opening a socket, so every cataloged entry was
+      # permanently unverified.
+      - key: PUBLIC_BASE_URL
+        value: "https://vellar-seller-demo.onrender.com"
