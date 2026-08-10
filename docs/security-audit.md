@@ -509,12 +509,16 @@ change.
 
 | ID | Finding | Why |
 | --- | --- | --- |
-| **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure exists and must be documented; the automated fix trades away F11's takeover resistance. |
-| **G-4** | `recordSettlement` lets anyone inflate a victim entry's trust stats | **open** — highest-value of the review findings; no `payTo` check, and it runs after a rejected upsert. |
-| **G-5**–**G-8** | Load-path squat, unbounded load, unpersisted bootstrap bindings, one-way tombstone cap | **open** — triaged below, none fixed. |
-| **F4-ts** | Verification API has no per-record timestamp | **external** — needs the API to emit one; consumer side is already forward-compatible. |
+| **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure documented (runbook §1); the automated fix trades away F11's takeover resistance and is deliberately not built. |
+| **G-5** | Empty-`accepts` entry loads with no tombstone and is then unclaimable forever | **open** — reachable only by someone who can already write `CATALOG_FILE`. |
+| **G-6** | `MAX_ENTRIES` not enforced on the load path | **open** — a large `CATALOG_FILE` is an unbounded startup memory load. |
+| **G-7** | Bootstrap-derived bindings are seeded in memory but not written | **open** — undercuts the one-boot bootstrap procedure; runbook §2 tells the operator to verify the file before removing the flag. |
+| **G-8** | Tombstone cap is a one-way freeze with no reset path | **open** — deliberate fail-closed, but the absence of a reset needs an operator procedure (runbook §3 says escalate). |
+| **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
+| **F4-ts** | Verification API has no per-record timestamp | **external** — see the dependency note below. Consumer side already forward-compatible. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
+| **F8** | Unvalidated operator-supplied URLs | deferred; operator-supplied, not attacker-supplied. |
 
 Closed since this table was first written (kept here so the history is not lost):
 
@@ -523,6 +527,9 @@ Closed since this table was first written (kept here so the history is not lost)
 | **F12** | Spend accounting was global while rate limiting was per-IP | **closed-by-test** — per-entity budgets keyed off the F11 bindings. See the control-scope table for what this does and does not achieve. |
 | **F3** | Non-atomic `save()`, unbounded entries/`accepts` | **closed-by-test** — atomic writes, bounds, and ownership tombstones so eviction cannot drop a binding. |
 | **F10-op** | `examples/.env.recording` held a live testnet `AGENT_SECRET` | **closed** — signer removed on-chain and confirmed `null`, local copies deleted. See the `argv` lesson above. |
+| **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement. |
+| **G-3** | Spend policy keyed on the raw URL while the catalog keys on the canonical one | **closed-by-test** — found by red-teaming the F12 change before it merged. |
+| **G-4** | Settlement stats writable by anyone, against any entry | **closed-by-test** — gated on the bound owner; cross-entity forgery now impossible. |
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement; settle-triggered only, cooldowns asserted in outbound fetches. |
 
 ---
@@ -897,6 +904,65 @@ Listed so they are not lost; none is fixed on this branch.
 | **G-9** | `if (!trust) return response` in both discovery routes returns unfiltered results *before* filtering, so `verified_only=true` is silently ignored when no resolver is injected. | **Not reachable in production** — `src/server.ts` always constructs a resolver, and an unset `VERIFICATION_API_URL` yields one that answers `"unknown"` rather than `undefined`. Test-only shape; worth a guard so it stays that way. |
 
 ---
+
+## Pubnet go / no-go
+
+**Status: NO-GO on two hard blockers.** Neither is a code defect; both are
+deployment facts. Everything the audit itself raised is closed or triaged.
+
+### Blockers — must be true before `STELLAR_NETWORK=pubnet`
+
+**B1 — No persistent disk.** `plan: free` has none, and the service sleeps after
+~15 minutes idle. Ownership bindings (F11 Layer 1) therefore reset on every cold
+start, so after each wake the first settler re-binds each URL. Layer 2 still
+fires and a hijacker's entry stays unverified and invisible to `verified_only`,
+but the catalog will advertise their `payTo` until corrected. **Attach a disk and
+follow runbook §2 before pubnet.** Note this is also what activates G-5 and G-7.
+
+**B2 — Sponsor key and funding.** The configured key is a dedicated *testnet*
+account. Pubnet needs its own funded key, set via the dashboard (`sync: false`),
+holding meaningfully more than `SPONSOR_HARD_FLOOR_STROOPS` (10 XLM) — the floor
+is a refusal point, not a budget. `loadConfig` now refuses to boot on pubnet if
+the floor cannot hold against the ceiling.
+
+### Conditions — true at cutover, watched afterwards
+
+- **Thresholds are unvalidated against real traffic.** Reviewed 2026-08-10 and
+  shipped tight by decision; every refusal carries a reason and should be read as
+  a signal, not a bug. Widening is a one-line env change.
+- **G-2 has no in-band rotation.** Runbook §1 must be in the operator's hands
+  *before* any merchant is onboarded on a disk-backed deployment — a merchant
+  who rotates cannot fix it themselves, and the symptom is invisible to them.
+- **`CATALOG_OWNERSHIP_BOOTSTRAP` must be removed after the migration boot**, and
+  its warning fires on every boot while set.
+
+### Explicitly NOT blockers
+
+- **`VERIFICATION_API_URL` unset.** Every asset verdict degrades to `"unknown"`,
+  so `verified_only` returns empty. That is the honest default and is
+  security-*positive*: configuring it makes that API a trust root. It is a
+  product gap, not a security one.
+
+### The `F4-ts` dependency, stated precisely
+
+What this repo needs is small and entirely on the producer side: **each record in
+the verification history response must carry a timestamp.** The consumer is
+already forward-compatible — `src/trust.ts` accepts `timestamp`, `verifiedAt`, or
+`createdAt`, as an ISO string or an epoch number, and sorts by it **only when
+every record carries one**, falling back to array order otherwise.
+
+So the ask is one field, any of three names, on every record. Until then
+`records[0]` is assumed newest, which is an ordering the API never promised.
+
+Two further preconditions before enabling it at all, independent of the
+timestamp: the endpoint is **unauthenticated**, and pointing at it makes it a
+**trust root** for every badge served. Neither is fixed by the timestamp.
+
+**Owner: unknown from this repo.** Nothing here records where the verification
+API is hosted or which codebase implements it — `VERIFICATION_API_URL` is
+deliberately unset and appears in no deploy config. If it is a service that is
+not deployed anywhere, then `F4-ts` is not "waiting on a field", it is waiting on
+a service, and should be tracked as such rather than as an external ticket.
 
 ## What `main` is running today
 
