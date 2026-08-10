@@ -75,7 +75,85 @@ const routes = {
 };
 
 const httpServer = new x402HTTPResourceServer(coreServer, routes);
-await httpServer.initialize();
+
+// `initialize()` fetches /supported from the facilitator. Without this wrapper
+// the process died on every boot and produced a self-sustaining crash loop:
+//
+//   seller boots -> GET /supported -> facilitator cold-starting -> 502
+//   -> seller exits -> Render restarts -> retries at once -> ...
+//   -> the restart storm hits the facilitator's own 60/min limit -> 429
+//
+// WHAT @x402/core ALREADY DOES, read from the source rather than assumed:
+// getSupported() loops GET_SUPPORTED_RETRIES (3) times, and on 429 it honours
+// Retry-After via computeRetryDelay() before continuing. But on ANY OTHER
+// non-ok status — 502 included — it throws IMMEDIATELY. That asymmetry is
+// backwards for this topology: a 502 from a cold-starting upstream is the
+// textbook retryable case, while a 429 is a deliberate refusal. So the library
+// covers the case that needs waiting and not the case that needs patience.
+//
+// This wrapper therefore exists for 5xx/network, and defers to the library on
+// 429 — where it has already spent its Retry-After waits before throwing.
+const MAX_BOOT_ATTEMPTS = 5;
+const RATE_WINDOW_MS = 65_000; // facilitator limit is 60/min; +5s of margin
+
+async function initializeWithRetry() {
+  const base = FACILITATOR_URL.replace(/\/+$/, "");
+
+  // Warm via /health SPECIFICALLY because it is the ONE route exempt from the
+  // facilitator's rate limiter (src/server.ts: `allowList: req.url === "/health"`).
+  // Warming through any other route would consume the same 60/min bucket the
+  // seller needs, and could extend the very lockout this is recovering from.
+  // That exemption is now load-bearing — if the limiter config is ever tidied,
+  // this warm must move with it.
+  try {
+    console.error("[seller] warming the facilitator via /health (rate-limit exempt)…");
+    await fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) });
+  } catch {
+    // Best-effort. The retries below are what actually guarantee readiness.
+  }
+
+  let delay = 2_000;
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_BOOT_ATTEMPTS; attempt++) {
+    try {
+      await httpServer.initialize();
+      console.error(`[seller] facilitator reachable (attempt ${attempt}/${MAX_BOOT_ATTEMPTS})`);
+      return;
+    } catch (err) {
+      lastError = err;
+      const detail = err?.cause?.message ?? err?.message ?? String(err);
+      if (attempt === MAX_BOOT_ATTEMPTS) break;
+
+      // A 429 here means the library ALREADY exhausted its Retry-After waits and
+      // the bucket is still full. Backing off by seconds would just re-consume
+      // it — the loop that caused this. Wait out the whole window instead.
+      const rateLimited = /\(429\)/.test(detail);
+      const wait = rateLimited
+        ? RATE_WINDOW_MS
+        : delay + Math.floor(Math.random() * 1_000); // jitter
+      console.error(
+        `[seller] facilitator not ready (attempt ${attempt}/${MAX_BOOT_ATTEMPTS}): ${detail}` +
+          ` — ${rateLimited ? "RATE LIMITED, waiting out the full window" : "retrying"} in ${Math.round(wait / 1000)}s`,
+      );
+      await new Promise((r) => setTimeout(r, wait));
+      if (!rateLimited) delay = Math.min(delay * 2, 30_000);
+    }
+  }
+
+  // Give up LOUDLY and specifically. A seller that retried forever against a
+  // permanently dead facilitator would be indistinguishable from a slow cold
+  // start, so a real misconfiguration must be legible in one line: which URL,
+  // and what it actually returned.
+  console.error(
+    `\n[seller] FATAL: gave up after ${MAX_BOOT_ATTEMPTS} attempts.\n` +
+      `  facilitator : ${base}\n` +
+      `  last error  : ${lastError?.cause?.message ?? lastError?.message ?? lastError}\n` +
+      `  If this is a cold start it should have recovered by now, so treat it as a\n` +
+      `  misconfiguration: check FACILITATOR_URL, and that ${base}/supported returns 200.\n`,
+  );
+  throw lastError;
+}
+await initializeWithRetry();
 
 function adapter(req) {
   return {
