@@ -290,6 +290,85 @@ on catalog availability and preserve the ownership file for analysis.
 
 ---
 
+## 4. Verifying F11 Layer 2 against a live seller (manual gate)
+
+**CI does not cover this, and cannot.** The check needs a live public endpoint,
+real DNS and a valid certificate. In CI that means a network dependency on every
+push, a free-tier seller that sleeps (so the first run pays a ~60s cold start),
+an external hostname that can change, and a red build whenever someone else's
+service is down. A recorded fixture would defeat the point entirely: the thing
+under test is that the bytes traverse real DNS and real TLS, which no fixture
+reproduces.
+
+So this is a **manual gate before any release that touches `src/ownership.ts`**.
+
+### Steps
+
+1. Wake the seller (free instances sleep after 15 min; the first request takes
+   ~1 min):
+
+   ```sh
+   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 150 \
+     https://vellar-seller-demo.onrender.com/quote     # expect 402
+   ```
+
+2. Confirm it advertises its PUBLIC address, not localhost. This is the failure
+   that made Layer 2 unreachable in production for the whole of its life:
+
+   ```sh
+   curl -sS -D- -o /dev/null https://vellar-seller-demo.onrender.com/quote \
+     | grep -i '^payment-required:' | sed 's/^payment-required: //' | tr -d '\r' \
+     | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["resource"]["url"], d["accepts"][0]["payTo"])'
+   ```
+
+   The URL must be `https://…onrender.com/quote`. If it reads
+   `http://localhost:…`, `PUBLIC_BASE_URL` is unset on the seller service —
+   fix that before going further, or the test verifies nothing real.
+
+3. Run the gate with the payTo from step 2:
+
+   ```sh
+   LIVE_SELLER_URL=https://vellar-seller-demo.onrender.com/quote \
+   LIVE_SELLER_PAYTO=<payTo from step 2> \
+   npx vitest run src/ownership.live.test.ts
+   ```
+
+### What a pass looks like
+
+Every stage is printed, and all of them must be real:
+
+```
+DNS      vellar-seller-demo.onrender.com -> 216.24.57.7 (family 4)
+PIN      lookup() -> 216.24.57.7
+TLS      authorized=true CN=onrender.com issuer=Google Trust Services
+VERDICT  match (fetch impl: undici, not global)
+CONTROL  wrong payTo -> mismatch
+```
+
+**The CONTROL line is the one that matters.** Without it, `match` could mean
+"returns match unconditionally". A pass requires both a match for the real payTo
+and a mismatch for an unrelated one.
+
+**With the env vars unset the tests SKIP, they do not pass.** That is deliberate:
+a skip reads as "not run", a vacuous pass reads as "covered", and confusing those
+two is exactly the RA-12 failure this repo has already made once.
+
+### If it fails
+
+The output names the stage. Read it literally:
+
+| Stage | Meaning |
+| --- | --- |
+| scheme | The URL is not https. Check `PUBLIC_BASE_URL` on the seller. |
+| DNS | The hostname does not resolve. The service may be deleted or renamed. |
+| private-range | The host resolved into a blocked range — investigate, this is the SSRF guard doing its job. |
+| PIN | The pin is not the vetted address; the RA-2 rebinding defence is broken. Treat as critical. |
+| TLS | Certificate does not validate against the hostname. |
+| VERDICT `unverifiable` | Reached the endpoint but got no usable 402 — check the seller is awake and returning `PAYMENT-REQUIRED`. |
+| VERDICT `mismatch` | The challenge does not name that payTo. Usually a stale `LIVE_SELLER_PAYTO`. |
+
+---
+
 ## Related
 
 - `docs/security-audit.md` — findings F1–F12 and G-1…G-9, with what each control
