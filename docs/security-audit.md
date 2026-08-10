@@ -20,9 +20,12 @@ Status vocabulary:
 | **deferred** | Understood, deliberately not fixed yet, with a stated trigger. |
 | **external** | Blocked on a system outside this repo. |
 
-> **All of this is fixed on `security/pubnet-blockers` only.** `main` — which the
-> hosted Render instance runs — carries the full unmitigated surface. See
-> [What `main` is running today](#what-main-is-running-today).
+> **As of 2026-08-10 every fix below is merged to `main`** (PRs #1–#6). This banner
+> previously said the opposite — that `main` carried the full unmitigated surface —
+> and stayed that way across six merges. It is called out rather than quietly
+> corrected, because it is a fourth instance of the rot pattern described below,
+> this time inside the document that describes it. Merge status is not deployment
+> status: see [What `main` is running today](#what-main-is-running-today).
 
 ---
 
@@ -509,12 +512,16 @@ change.
 
 | ID | Finding | Why |
 | --- | --- | --- |
-| **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure exists and must be documented; the automated fix trades away F11's takeover resistance. |
-| **G-4** | `recordSettlement` lets anyone inflate a victim entry's trust stats | **open** — highest-value of the review findings; no `payTo` check, and it runs after a rejected upsert. |
-| **G-5**–**G-8** | Load-path squat, unbounded load, unpersisted bootstrap bindings, one-way tombstone cap | **open** — triaged below, none fixed. |
-| **F4-ts** | Verification API has no per-record timestamp | **external** — needs the API to emit one; consumer side is already forward-compatible. |
+| **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure documented (runbook §1); the automated fix trades away F11's takeover resistance and is deliberately not built. |
+| **G-5** | Empty-`accepts` entry loads with no tombstone and is then unclaimable forever | **open** — reachable only by someone who can already write `CATALOG_FILE`. |
+| **G-6** | `MAX_ENTRIES` not enforced on the load path | **open** — a large `CATALOG_FILE` is an unbounded startup memory load. |
+| **G-7** | Bootstrap-derived bindings are seeded in memory but not written | **open** — undercuts the one-boot bootstrap procedure; runbook §2 tells the operator to verify the file before removing the flag. |
+| **G-8** | Tombstone cap is a one-way freeze with no reset path | **open** — deliberate fail-closed, but the absence of a reset needs an operator procedure (runbook §3 says escalate). |
+| **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
+| **F4-ts** | Verification API is not deployed at all; the worker-service has never run hosted | **external, blocked on wallet-repo M5** — not a missing field. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 multisig attestor. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
+| **F8** | Unvalidated operator-supplied URLs | deferred; operator-supplied, not attacker-supplied. |
 
 Closed since this table was first written (kept here so the history is not lost):
 
@@ -523,6 +530,9 @@ Closed since this table was first written (kept here so the history is not lost)
 | **F12** | Spend accounting was global while rate limiting was per-IP | **closed-by-test** — per-entity budgets keyed off the F11 bindings. See the control-scope table for what this does and does not achieve. |
 | **F3** | Non-atomic `save()`, unbounded entries/`accepts` | **closed-by-test** — atomic writes, bounds, and ownership tombstones so eviction cannot drop a binding. |
 | **F10-op** | `examples/.env.recording` held a live testnet `AGENT_SECRET` | **closed** — signer removed on-chain and confirmed `null`, local copies deleted. See the `argv` lesson above. |
+| **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement. |
+| **G-3** | Spend policy keyed on the raw URL while the catalog keys on the canonical one | **closed-by-test** — found by red-teaming the F12 change before it merged. |
+| **G-4** | Settlement stats writable by anyone, against any entry | **closed-by-test** — gated on the bound owner; cross-entity forgery now impossible. |
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement; settle-triggered only, cooldowns asserted in outbound fetches. |
 
 ---
@@ -898,24 +908,109 @@ Listed so they are not lost; none is fixed on this branch.
 
 ---
 
+## Pubnet go / no-go
+
+**Status: NO-GO on two hard blockers.** Neither is a code defect; both are
+deployment facts. Everything the audit itself raised is closed or triaged.
+
+### Blockers — must be true before `STELLAR_NETWORK=pubnet`
+
+**B1 — No persistent disk.** `plan: free` has none, and the service sleeps after
+~15 minutes idle. Ownership bindings (F11 Layer 1) therefore reset on every cold
+start, so after each wake the first settler re-binds each URL. Layer 2 still
+fires and a hijacker's entry stays unverified and invisible to `verified_only`,
+but the catalog will advertise their `payTo` until corrected. **Attach a disk and
+follow runbook §2 before pubnet.** Note this is also what activates G-5 and G-7.
+
+**B2 — Sponsor key and funding.** The configured key is a dedicated *testnet*
+account. Pubnet needs its own funded key, set via the dashboard (`sync: false`),
+holding meaningfully more than `SPONSOR_HARD_FLOOR_STROOPS` (10 XLM) — the floor
+is a refusal point, not a budget. `loadConfig` now refuses to boot on pubnet if
+the floor cannot hold against the ceiling.
+
+### Conditions — true at cutover, watched afterwards
+
+- **Thresholds are unvalidated against real traffic.** Reviewed 2026-08-10 and
+  shipped tight by decision; every refusal carries a reason and should be read as
+  a signal, not a bug. Widening is a one-line env change.
+- **G-2 has no in-band rotation.** Runbook §1 must be in the operator's hands
+  *before* any merchant is onboarded on a disk-backed deployment — a merchant
+  who rotates cannot fix it themselves, and the symptom is invisible to them.
+- **`CATALOG_OWNERSHIP_BOOTSTRAP` must be removed after the migration boot**, and
+  its warning fires on every boot while set.
+
+### Explicitly NOT blockers
+
+- **`VERIFICATION_API_URL` unset.** Every asset verdict degrades to `"unknown"`,
+  so `verified_only` returns empty. That is the honest default and is
+  security-*positive*: configuring it makes that API a trust root. It is a
+  product gap, not a security one.
+
+### F4-ts — blocked on a service that has never run hosted, not on a field
+
+Corrected 2026-08-10 with information from the wallet repo. The earlier framing
+here — "waiting on one timestamp field" — understated it by a long way.
+
+The verification API is the wallet repo's **verification-service plus
+worker-service**. The worker polls the shared database, rebuilds contracts in a
+sandboxed container, compares wasm hashes, and mirrors verdicts on chain. **It is
+deployed nowhere:** no deploy manifest references it, and `ATTESTOR_SECRET_KEY` is
+absent from `.env.example` and every manifest. Verification jobs therefore sit at
+`status='submitted'` indefinitely and no attestation is ever written.
+
+So the missing timestamp is not the blocker. There is no record to timestamp.
+
+**The dependency chain, in order:**
+
+1. This facilitator can serve a real `"verified"` only if the verification API
+   returns a verdict.
+2. A verdict exists only if the **worker-service is deployed** and processing the
+   queue.
+3. The worker can attest only if **`ATTESTOR_SECRET_KEY` is provisioned**.
+4. That single-key attestor is itself a **deferred mainnet blocker (wallet repo
+   M5)**, awaiting a multisig design.
+
+**Therefore: the earliest this facilitator can serve a genuine `"verified"` badge
+is after M5 lands in the wallet repo.** Everything downstream of that — including
+the per-record timestamp — is a smaller problem that only becomes relevant once a
+verdict can exist at all.
+
+**Consumer requirements for whoever designs the M5 multisig attestor.** Two
+properties this repo needs are decided *during* that design, not bolted on after,
+so they are recorded here to be read as requirements rather than discovered later:
+
+| Requirement | Why this repo needs it |
+| --- | --- |
+| **The verdict endpoint must be authenticated** | It is currently unauthenticated. This facilitator reads it on the discovery path and clamps every served badge by it, so anyone who can answer as that endpoint can mint `"verified"` for any asset. |
+| **Configuring it makes that API a trust root** | The moment `VERIFICATION_API_URL` is set, this service's badge is only as trustworthy as that endpoint and its key custody. A single-key attestor makes the badge a single-key claim — which is exactly what M5 exists to fix, and why this repo will not enable it before then. |
+
+Third, smaller, and unchanged: **each record needs a timestamp.** The consumer is
+already forward-compatible — `src/trust.ts` accepts `timestamp`, `verifiedAt`, or
+`createdAt`, ISO string or epoch number, and sorts by it **only when every record
+carries one**, falling back to array order otherwise. Until then `records[0]` is
+assumed newest, an ordering the API never promised.
+
+**Status: external, and correctly blocked.** Leaving `VERIFICATION_API_URL` unset
+is the right posture, not a gap to close. Every verdict degrading to `"unknown"`
+is the honest answer while no verdict can be produced.
+
 ## What `main` is running today
 
-`main` is the deployed branch. **None of the above is fixed there.** Verified by
-reading `main`, not by inference:
+**Merged, as of 2026-08-10:** every finding above marked closed-by-test or
+closed-by-doc is on `main`. 257 tests, typecheck clean, CI gating each PR.
 
-| Control | `main` |
-| --- | --- |
-| Resource-URL ownership binding | **none** — `upsertFromPayment` keys on `discovered.resourceUrl` with no ownership check |
-| Rate limiting / helmet / CORS / body limit | **none** — Fastify default 1 MiB body, no plugins |
-| Catalog load validation | **blind-cast** `JSON.parse(...) as ...` |
-| Ingest/load sanitization | **none** — `description` and `extensions` stored verbatim |
-| Trust resolver timeout / size cap / validation | **none** |
-| `MAX_TX_FEE_STROOPS` | **2,000,000**, with **no spend accounting** |
-| CI gating deploy | **none** |
+**Deployed: unconfirmed from this repo.** `render.yaml` sets no `autoDeploy` key,
+so Render's default (deploy on push to the connected branch) applies — but which
+branch is connected, and whether a deploy has run since these merges, is dashboard
+state this repository cannot observe. Confirm there before treating the hosted
+instance as carrying any of the above.
 
-Test files: 5 on `main` vs 14 on the branch.
+Two things stay true of the hosted instance regardless of deploy status, both
+deliberate:
 
-`VERIFICATION_API_URL` is **not configured** on the deployed instance (absent from
-`render.yaml`), so the trust layer serves `"unknown"` for every result — the
-documented degrade mode, not a fault, but worth knowing when reading discovery
-output.
+- `plan: free` has **no persistent disk**, so the catalog and its ownership
+  bindings do not survive a restart or the ~15-minute idle sleep. That is pubnet
+  blocker **B1**; on testnet it is the documented behaviour.
+- `VERIFICATION_API_URL` is **not configured**, so every trust verdict is
+  `"unknown"` and `verified_only` returns empty. Per F4-ts this is not a
+  configuration oversight and cannot be fixed by setting the variable.

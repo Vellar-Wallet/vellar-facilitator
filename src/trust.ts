@@ -72,6 +72,16 @@ function strictMin(verdicts: TrustVerification[]): TrustVerification {
   return verdicts.reduce((worst, v) => (RANK[v] > RANK[worst] ? v : worst), "verified" as TrustVerification);
 }
 
+/** Documented limits, exported so their RATIONALE is assertable — see
+ * src/config.thresholds.test.ts. Read-only. */
+export const TRUST_LIMITS = Object.freeze({
+  /** How long an asset verdict is reused. A verdict can change when a contract
+   * is re-verified upstream, so this bounds how stale a served badge can be;
+   * it is deliberately far shorter than the ownership re-verify cooldowns,
+   * which answer a different question about a different party. */
+  defaultCacheTtlMs: 5 * 60_000,
+});
+
 export interface TrustResolver {
   /** Verification verdict for one contract id (cached). */
   assetStatus(contractId: string): Promise<TrustVerification>;
@@ -190,7 +200,7 @@ function recordTimestamp(r: HistoryRecord): number | undefined {
 }
 
 export function createTrustResolver(options: TrustResolverOptions): TrustResolver {
-  const cacheTtlMs = options.cacheTtlMs ?? 5 * 60_000;
+  const cacheTtlMs = options.cacheTtlMs ?? TRUST_LIMITS.defaultCacheTtlMs;
   const timeoutMs = options.timeoutMs ?? 3_000;
   const maxResponseBytes = options.maxResponseBytes ?? 64 * 1024;
   const fetchFn = options.fetchFn ?? fetch;

@@ -50,6 +50,16 @@ export interface HardeningOptions {
 const DEFAULT_RATE_MAX = 60;
 const DEFAULT_BODY_LIMIT = 32 * 1024;
 
+/** Documented limits, exported so their RATIONALE is assertable — see
+ * src/config.thresholds.test.ts. Read-only. */
+export const SERVER_LIMITS = Object.freeze({
+  defaultRateMaxPerMinute: DEFAULT_RATE_MAX,
+  defaultBodyLimitBytes: DEFAULT_BODY_LIMIT,
+  /** Largest real settlement envelope measured on-chain, in base64 chars. The
+   * body limit is derived from this, not picked. */
+  measuredMaxEnvelopeChars: 3_400,
+});
+
 export async function buildServer(
   facilitator: ReturnType<typeof buildFacilitator>,
   catalog: BazaarCatalog,

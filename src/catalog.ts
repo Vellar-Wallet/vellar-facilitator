@@ -151,6 +151,26 @@ function sanitizeType(value: unknown): "http" | "mcp" | undefined {
  * outright rather than "cleaned", so the load path is not weaker than the wire. */
 const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 
+/** Documented limits, exported so their RATIONALE is assertable — see the
+ * "module constants" block in src/config.thresholds.test.ts. Read-only. */
+export const CATALOG_LIMITS = Object.freeze({
+  maxEntries: MAX_ENTRIES,
+  maxAccepts: MAX_ACCEPTS,
+  maxTombstones: MAX_TOMBSTONES,
+  maxTrackedPayers: MAX_TRACKED_PAYERS,
+  persistDebounceMs: PERSIST_DEBOUNCE_MS,
+  reverifyCooldownMismatchMs: REVERIFY_COOLDOWN_MISMATCH_MS,
+  reverifyCooldownUnverifiableMs: REVERIFY_COOLDOWN_UNVERIFIABLE_MS,
+  maxDescriptionLen: MAX_DESCRIPTION_LEN,
+  maxServiceNameLen: MAX_SERVICE_NAME_LEN,
+  maxTagLen: MAX_TAG_LEN,
+  maxTags: MAX_TAGS,
+  maxMimeTypeLen: MAX_MIME_TYPE_LEN,
+  defaultLimit: DEFAULT_LIMIT,
+  maxLimit: MAX_LIMIT,
+});
+
+
 /**
  * Strip control/bidi chars, clamp, and require printable ASCII. Returns
  * undefined (field dropped) rather than a mangled string when the input isn't
