@@ -8,7 +8,6 @@ import { SpendPolicy, type SettleIdentity } from "./policy.js";
 
 const base = {
   network: "stellar:pubnet" as const,
-  rateMax: 1_000_000, // isolate the F12 dimensions
   rateWindowMs: 60_000,
   spendCeilingStroops: 1_000_000_000,
   spendWindowMs: 60_000,
@@ -52,6 +51,24 @@ describe("F12 — per-bound-URL budget", () => {
       }
     }
     // 30 settles for one payTo, all allowed — per-payTo (100) never bound.
+  });
+});
+
+describe("F12 — the per-payTo budget is the ONLY one on that key", () => {
+  it("admits exactly perPayToMax settles for one payTo — no tighter budget may shadow it", () => {
+    // This is the test that did not exist while the defect did. `SETTLE_RATE_MAX`
+    // (30) and `SETTLE_PER_PAYTO_MAX` (100) were two budgets over the same key
+    // and window; the tighter silently won, so the per-payTo dimension never ran
+    // and nothing failed. Any second per-payTo limit below perPayToMax breaks
+    // this test.
+    const c = clock();
+    const p = new SpendPolicy({ ...base, perPayToMax: 50, perUrlMax: 1_000 }, c.now);
+    let allowed = 0;
+    for (let i = 0; i < 60; i++) {
+      if (p.checkSettle(bound(`https://m/${i}`, "GMERCH")).allowed) allowed++;
+    }
+    expect(allowed, "a shadowing budget would cut this below perPayToMax").toBe(50);
+    expect(p.checkSettle(bound("https://m/x", "GMERCH")).reason).toBe("rate_limited_payto");
   });
 });
 

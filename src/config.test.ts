@@ -49,20 +49,19 @@ describe("loadConfig", () => {
   it("defaults spend-policy limits and honors overrides", () => {
     const def = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
     expect(def.spend).toEqual({
-      rateMax: 30,
       rateWindowMs: 60_000,
       ceilingStroops: 50_000_000,
       perUrlMax: 10,
-      perPayToMax: 100,
+      perPayToMax: 50,
       unboundPoolMax: 10,
       windowMs: 60_000,
     });
     const over = loadConfig({
       SPONSOR_SECRET_KEY: SECRET,
-      SETTLE_RATE_MAX: "10",
+      SETTLE_PER_PAYTO_MAX: "10",
       SPEND_CEILING_STROOPS: "1000000",
     });
-    expect(over.spend.rateMax).toBe(10);
+    expect(over.spend.perPayToMax).toBe(10);
     expect(over.spend.ceilingStroops).toBe(1_000_000);
   });
 
@@ -97,8 +96,10 @@ describe("loadConfig", () => {
   });
 
   it("rejects a non-positive spend limit", () => {
-    expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SETTLE_RATE_MAX: "0" })).toThrow(
-      /SETTLE_RATE_MAX/,
+    // SETTLE_RATE_MAX is retired (it shadowed SETTLE_PER_PAYTO_MAX); validation
+    // coverage moves to the surviving name rather than disappearing with it.
+    expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SETTLE_PER_PAYTO_MAX: "0" })).toThrow(
+      /SETTLE_PER_PAYTO_MAX/,
     );
     expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, SPEND_CEILING_STROOPS: "-1" })).toThrow(
       /SPEND_CEILING_STROOPS/,

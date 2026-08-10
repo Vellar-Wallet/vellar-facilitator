@@ -395,16 +395,63 @@ the current deployment.
 
 Every value below is a **placeholder**, chosen from reasoning rather than
 production data. They are **log-only on testnet and enforced on pubnet**, so they
-first bite whenever someone sets `STELLAR_NETWORK=pubnet`. Revisit before that.
+first bite whenever someone sets `STELLAR_NETWORK=pubnet`.
+
+**Reviewed 2026-08-10.** Decision for cutover: **ship tight and widen on
+evidence.** Refusals are loud and carry a reason; silent over-permission is not
+observable. Widening is a one-line env change, and the balance guard is the real
+backstop either way. The relationships between these numbers are now asserted in
+`src/config.thresholds.test.ts` rather than only described here.
 
 | Value | Default | Reasoning |
 | --- | --- | --- |
 | `MAX_TX_FEE_STROOPS` | **500,000** | The one value that IS measured. Worst real settlement observed on-chain: 127,808 stroops (a stacked double-policy smart-account payment). 500k is ~3.9x that and 2.5x the documented 200k floor, cutting worst-case drain per settle from 0.2 to 0.05 XLM. |
-| `SPEND_CEILING_STROOPS` | **1 XLM / 60s** | Sized so the GLOBAL ceiling binds before the per-payTo rate limit: 30 settles x 500,000 = 1.5 XLM, so 1 XLM trips first. **This is ~20 settlements/minute across ALL merchants — deliberately tight.** Raise it if legitimate pubnet traffic exceeds that; it will throttle honest load before it throttles an attacker with many addresses. |
-| `SETTLE_RATE_MAX` | **30 / 60s per payTo** | A convenience throttle only. An attacker with several addresses rotates them for a fresh bucket each, so size the global ceiling as if this did not exist (RA-6/D6). |
-| `SPONSOR_SOFT/HARD_FLOOR` | **25 / 10 XLM** | The hard floor MUST exceed one spend window's ceiling, or a stale balance read (up to one interval old) can be drained straight through it. `loadConfig` warns at startup if that invariant is broken. |
+| `SPEND_CEILING_STROOPS` | **5 XLM / 60s** | At the 500,000-stroop worst-case fee that is **100 settlements per window across ALL merchants**. Raising it helps honest throughput and costs a funded attacker nothing — they were never bound by it — so treat it as a sponsor-exposure dial, not a security control. |
+| `SETTLE_PER_PAYTO_MAX` | **50 / 60s per payTo** | Half the global capacity: no single payTo can consume the whole service, while a merchant can run 5 bound URLs at their full rate. **Consolidated from two budgets** — see the defect below. |
+| `SETTLE_PER_URL_MAX` | **10 / 60s per bound URL** | The F12 fairness control: one merchant can no longer starve another. |
+| `SETTLE_UNBOUND_POOL_MAX` | **10 / 60s shared** | Deliberate 1:1 with one bound URL — a spray across many unverified URLs gets what one honest merchant gets. |
+| `SPONSOR_SOFT/HARD_FLOOR` | **25 / 10 XLM** | The hard floor MUST exceed one spend window's ceiling, or a stale balance read (up to one interval old) can be drained straight through it. **Fatal at boot on pubnet**, warning on testnet. |
 | Per-IP rate limit | **60 / min** | `/health` exempt so the Render health check cannot trip. Keyed via `trustProxy: 1` — exactly one hop, because `true` is client-spoofable (RA-4). |
 | Body limit | **32 KiB** | Derived, not picked: largest real settlement envelope measured on-chain is 3,400 base64 chars (~2.5 KB), giving ~9.6x margin. |
+
+### Defect found by the review: F12's per-payTo budget never ran
+
+`SETTLE_RATE_MAX` (30) and `SETTLE_PER_PAYTO_MAX` (100) were **two budgets over
+the same key and the same window**. `policy.ts` checked both in sequence, so the
+tighter one always returned first and the looser one was unreachable: the entire
+per-payTo dimension of F12 — designed, debated, and approved — had no effect on
+the running system.
+
+Consolidated to **one** budget at 50, and `SETTLE_RATE_MAX` is **removed rather
+than aliased**: two names for one dimension is how the shadowing arose. Setting
+it now logs that it is retired, names its replacement, and warns that the
+effective limit is no longer the value you set — a retired knob that still
+parses is the next dead control.
+
+The test that would have caught it did not exist, so it does now
+(`policy.f12.test.ts` — "no tighter budget may shadow it"). Mutation-verified:
+reintroducing a hardcoded 30 fails it. Note the first version of that test did
+**not** catch the shadow, because no existing case drove one payTo past 30
+settles while its budget was higher.
+
+### Pattern: rationale in comments rots because nothing tests it
+
+Three comments in this repo have now asserted something untrue:
+
+1. `bindLoadedEntry` claimed *"Layer 2 re-verifies from the resource on the next
+   settlement"* — that path did not exist until G-1.
+2. This document claimed *"Layer 2 is the control that survives a restart"* — it
+   was exactly backwards; Layer 1 survives, and Layer 2 was what did not.
+3. `config.ts` reasoned about *"1 XLM… ~20 settlements/minute globally"* long
+   after the value had moved to 5 XLM (~100/min), so anyone reading it was
+   reasoning about a system that did not exist.
+
+Each was load-bearing prose that nothing executed. **Standing rule: numeric
+rationale lives with the value AND a test.** `src/config.thresholds.test.ts` is
+the pattern — its `documented rationale` block turns each sentence into an
+assertion ("the ceiling admits 100 per window", "per-payTo is half of global",
+"the hard floor exceeds one window"), so changing a value without revisiting its
+reasoning fails the build instead of quietly making a comment false.
 
 ### Operational lesson: secrets in `argv`
 
@@ -489,7 +536,8 @@ it is per-entity budgeting keyed off the F11 bindings.
 The two spend controls are keyed on different, wrong things:
 
 - `SPEND_CEILING_STROOPS` is **global** — one bucket for the whole facilitator.
-- The per-IP rate limit is **per-IP**, and `SETTLE_RATE_MAX` is **per-payTo**.
+- The per-IP rate limit is **per-IP**, and the settle budget is **per-payTo**
+  (then `SETTLE_RATE_MAX`, since retired — see the shadowing defect above).
 
 A self-dealing attacker spreads across many addresses and many source IPs. Each
 individual bucket stays under its limit, but the **global** ceiling is consumed
