@@ -84,13 +84,22 @@ hold that SEP-41 token.
 
 What to fund:
 
-1. **`WALLET_CONTRACT_ID` — X402TST balance.** At least `1000000` atomic per
-   payment. The walkthrough needs **~15 settlements**, so fund at least
-   `20000000` atomic to leave headroom.
-2. **`SIM_SOURCE_ACCOUNT` — XLM.** Friendbot is sufficient; it only needs to
+1. **`WALLET_CONTRACT_ID` — X402TST balance: fund `50000000` atomic.**
+   Corrected — the earlier "~15 settlements / 20000000" did not cover the plan
+   in §6. Real count: 1 bind + 2 for G-3 + 11 for the F12 trigger + 2 for
+   F11/G-4 + 2 after the restart ≈ **18 settles**, and `50000000` leaves room
+   for retries and mistakes. F3 refusals cost nothing — `/settle` returns 503
+   before any transfer.
+2. **A SECOND recipient account, trustlined to X402TST.** Needed for F11/G-4:
+   the attacker settle must **succeed on-chain** while the catalog refuses it,
+   which is the entire point of that evidence. X402TST is a SAC, so the
+   recipient needs a classic trustline or the transfer fails and the test proves
+   nothing. Provide its `G…` — it receives ~2000000 atomic and holds nothing
+   else.
+3. **`SIM_SOURCE_ACCOUNT` — XLM.** Friendbot is sufficient; it only needs to
    exist and be a valid transaction source.
-3. **The wallet contract's own reserves** — whatever deploying it costs.
-4. **Settlement fees: nothing.** The facilitator sponsors them
+4. **The wallet contract's own reserves** — whatever deploying it costs.
+5. **Settlement fees: nothing.** The facilitator sponsors them
    (`GBUCR6H2…`). The buyer holds no XLM by design — that is the property being
    demonstrated.
 
@@ -182,7 +191,35 @@ three are not, and saying so now is the point of writing this down first.
 
 | Control | Evidence, and the caveat |
 | --- | --- |
-| **F12** (spend budgets) | **The policy is LOG-ONLY on testnet** — `enforced` is false unless the network is pubnet (`src/policy.ts:111-112`), so there will be **no 503**. The evidence is the log line `[policy] settle would be refused on pubnet` carrying `wouldReject: rate_limited_url`, produced by an 11th settle for the same bound URL inside 60s (`perUrlMax` is 10). **This requires you to pull the Render logs** — I cannot see them. If we want a 503 instead, that needs `STELLAR_NETWORK=pubnet`, which we are not doing on a testnet sponsor. |
+| **F12** (spend budgets) | **`rate_limited_url` only.** The policy is LOG-ONLY on testnet (`enforced` is false off pubnet, `src/policy.ts:111-112`), so there is **no 503** — the evidence is `[policy] settle would be refused on pubnet` carrying `wouldReject: "rate_limited_url"`, from an 11th settle for the same bound URL inside 60s. **Requires pulling the Render logs.** |
+
+#### Why the other two F12 triggers stay unit-tested
+
+Worked out rather than assumed, after the funding question exposed it. The seller
+serves exactly **one** path, so every stock-buyer settle canonicalizes to the same
+key and is bound after settle #1. Budgets are checked payTo-first, then per-URL:
+
+- `rate_limited_payto` trips at settle **51**, `rate_limited_url` at **11**. The
+  URL limit always fires first, so **the payTo limit is unreachable** with one
+  URL. Reaching it needs ≥5 distinct *bound* URLs under one payTo (5 × 10 = 60 ≥
+  51), and the seller has one path.
+- `unbound_pool_exhausted` needs 10+ settles where `bound=false` — resource URLs
+  *not* bound to the settling payTo. Every stock settle is for the seller's URL,
+  bound after the first.
+
+Both could be forced by fabricating resource URLs in the payload, but that means
+**a bespoke client**, and a control demonstrated only by bespoke tooling proves
+less than one demonstrated on the real path. They keep their unit tests, which
+are mutation-verified, and this is recorded as the reason rather than an
+omission.
+
+**One honest exception:** F11 Layer 1 and G-4 *do* need a modified buyer, because
+the stock client only echoes the seller's own challenge and cannot declare
+someone else's URL with its own payTo — which is precisely the attack. That
+mirrors the original F11 repro, which `docs/decisions.md` records as using "a
+throwaway copy of the spike payer". The attacker tooling is bespoke by necessity;
+the **facilitator side under test is the real deployed code**, which is what the
+evidence is about.
 
 ### Not observable on this deployment, and why
 
