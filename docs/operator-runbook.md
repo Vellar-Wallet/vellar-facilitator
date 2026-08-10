@@ -536,8 +536,37 @@ each one once, when it is first cataloged:
 
 ---
 
+## 7. Demonstrating F12 (the per-URL settle budget) — read this first
+
+**Do not write the test before reading this.** The obvious harness produces a
+result that looks like a pass and is not one.
+
+Twelve concurrent settles through one `SIM_SOURCE_ACCOUNT` gave **1 success and
+10 failures** during the 2026-08-10 walkthrough. That is the shape of a budget
+admitting a few and refusing the rest — and it was nothing of the kind. F12 is
+**log-only on testnet and cannot refuse anything**; all twelve shared one
+sequence number and eleven lost the race. Crediting the control for that would
+have been a fabricated pass.
+
+Requirements, in full, are in
+[`walkthrough-results.md` §W-2](./walkthrough-results.md). The short version:
+
+- **one funded classic source account per concurrent settler** — sharing one is
+  the entire trap;
+- **≥ 12 of them**, concurrent, inside 60s (sequential tops out at 6 per window
+  at the measured ~8s per settle, and can never reach the threshold);
+- **there is no enforce flag** — `policy.ts:112` keys enforcement off
+  `network === "stellar:pubnet"`. On testnet, assert on the structured log
+  `{ payTo, wouldReject }` (`server.ts:216`); for the actual 503, run a local
+  instance with `STELLAR_NETWORK=pubnet` against testnet RPC;
+- **assert on the response body, never on a success count.** A tripped budget is
+  `503 {error: "settlement_refused"}`. A sequence collision is a submission error
+  containing `tx_bad_seq`. They are indistinguishable by count alone.
+
 ## Related
 
+- `docs/walkthrough-results.md` — what was proven live on 2026-08-10, what was
+  not, and why; includes the F12 reproduction requirements above.
 - `docs/security-audit.md` — findings F1–F12 and G-1…G-9, with what each control
   does and does not do.
 - `render.yaml` — deployment posture, including the disk-attachment warning that
