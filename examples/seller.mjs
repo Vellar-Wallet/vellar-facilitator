@@ -40,6 +40,21 @@ const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://vellar-facilitat
 const PAYTO = "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH";
 const ASSET = "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR"; // X402TST bound token
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
+
+/**
+ * The address this merchant advertises as its own — the single source of truth
+ * for the 402 challenge, /whoami, and the boot log.
+ *
+ * D-3: the boot log used to print `http://localhost:${PORT}` as a HARDCODED
+ * string while the challenge correctly used PUBLIC_BASE_URL. It did not merely
+ * fail to reflect reality; it printed the precise symptom of the most serious
+ * defect in this repo (a seller advertising localhost, which makes F11 Layer 2
+ * decorative) on a service that was working correctly. Three consumers now read
+ * the same function, so they cannot disagree again.
+ */
+function publicBase() {
+  return process.env.PUBLIC_BASE_URL ?? `http://localhost:${PORT}`;
+}
 // PORT first: Render (and most PaaS) inject it and health-check that port, so
 // binding SELLER_PORT there would fail the deploy. SELLER_PORT still wins
 // locally when PORT is unset, so `docs/guide.md`'s walkthrough is unchanged.
@@ -167,8 +182,9 @@ function adapter(req) {
     // one the SSRF guard rejects as non-https before opening a socket. That is
     // why Layer 2 had never succeeded in production: not the network, this line.
     // PUBLIC_BASE_URL is how a deployed merchant declares its own address.
-    getUrl: () =>
-      `${process.env.PUBLIC_BASE_URL ?? `http://localhost:${PORT}`}${req.originalUrl}`,
+    // Via publicBase() so this can never drift from what /whoami and the boot
+    // log report — drift between exactly these is what produced D-3.
+    getUrl: () => `${publicBase()}${req.originalUrl}`,
     getAcceptHeader: () => req.get("accept") || "",
     getUserAgent: () => req.get("user-agent") || "",
     getQueryParams: () => req.query,
@@ -177,6 +193,40 @@ function adapter(req) {
 }
 
 const app = express();
+/**
+ * What this seller is ACTUALLY advertising, queryable in one unauthenticated GET.
+ *
+ * Same shape as the facilitator's /health commit field, and for the same reason:
+ * twice in one day the repo held a fix that the running service did not, and both
+ * times the only way to tell was to decode a 402 or read boot logs. Running state
+ * should be queryable, not inferred.
+ *
+ * Reports the values in USE — every field is read from the same source the 402
+ * challenge is built from, so this cannot agree with the code while disagreeing
+ * with reality. `resourceUrl` is the one that matters: if it is not public https,
+ * ownership verification can never pass and every catalog entry this seller
+ * creates is permanently unverified.
+ */
+app.get("/whoami", (_req, res) => {
+  const resourceUrl = `${publicBase()}/quote`;
+  res.json({
+    service: "vellar-seller-demo",
+    resourceUrl,
+    payTo: PAYTO,
+    asset: ASSET,
+    priceAtomic: PRICE_ATOMIC,
+    facilitatorUrl: FACILITATOR_URL,
+    // Which build is serving. Render injects RENDER_GIT_COMMIT; omitted rather
+    // than faked when absent, so a local run never claims to be a deployment.
+    ...(process.env.RENDER_GIT_COMMIT
+      ? { commit: process.env.RENDER_GIT_COMMIT.slice(0, 7) }
+      : {}),
+    // Decided here rather than by the reader: an ownership-verifiable resource
+    // URL must be public https. This is the per-settle precondition.
+    verifiable: resourceUrl.startsWith("https://") && !resourceUrl.includes("localhost"),
+  });
+});
+
 app.get("/quote", async (req, res) => {
   let result;
   try {
@@ -224,7 +274,15 @@ app.get("/quote", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.error(`[seller] paid API on http://localhost:${PORT}/quote`);
+  console.error(`[seller] paid API on ${publicBase()}/quote  (bound to port ${PORT})`);
+  if (!process.env.PUBLIC_BASE_URL) {
+    console.error(
+      "[seller] WARNING: PUBLIC_BASE_URL is unset, so this seller advertises localhost. " +
+        "A localhost resource URL can NEVER pass the facilitator's ownership verification " +
+        "(https-only, no loopback), so every entry it creates is permanently unverified. " +
+        "Fine locally; wrong anywhere deployed.",
+    );
+  }
   console.error(`[seller] facilitator: ${FACILITATOR_URL}`);
   console.error(`[seller] price: ${PRICE_ATOMIC} atomic of ${ASSET} -> ${PAYTO}`);
 });

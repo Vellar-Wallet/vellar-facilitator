@@ -533,6 +533,7 @@ Closed since this table was first written (kept here so the history is not lost)
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement. |
 | **D-1** | Seller had a hard boot dependency on the facilitator; the facilitator has none | **closed** — warm + bounded backoff in the seller. The dependency half (@x402/core retries 429 but not 502) is upstream and unfixed here. |
 | **D-2** | F7's rate limit sustained a crash loop it could not distinguish from an attack | **closed-by-doc** — the defence belongs in the dependent, not in a weaker limiter. |
+| **D-3** | Seller's boot log hardcoded `localhost`, imitating the exact symptom of F11 Layer 2 being decorative | **closed-by-test** — one `publicBase()` source of truth, plus `GET /whoami` making advertised state queryable. |
 | **G-3** | Spend policy keyed on the raw URL while the catalog keys on the canonical one | **closed-by-test** — found by red-teaming the F12 change before it merged. |
 | **G-4** | Settlement stats writable by anyone, against any entry | **closed-by-test** — gated on the bound owner; cross-entity forgery now impossible. |
 | **G-1** | Ownership verification lost on restart, served to agents as unverified | **closed-by-test** — re-verify on the bound owner's next settlement; settle-triggered only, cooldowns asserted in outbound fetches. |
