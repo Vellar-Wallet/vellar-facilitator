@@ -110,9 +110,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
   // would leave two names for one dimension — exactly how the shadowing arose.
   if (env.SETTLE_RATE_MAX !== undefined) {
     console.warn(
-      `[config] SETTLE_RATE_MAX is RETIRED and is being IGNORED (you set ${env.SETTLE_RATE_MAX}). ` +
-        `It was a second per-payTo budget that shadowed SETTLE_PER_PAYTO_MAX. Use SETTLE_PER_PAYTO_MAX ` +
-        `instead — note the effective per-payTo limit is now that value, not the one you set here.`,
+      `[config] SETTLE_RATE_MAX is RETIRED and is being IGNORED. You set ${env.SETTLE_RATE_MAX}; ` +
+        `the EFFECTIVE per-payTo limit is ${spend.perPayToMax} settles per ${spend.rateWindowMs}ms. ` +
+        `It was a second per-payTo budget over the same key and window, and being tighter it shadowed ` +
+        `SETTLE_PER_PAYTO_MAX so that budget never ran. Set SETTLE_PER_PAYTO_MAX=${env.SETTLE_RATE_MAX} ` +
+        `if you intended the old value, then remove SETTLE_RATE_MAX.`,
     );
   }
 
