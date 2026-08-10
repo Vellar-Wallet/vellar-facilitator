@@ -260,6 +260,52 @@ expected entries.
 
 ---
 
+### Sibling trap: `SPONSOR_HARD_FLOOR_STROOPS`, set by hand and never reverted
+
+Filed here deliberately, beside `CATALOG_OWNERSHIP_BOOTSTRAP`, because it is the
+**same shape of hazard** and will be encountered by someone who has forgotten
+both.
+
+Testing the balance guard (F3) means raising `SPONSOR_HARD_FLOOR_STROOPS` above
+the sponsor's actual balance so `/settle` refuses, then reverting. The trap:
+
+> **A variable set in the Render dashboard is NOT removed by a later blueprint
+> sync.** `render.yaml` does not declare `SPONSOR_HARD_FLOOR_STROOPS`, so nothing
+> reconciles it, nothing warns about it, and no deploy clears it. Left in place,
+> the facilitator refuses **every settlement, permanently**, with a perfectly
+> healthy `/health`.
+
+`CATALOG_OWNERSHIP_BOOTSTRAP` at least warns loudly on every boot while set. This
+one does not warn at all — it is strictly worse, and the only defence is the
+revert step.
+
+**Procedure:**
+
+1. Note the sponsor's balance first, in stroops:
+   ```sh
+   curl -sS "https://horizon-testnet.stellar.org/accounts/<SPONSOR_G...>" \
+     | python3 -c 'import json,sys; print(int(round(float([b["balance"] for b in json.load(sys.stdin)["balances"] if b["asset_type"]=="native"][0])*10_000_000)))'
+   ```
+2. Set `SPONSOR_HARD_FLOOR_STROOPS` to **balance + 10000000** (1 XLM of margin).
+3. **Wait up to 60 s after the redeploy** — the guard polls on
+   `SPONSOR_BALANCE_INTERVAL_MS` (60 000 ms), so a settle immediately after boot
+   can pass before the first poll and read as a failed test.
+4. Confirm the refusal:
+   ```
+   HTTP 503  {"error":"settlement_refused","reason":"sponsor_balance_low"}
+   [balance] settle refused: sponsor below hard floor
+   [balance] sponsor below HARD floor (<bal> < <floor> stroops) — /settle refused
+   ```
+5. **REVERT to `100000000` immediately** and confirm a settle succeeds again.
+   Do not defer this to the end of a session.
+
+**If you find settlements being refused and nobody knows why:** check this
+variable before anything else. `/health` looks entirely normal in this state —
+`status: ok`, no `catalogFrozen` — because the catalog is fine. It is settlement
+that is refused, and only the 503 body names the reason.
+
+---
+
 ## 3. "New resources stop being cataloged and the logs mention a tombstone cap"
 
 ### Symptom
