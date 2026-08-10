@@ -27,10 +27,18 @@ try {
 } catch {}
 
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://vellar-facilitator.onrender.com";
-// Demo merchant: trustlined to the X402TST bound token. Hard-defaulted so a
-// stale shell `PAYTO` can't make the seller serve a merchant with no trustline.
-const PAYTO = "GBDZH5KZSVX67MEWPTEMSOP6FBHKYX4GYOW4RRM4JENRC4XZF5UHTKOP";
-const ASSET = "CBIN4HTPJM2QLJ32DTRO6OCLIMM7TR7D74JDIPVQYLNYGL7SBWOXH5ND"; // X402TST bound token
+// Demo merchant. Hard-defaulted so a stale shell `PAYTO` cannot make the seller
+// serve a merchant with no trustline — the failure that motivated hardcoding.
+//
+// UPDATED 2026-08-10: the previous pair (CBIN4HTP… / GBDZH5KZ…) are DEAD — the
+// old issuer was burned during provisioning. A settle against them fails
+// on-chain, which is indistinguishable from a control refusing unless you check
+// Horizon. If you change these, redeploy vellar-seller-demo and re-run the live
+// ownership gate (docs/operator-runbook.md §4): the gate verifies the payTo the
+// challenge NAMES, so a stale 402 reads as a mismatch that looks like a
+// control failure.
+const PAYTO = "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH";
+const ASSET = "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR"; // X402TST bound token
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
 // PORT first: Render (and most PaaS) inject it and health-check that port, so
 // binding SELLER_PORT there would fail the deploy. SELLER_PORT still wins
