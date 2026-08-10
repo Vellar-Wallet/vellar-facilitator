@@ -24,6 +24,14 @@ const FETCH_TIMEOUT_MS = 3_000;
 /** A 402 challenge is tiny (the payload rides in headers); 64 KB is generous. */
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
+/** Documented limits, exported so their RATIONALE is assertable — see the
+ * "module constants" block in src/config.thresholds.test.ts. Read-only: this is
+ * not a runtime knob. */
+export const OWNERSHIP_LIMITS = Object.freeze({
+  fetchTimeoutMs: FETCH_TIMEOUT_MS,
+  maxResponseBytes: MAX_RESPONSE_BYTES,
+});
+
 export type OwnershipVerdict = "match" | "mismatch" | "unverifiable";
 
 interface LookupResult {
