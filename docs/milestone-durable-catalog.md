@@ -169,6 +169,15 @@ by definition unbound at settle time, so it is gated by the **unbound pool**
 | …per day at that rate | **~32.5 XLM/day** | ~184 XLM/day |
 | Time for a 10 XLM surplus above the hard floor to burn out | **~7.4 hours** | ~78 minutes |
 
+**"Nobody would bother" is no longer the argument.** At ~226 XLM total and
+~32.5 XLM/day it is an affordable nuisance, not a prohibitive one — and 7.4 hours
+of unattended burn from a 10 XLM surplus **spans a night**, so "the operator would
+notice" now means "the operator would notice in the morning". The argument that
+remains is narrower and should be stated as the only one it is: **the sponsor
+balance guard binds ~2 orders of magnitude tighter than the tombstone cap, and it
+is now the whole defence rather than one of two.** If the guard is disabled,
+mis-sized, or fails open on a stale read, nothing else is holding this.
+
 **The binding constraint is still the sponsor balance, not the tombstone cap** —
 `/settle` refuses below the 10 XLM hard floor, so the attack still self-terminates
 without operator action. But it now runs for **7.4 hours** rather than 78 minutes

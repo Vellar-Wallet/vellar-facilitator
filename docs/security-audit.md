@@ -394,6 +394,103 @@ the current deployment.
 
 ---
 
+## Provenance audit — which verdicts rest on a number that can be checked
+
+**Added 2026-08-10, prompted by G-8.** A figure already flagged *in this document*
+as unverifiable (127,808) was nonetheless carrying a security verdict in
+`milestone-durable-catalog.md`, and the flag did not stop it. The question is
+whether that was a one-off or a pattern, so every verdict, severity rating and
+"not a prerequisite" conclusion here was traced back to the number underneath it.
+
+**Answer: it was not a one-off, but it is also not systemic.** Twelve claims were
+traced. **Every verdict survives recomputation** — none reversed. What did not
+survive is the accuracy of four supporting numbers and one supporting sentence.
+
+### First: there are THREE different fee quantities, and conflating them is the
+### actual root cause
+
+This is the finding under the finding. "The fee" is three different numbers with
+three different consumers, and each threshold needs a *different* one:
+
+| Quantity | What it is | Who consumes it | Best evidence |
+| --- | --- | --- | --- |
+| **Charged fee** | what the network actually deducted | the sponsor's **balance**, therefore G-8 and the hard floor | **22,579** — Horizon `fee_charged`, four transactions |
+| **Bid / simulation-derived fee** | `minResourceFee + BASE_FEE`, computed before submission | **`MAX_TX_FEE_STROOPS`**, which compares against exactly this (`@x402/stellar/…/facilitator/index.js:487-489`) | **32,655** — two independent simulations, **no hash and none obtainable**: a bid that is never submitted leaves no chain record |
+| **Accounting estimate** | a constant, currently the fee ceiling itself (500,000) | **`SPEND_CEILING_STROOPS`** (`server.ts:344`, `policy.ts:196`) | not a measurement at all |
+
+**So "recompute everything against 22,579" is right for some thresholds and wrong
+for others.** `MAX_TX_FEE_STROOPS` gates the *bid*; re-sizing it against the
+charged fee would size a ceiling against a number that ceiling never sees. The
+charged fee is 31% *below* the bid — using it would silently tighten the ceiling
+by that much.
+
+And the 22,579-vs-32,655 gap is **not** a contradiction to resolve: a bid exceeds
+the charge whenever simulation over-reserves resources, which is normal. Both are
+correct. D-4's summary line calling 32,655 "the real figure" is the imprecise
+part, and it is corrected below.
+
+### The traced claims
+
+| # | Claim, and the verdict it carries | Rests on | Provenance | After recomputation |
+| --- | --- | --- | --- | --- |
+| **P-1** | `MAX_TX_FEE_STROOPS = 500,000` "sized from measured on-chain data" | 127,808 / 32,655 / 28,711 | **Mixed.** 127,808: **no hash, no provenance** — the D-4 class. 32,655: simulation ×2, no hash (and none possible). 28,711: tx `1da6f9e6…`, hash-carrying, but it is a *charged* fee and so the wrong quantity for this gate | **SURVIVES.** 500,000 ÷ 32,655 = **15.3× headroom** on the quantity actually gated. 127,808 should be struck, not re-cited |
+| **P-2** | `SPEND_CEILING_STROOPS = 5 XLM/60s` "is 100 settlements per window" | the 500,000 accounting estimate | **Not a measurement** — 50,000,000 ÷ 500,000 = 100, exact by construction | **SURVIVES EXACTLY.** Independent of every fee measurement |
+| **P-3** | F12: "ten bound URLs at 10/min is 100/min — the whole global ceiling" | P-2 | same | **SURVIVES EXACTLY**, and *because* it never touched a measured fee. This is the counter-example that keeps the pattern from being systemic |
+| **P-4** | "At the current default (1 XLM / 60s…) roughly **20 settlements per minute**" (§F12) | a superseded ceiling | **Stale by 5×** — the default is 5 XLM, i.e. 100/min. Not fee-derived; simply never updated | **CORRECTED below.** A live instance of the rot pattern this same document names |
+| **P-5** | `SPONSOR_HARD_FLOOR` (10 XLM) "MUST exceed one spend window's ceiling" | two *config* values | **No measurement involved**; enforced at boot, fatal on pubnet | **SURVIVES.** Structurally immune to this whole class of error |
+| **P-6** | Body limit 32 KiB, "largest envelope 3,400 b64 chars, ~9.6× margin" | 3,400 | **No hash.** And the wrong quantity: the limit applies to the **POST body**, not the envelope | **SURVIVES, now measured.** Real `/settle` body: **2,930 bytes** → **11.2× margin**. On-chain `envelope_xdr` is 1,852 b64 chars on all four settlements |
+| **P-7** | F3's `MAX_ENTRIES = 10,000`, from "~72 ms @10k, ~316 ms @50k, ~1.1 s @100k" | a local benchmark | **No corpus, no hardware recorded.** Re-run here: **21 / 111 / 179 ms** — up to **6× faster** | **SURVIVES** (documented figures are the conservative ones). But the benchmark is **not reproducible as an absolute** and should be labelled so |
+| **P-8** | F11 price "~1.5 XLM per payTo, ~15 XLM for ten" | Stellar base reserve | **Derivable, and now confirmed:** Horizon ledger 4,076,043 gives `base_reserve_in_stroops = 5,000,000` (0.5 XLM) → bare account 1.0, +1 trustline 1.5 | **SURVIVES, exact** |
+| **P-9** | F11 price: "Verification runs only at first bind… **It never re-runs.**" | not a number | **NOW FALSE** — G-1 (#5) added re-verify-on-settle | **Verdict survives, sentence does not.** `catalog.ts:567` returns `"skipped"` for an already-verified entry, so an attacker who binds *is* never re-challenged and can still drop the endpoint. Corrected below |
+| **P-10** | G-8 "not a prerequisite" | 127,808 | **No hash** — the original finding | **SURVIVES, margin 5.7× thinner.** Corrected in `milestone-durable-catalog.md` |
+| **P-11** | RA-13's "forged 9,999 settlements" | nothing | **Illustrative**, and no verdict rests on the magnitude | n/a |
+| **P-12** | "257 tests, typecheck clean" | test count | **Stale** — 278 passing, 3 skipped | cosmetic |
+
+### What the pattern actually is
+
+Not "unverified numbers everywhere". The three claims that carry the most weight —
+P-2, P-3, P-5 — are **immune**, because they compare a config value against
+another config value. The damage is concentrated where a threshold was justified
+by an *observation*, and the observation was recorded without the means to
+re-check it.
+
+Three habits follow, and they are cheap:
+
+1. **A cited measurement carries its source** — a transaction hash for chain data,
+   or the command that reproduces it for a benchmark. 22,579 has four hashes;
+   127,808 has nothing and can never be checked by anyone.
+2. **Name the quantity, not just the number.** Half the confusion here is that
+   "the fee" meant charged, bid and estimate in three different sentences.
+3. **When a number cannot carry a hash — as a never-submitted bid cannot — say so
+   at the point of use**, so the next reader does not go looking for one.
+
+### Corrections applied from this audit
+
+**P-4 — the stale ceiling.** The F12 section's "1 XLM / 60s… roughly 20
+settlements per minute" is superseded: the default is **5 XLM / 60s**, i.e.
+**~100 settlements per minute** at the 500,000-stroop estimate. The argument is
+unaffected — the point is that a *global* bucket is consumed regardless of who
+consumed it — but the figure was 5× low.
+
+**A consequence worth stating, since nobody had:** because the estimate (500,000)
+is **22× the measured charged fee (22,579)**, the ceiling trips after 100 settles
+having actually spent **~0.23 XLM of the 5 XLM the dial names — 4.5%**. It fails
+safe, and `server.ts:344` says over-counting is deliberate. But the dial does not
+mean what its name implies, and honest throughput is throttled ~22× earlier than
+sponsor exposure requires. That is a live tuning question for pubnet, not a bug.
+
+**P-9 — "it never re-runs".** G-1 added re-verification on the bound owner's next
+settlement. The **verdict is unchanged** — `catalog.ts:567` skips an entry that is
+already verified, so an attacker who completes a bind is never re-challenged and
+may still take the endpoint down. What G-1 recovers is verification *lost* to a
+restart, not verification an attacker already passed. The blanket sentence is
+withdrawn.
+
+**D-4's summary line** describing 32,655 as "the real figure" is imprecise: it is
+the **bid**, confirmed by two simulations and inherently hashless. The **charged**
+fee is 22,579, with four Horizon hashes. Both are real; they are different
+quantities.
+
 ## Policy values — UNREVIEWED against real traffic
 
 Every value below is a **placeholder**, chosen from reasoning rather than
@@ -773,9 +870,11 @@ The two spend controls are keyed on different, wrong things:
 
 A self-dealing attacker spreads across many addresses and many source IPs. Each
 individual bucket stays under its limit, but the **global** ceiling is consumed
-regardless of who consumed it. At the current default (1 XLM / 60s at a 500,000
-stroop estimate) that is roughly **20 settlements per minute for the entire
-service**. The attacker pays almost nothing — the transfer nets to zero for a
+regardless of who consumed it. At the current default (**5 XLM / 60s** at a
+500,000-stroop estimate) that is roughly **100 settlements per minute for the
+entire service**. *(Corrected 2026-08-10 — this read "1 XLM… 20 per minute", 5×
+low, against a ceiling that had already moved. See the provenance audit, P-4. The
+argument is unaffected; the figure was wrong.)* The attacker pays almost nothing — the transfer nets to zero for a
 self-dealer — while the merchants who get refused are the honest ones arriving
 after the bucket is empty.
 
@@ -806,8 +905,14 @@ order: a fairness mechanism, a one-time identity cost, and a last-resort floor.
 
 **Quantifying the F11 price**, since the whole design leans on it:
 
-- **Verification runs only at first bind** (`src/bazaar.ts`, `if (firstCatalog)`).
-  It never re-runs. The endpoint can be taken down the moment the bind completes.
+- **Verification is never re-run against an attacker who passed it.** It fires at
+  first bind (`src/bazaar.ts`, `if (firstCatalog)`), and G-1 later added a
+  re-verify on the bound owner's next settlement — but that path returns
+  `"skipped"` for an entry already carrying `verifiedOwner` (`catalog.ts:567`).
+  G-1 recovers verification *lost to a restart*; it does not re-challenge a
+  binding that succeeded. **The endpoint can still be taken down the moment the
+  bind completes.** *(Corrected 2026-08-10: this previously read "It never
+  re-runs", which G-1 made false. Provenance audit, P-9.)*
 - **A canonical URL is `origin + pathname`**, so ten *paths* on **one** domain are
   ten distinct bindable URLs — one host, one certificate.
 - Each distinct `payTo` costs a Stellar account minimum plus a trustline (~1.5
@@ -1264,7 +1369,9 @@ through the deployed facilitator and the six rows above are observed.
 ## What `main` is running today
 
 **Merged, as of 2026-08-10:** every finding above marked closed-by-test or
-closed-by-doc is on `main`. 257 tests, typecheck clean, CI gating each PR.
+closed-by-doc is on `main`. **278 tests passing, 3 skipped** (the skips are the
+opt-in live gate, `src/ownership.live.test.ts`), typecheck clean, CI gating each
+PR.
 
 **Deployed: unconfirmed from this repo.** `render.yaml` sets no `autoDeploy` key,
 so Render's default (deploy on push to the connected branch) applies — but which
