@@ -152,9 +152,22 @@ export async function assertPublicHttpsUrl(
  */
 export async function verifyResourceOwnership(
   resourceUrl: string,
-  settledPayTo: string,
+  settledPayTo: string | readonly string[],
   opts: VerifyOptions = {},
 ): Promise<OwnershipVerdict> {
+  // G-1: a resource may have more than one bound address — the operator rotation
+  // procedure (runbook §1) appends rather than replaces. Match if the challenge
+  // names ANY of them, in ONE fetch.
+  //
+  // An empty or all-blank claim set is UNVERIFIABLE, never "mismatch": asking
+  // "does this resource claim <nothing>?" has no answer, and the old single-arg
+  // form returned "mismatch" for undefined — reading a missing claim as a
+  // refuted one. bindLoadedEntry can produce exactly that (an entry with no
+  // accepts binds to nothing).
+  const claims = (Array.isArray(settledPayTo) ? settledPayTo : [settledPayTo as string]).filter(
+    (p): p is string => typeof p === "string" && p.length > 0,
+  );
+  if (claims.length === 0) return "unverifiable";
   // MUST be undici's own fetch, not the global one. The pinned dispatcher is an
   // undici@8 Agent; Node's global fetch is a DIFFERENT bundled undici (6.x on
   // Node 22, 7.x on Node 25) whose handler interface undici@8 rejects with
@@ -214,7 +227,7 @@ export async function verifyResourceOwnership(
         .filter((p): p is string => typeof p === "string" && p.length > 0),
     );
     if (payTos.size === 0) return "unverifiable";
-    return payTos.has(settledPayTo) ? "match" : "mismatch";
+    return claims.some((c) => payTos.has(c)) ? "match" : "mismatch";
   } catch {
     // Abort (timeout), network error, DNS failure — all degrade to unverifiable.
     return "unverifiable";
