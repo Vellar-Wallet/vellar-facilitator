@@ -459,6 +459,14 @@ services, projecting to ~53 h/month — 7% of the 750-hour pool.** The divisor
 arithmetic that preceded this was chasing a constraint that does not exist; see
 §3.4e, which is the more useful half of this story.
 
+**What draws hours, for whoever revisits this:** free **web** and **private
+services** consume instance-hours. **Static sites and managed Postgres consume
+none**, and paid services draw from their own plan rather than the free pool — so
+the number of things in the dashboard is not the number that matters. Hours are
+also consumed by *running time*, not by a service existing: anything idle spins
+down after 15 minutes and stops accruing, which is why the nine services here
+total ~1.8 h/day between them.
+
 ### What it costs
 
 | Window (daily) | This service | + others (~53 h) | Share of pool | Margin |
@@ -510,6 +518,11 @@ afternoons and a two-hour European lunch.
 **A is in force only because it was chosen before anyone asked where the traffic
 comes from.** If the first real evaluators are in Asia-Pacific, B or C is
 strictly better and the change is one line.
+
+**Record the measurement beside the cron whenever it changes.** Whether it is a
+Billing reading or a divisor, the number that makes a window safe is invisible
+from the workflow file, and nobody will re-derive it — they will either assume it
+is fine or leave it alone for fear that it is not.
 
 ### What a developer experiences
 
