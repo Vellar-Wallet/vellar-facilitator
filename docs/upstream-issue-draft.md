@@ -101,9 +101,54 @@ meaning. A distinct `errorReason` per status would also work and would be more
 expressive, but it is a behaviour change for anyone matching on the current
 string, so the additive form seems the safer proposal.
 
-The same pattern appears in the `pollForTransaction` failure path immediately
-below, which discards `getTransaction`'s result in the same way; worth the same
-treatment, though we have not measured that one.
+### The same pattern, one call later — flagging, not claiming
+
+We went looking for a second instance after finding the first, and there is one
+immediately below. We have **not** measured this path; the code is quoted rather
+than characterised, and the consequence below follows from reading it.
+
+```js
+async pollForTransaction(server, txHash, maxPollAttempts = 15, delayMs = 1e3) {
+  for (let i = 0; i < maxPollAttempts; i++) {
+    try {
+      const txResult = await server.getTransaction(txHash);
+      if (txResult.status === "SUCCESS") return { success: true };
+      else if (txResult.status === "FAILED") return { success: false };
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    } catch (error) { /* … */ }
+  }
+  return { success: false };          // poll exhausted
+}
+```
+
+It returns a bare boolean, so `txResult.resultXdr` — the on-chain reason a
+transaction reverted — is dropped. The sharper part is that **two different
+outcomes both become `{ success: false }`**, and `settle` renders both as
+`settle_exact_stellar_transaction_failed`:
+
+1. **`status === "FAILED"`** — included in a ledger and reverted. Terminal, and
+   the reason is in `resultXdr`.
+2. **Poll exhaustion** — polling stopped after `maxPollAttempts`. The transaction
+   may still be pending and may still succeed. That is not a failure, it is an
+   unknown.
+
+Those want opposite handling, and unlike the submission case this one has a
+money-safety edge: `transaction` is populated with the hash, so a caller that
+treats a timeout as terminal and re-pays may pay twice if the original lands.
+Distinguishing them needs only the status, or a distinct `errorReason` for
+exhaustion.
+
+We raise it because it is the same habit rather than the same line —
+information the RPC supplied, discarded before a caller can act on it. **We have
+not observed this happening and are not claiming a rate for it.**
+
+### We are happy to send the PR
+
+The submission-path change is roughly four lines, additive, with no behaviour
+change for existing consumers — `errorReason` keeps its current value. Say the
+word and we will open it against `main`, with a test if you want one. We are
+equally happy for you to take the suggestion and write it yourselves; the goal is
+the information reaching callers, not the authorship.
 
 ### Environment
 
@@ -134,4 +179,12 @@ which is why we would rather the information simply be returned.
 - **Rate framing.** "Roughly one in three" is described as our deployment's
   experience, not as a property of the network. The local reproduction was 10/17,
   and quoting either as a measurement of the RPC would overreach.
-- **If they ask for a PR:** the change is ~4 lines and we can offer one.
+- **The PR is offered in the body**, not held back for them to ask, and worded to
+  be indifferent to authorship so it does not read as a claim on the fix.
+- **The second instance is framed as a habit, not a second bug report.** It makes
+  the issue about a pattern — information the RPC supplied, discarded before a
+  caller can act — which is more useful to a maintainer than one line number. The
+  code is quoted verbatim so they can judge it themselves.
+- **The strongest point in the report is the one we have measured least.** The
+  poll-exhaustion double-pay risk is derived from reading the code, not observed.
+  That asymmetry is stated in the issue rather than smoothed over.
