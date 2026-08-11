@@ -1,0 +1,16 @@
+[
+  {
+    "label": "total not adjusted after verified_only (the bug)",
+    "file": "src/server.ts",
+    "find": "        pagination: { ...response.pagination, total: Math.max(0, response.pagination.total - dropped) },",
+    "replace": "        pagination: response.pagination,",
+    "test": "src/server.pagination.test.ts"
+  },
+  {
+    "label": "reduction applied unconditionally (under-reports normal paging)",
+    "file": "src/server.ts",
+    "find": "    if (q.verified_only === \"true\") {\n      const before = items.length;",
+    "replace": "    if (true) {\n      const before = items.length;",
+    "test": "src/server.pagination.test.ts"
+  }
+]
