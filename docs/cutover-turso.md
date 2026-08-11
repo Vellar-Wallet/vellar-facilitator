@@ -198,10 +198,65 @@ is right: 6 of the 7 are still inherited.
 | **RA-9** verified flag not trusted from storage | unit tests only | **OBSERVED** — `ownerVerified: false` after load |
 | **F12** per-URL budget | NOT REACHABLE (needs 11 settles/60 s) | unchanged — still needs several funded source accounts |
 
+## 6b. Displacement, PROVEN LIVE — 2026-08-11T09:57–09:59Z
+
+The recovery path, end to end, on the deployed service. No operator touched
+anything.
+
+**Setup, stated as setup.** Displacement needs a binding that was never proven,
+and it needed no hand-clearing to get one — for two reasons worth recording
+separately from the result:
+
+- The live `/quote` binding reads `ownerVerified: false` **on its own**. It was
+  verified before displacement shipped, so its `ownership.verified_at` was never
+  written and the migration added the column as NULL. **Every binding proven
+  before #31 loads as displaceable until its owner settles once more.** That is
+  a real one-time window, and it is safe only because displacement requires
+  *proof* — the sole party who can take such a binding is whoever actually
+  controls the endpoint.
+- The test ran against `…/quote/` (trailing slash), a **genuinely distinct
+  canonical key that the seller genuinely serves** — its 402 names the URL with
+  the slash and names A's payTo. Unbound, so B could take it honestly.
+
+| | |
+| --- | --- |
+| **B squats `/quote/`** | `a4c0bfc5…` — Horizon `successful=True`, fee 22,579, sponsor-paid |
+| Catalog after | `accepts: ['GB74DDOZ…']`, `settlements: 1`, `ownerVerified: false` |
+| **A settles through its own seller** | `66e095d5…` — Horizon `successful=True`, fee 22,579 |
+| Catalog after | `accepts: ['GBJX3E4G…']`, `settlements: 0`, `ownerVerified: TRUE` |
+
+**Three things happened, all automatically:**
+
+1. **`accepts` flipped from the squatter to the real owner.** The same URL that
+   on 2026-08-11 stayed on `GB74DDOZ…` through A's own payment now returns to A
+   on that same payment.
+2. **The stats did not transfer.** B's settlement count went `1 → 0`. The real
+   owner inherited none of the squatter's activity.
+3. **It is now non-displaceable.** `ownerVerified: true` means the durable latch
+   is set, so no future claimant — including B — can take it, whatever they can
+   prove.
+
+The comparison that matters is with the same test four hours earlier, when the
+answer was "the real owner is locked out and its own payment does not correct
+it."
+
+### A gap this surfaced
+
+`…/quote` and `…/quote/` are **separately bindable**. The canonical key is
+`origin + pathname` and does not normalise a trailing slash, so one resource has
+two catalog identities and a squatter can hold the variant its owner never
+settled against. Not exploited here — it was the honest way to get an unbound URL
+— but it is a real hole of the same family as G-3, and it should be **G-11**.
+
 ## 7. The cost is now real
 
-A squat on a bound URL no longer clears itself. The binding above survived a
-container replacement, which is precisely what makes the recovery manual:
-[`operator-runbook.md` §1](./operator-runbook.md), by hand, until the
-displacement variant ships. That is the trade that was accepted, and it is now in
-force rather than pending.
+A squat on a bound URL no longer clears itself. The binding survived a container
+replacement, which is precisely what made recovery manual.
+
+**As of 2026-08-11 that is only half true.** Displacement (§6b) recovers the
+*unverified* case automatically — which is every squat, since a squatter cannot
+serve a 402 naming themselves from a domain they do not control. What remains
+manual is rotating a payTo on a **verified** binding, where proof does not
+displace proof and a domain that genuinely changed hands is indistinguishable
+from a hijack. [`operator-runbook.md` §1](./operator-runbook.md) now opens by
+telling the operator which case they have.
