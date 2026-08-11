@@ -29,6 +29,16 @@ This is **G-2**: a resource URL's `payTo` is bound on first use.
 > | `ownerVerified: false` on the entry | The binding was **never proven**. The rightful owner takes it back **automatically** by settling once, provided their endpoint's own 402 challenge names their address. | **Nothing.** Tell them to settle once and re-check. See below for why it may not have happened yet. |
 > | `ownerVerified: true` | The binding **was proven** by the address currently bound. Displacement will not touch it — deliberately, because proof does not displace proof. | **This procedure.** |
 >
+> **G-12 — an unexpected displacement on an OLD binding is expected, once.**
+> `ownership.verified_at` arrived with displacement and back-fills as NULL, so
+> **every binding proven before that deploy reads as unverified until its owner
+> settles once more.** During that window the entry is displaceable, which means
+> the 2C takeover case is briefly open for it — a party who genuinely controls
+> the endpoint can take it without you. Safe in practice (displacement still
+> requires proof), self-closing as owners settle, and not something to act on.
+> If you are reading this because a long-standing binding changed hands on its
+> own, that is the reason.
+>
 > **The distinction is proof, not identity.** An unverified binding is arrival
 > order — whoever settled first — which is evidence of nothing, so a claimant who
 > can prove ownership outranks it. A verified binding is evidence, and a domain

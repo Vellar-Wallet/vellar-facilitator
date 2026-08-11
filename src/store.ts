@@ -48,6 +48,9 @@ export interface StoredOwnership {
   /** Canonical resource key: origin + pathname, no query (G-3). */
   resourceKey: string;
   boundPayTo: string[];
+  /** Earliest bound_at across this key's rows — the TOFU winner's timestamp.
+   *  Used only to break ties when two stored keys normalise to the same one. */
+  boundAt?: number;
   /** True when ANY row for this key carries a verified_at. Gates displacement
    *  only; never served, and never the source of the `ownerVerified` badge. */
   everVerified?: boolean;
@@ -280,7 +283,7 @@ export class LibsqlCatalogStore implements CatalogStore {
   async loadOwnership(): Promise<StoredOwnership[]> {
     const res = await this.run(() =>
       this.client.execute(
-        "SELECT resource_key, pay_to, verified_at FROM ownership ORDER BY resource_key, bound_at, rowid",
+        "SELECT resource_key, pay_to, bound_at, verified_at FROM ownership ORDER BY resource_key, bound_at, rowid",
       ),
     );
     // Grouped, ORDER preserved: boundPayTo[0] is the TOFU winner and is treated
@@ -288,6 +291,7 @@ export class LibsqlCatalogStore implements CatalogStore {
     // silently hand ownership to an operator-added address.
     const byKey = new Map<string, string[]>();
     const verified = new Set<string>();
+    const boundAt = new Map<string, number>();
     for (const r of res.rows) {
       const key = r.resource_key;
       const payTo = r.pay_to;
@@ -299,6 +303,9 @@ export class LibsqlCatalogStore implements CatalogStore {
       const list = byKey.get(key);
       if (list) list.push(payTo);
       else byKey.set(key, [payTo]);
+      const at = Number(r.bound_at ?? 0);
+      const prev = boundAt.get(key);
+      if (prev === undefined || at < prev) boundAt.set(key, at);
       // ANY verified row makes the whole binding non-displaceable. A URL whose
       // owner was proven and who then had a second address added by the runbook
       // §1 rotation must not become displaceable because the newer row carries
@@ -308,6 +315,7 @@ export class LibsqlCatalogStore implements CatalogStore {
     return [...byKey.entries()].map(([resourceKey, boundPayTo]) => ({
       resourceKey,
       boundPayTo,
+      boundAt: boundAt.get(resourceKey) ?? 0,
       everVerified: verified.has(resourceKey),
     }));
   }

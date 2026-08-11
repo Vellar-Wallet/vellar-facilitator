@@ -201,7 +201,7 @@ describe("the ownership rows — neither an UPDATE nor an append", () => {
     await catalog.tryDisplace(URL_V, A, reqs(A), disc(), endpointNaming(A).fn);
 
     const rows = await readOwnership(url);
-    expect(rows, "exactly one binding, and it is the proven one").toEqual([
+    expect(rows, "exactly one binding, and it is the proven one").toMatchObject([
       { resourceKey: URL_V, boundPayTo: [A], everVerified: true },
     ]);
   });

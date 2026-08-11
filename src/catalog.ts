@@ -46,6 +46,72 @@ const MAX_TOMBSTONES = 100_000;
 const REVERIFY_COOLDOWN_MISMATCH_MS = 24 * 60 * 60 * 1000;
 const REVERIFY_COOLDOWN_UNVERIFIABLE_MS = 15 * 60 * 1000;
 
+/**
+ * G-11 — path normalisation for the canonical key.
+ *
+ * THE PROBLEM. Two spellings of one resource are two catalog identities, and a
+ * squatter only has to take the spelling its owner never settled against. Found
+ * live on 2026-08-11: `…/quote` and `…/quote/` were separately bindable, and the
+ * seller served a 402 at both. G-3 fixed the query-string instance of this; this
+ * is the rest of the family.
+ *
+ * WHAT `new URL()` ALREADY DOES, measured rather than assumed — scheme case,
+ * host case, default port (`:443` dropped), IDN → punycode, dot segments
+ * (`/a/../b` → `/b`), userinfo, and the fragment. None of that is repeated here.
+ *
+ * WHAT THIS ADDS:
+ *   1. trailing slash stripped (except root)   `/quote/`   -> `/quote`
+ *   2. duplicate slashes collapsed             `//quote`   -> `/quote`
+ *   3. percent-escapes uppercased              `%2f`       -> `%2F`
+ *   4. unreserved escapes decoded              `/qu%6Fte`  -> `/quote`
+ *
+ * (3) and (4) are RFC 3986 §6.2.2 syntax-based normalisation: those spellings
+ * are *defined* to be equivalent, so treating them as one key is not a policy
+ * choice.
+ *
+ * (1) IS a policy choice, and a deliberate deviation. RFC 3986 says `/a` and
+ * `/a/` are different resources. We merge them anyway, because the two failure
+ * modes are not symmetric:
+ *
+ *   - Not merging lets a STRANGER hold the variant of someone else's URL. That
+ *     is cross-party, and it is what was found live.
+ *   - Merging can collide two genuinely distinct resources — but only within a
+ *     single origin, so only ever a merchant colliding with themselves.
+ *
+ * A cross-party squat is worse than an intra-origin collision, and the second is
+ * something one operator can fix in their own routing.
+ *
+ * THE COST, since it is not free: the canonical key is also the URL Layer 2
+ * fetches. A server that serves ONLY `…/quote/` and 404s on `…/quote` becomes
+ * unverifiable. `/health` reports `unverifiableEntries` for exactly this and
+ * runbook §6 covers it — visible, not silent.
+ *
+ * WHAT IS DELIBERATELY *NOT* NORMALISED, because over-normalising merges
+ * distinct resources and that is the same bug pointing the other way:
+ *   - PATH CASE. Servers are case-sensitive; `/Quote` and `/quote` can be
+ *     different endpoints. Merging them would let one merchant's binding cover
+ *     another's URL.
+ *   - INDEX FILES. `/docs/` and `/docs/index.html` are the same only on servers
+ *     configured that way. We cannot know from here.
+ *   - `www.` vs apex, and http vs https. Genuinely different origins — and http
+ *     can never verify anyway (the SSRF guard rejects it before the socket).
+ */
+const UNRESERVED = /^[A-Za-z0-9\-._~]$/;
+
+export function normalizePath(pathname: string): string {
+  // Percent-escapes: uppercase the hex, then decode the ones RFC 3986 says are
+  // equivalent to their literal character. Decoding is limited to UNRESERVED —
+  // decoding a reserved octet such as %2F would invent a path separator and turn
+  // one segment into two.
+  let out = pathname.replace(/%([0-9a-fA-F]{2})/g, (whole, hex: string) => {
+    const ch = String.fromCharCode(parseInt(hex, 16));
+    return UNRESERVED.test(ch) ? ch : `%${hex.toUpperCase()}`;
+  });
+  out = out.replace(/\/{2,}/g, "/");
+  if (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
+  return out === "" ? "/" : out;
+}
+
 function cooldownFor(verdict: OwnershipVerdict): number {
   return verdict === "mismatch" ? REVERIFY_COOLDOWN_MISMATCH_MS : REVERIFY_COOLDOWN_UNVERIFIABLE_MS;
 }
@@ -434,6 +500,9 @@ export class BazaarCatalog {
    * make eviction a downgrade primitive.
    */
   private readonly everVerified = new Set<string>();
+  /** bound_at per key as loaded, used only to break ties when two stored keys
+   *  normalise onto the same one. Not consulted after load. */
+  private readonly loadedBoundAt = new Map<string, number>();
   /**
    * Displacement cooldowns, keyed by (url, payTo) rather than url.
    *
@@ -495,9 +564,50 @@ export class BazaarCatalog {
       );
       return catalog; // empty + frozen
     }
+    // RE-CANONICALISE ON LOAD. The stored `resource_key` is whatever the
+    // canonicaliser produced when the row was written, and that function has now
+    // changed twice (G-3 stripped the query string, G-11 the rest of the family).
+    // A row written under an older scheme would otherwise keep a key nothing can
+    // ever produce again — and the danger is not that it looks empty, it is that
+    // the key it collapses TO may be unbound, leaving a real merchant's URL
+    // claimable by the next settler.
+    //
+    // Doing it here rather than as a one-off SQL migration means the same is true
+    // for the NEXT change to the function: there is no version to remember.
     for (const b of bindings) {
-      catalog.ownership.set(b.resourceKey, b.boundPayTo);
-      if (b.everVerified) catalog.everVerified.add(b.resourceKey);
+      const key = BazaarCatalog.canonicalResourceKey(b.resourceKey);
+      const existing = catalog.ownership.get(key);
+      if (!existing) {
+        catalog.ownership.set(key, b.boundPayTo);
+        catalog.loadedBoundAt.set(key, b.boundAt ?? 0);
+        if (b.everVerified) catalog.everVerified.add(key);
+        continue;
+      }
+      // Two stored keys collapsed onto one. Pick a winner — NEVER union the
+      // payTos, which would hand a squatter a claim on the survivor's key.
+      //
+      //   1. proof wins. Never downgrade a binding that was verified.
+      //   2. then the row already stored under the canonical spelling.
+      //   3. then the earliest bound_at — the TOFU winner under the old scheme.
+      const incomingVerified = b.everVerified === true;
+      const existingVerified = catalog.everVerified.has(key);
+      const incomingWins =
+        incomingVerified !== existingVerified
+          ? incomingVerified
+          : b.resourceKey === key
+            ? true
+            : (b.boundAt ?? 0) < (catalog.loadedBoundAt.get(key) ?? 0);
+      console.warn(
+        `[catalog] load: "${b.resourceKey}" normalises to "${key}", which is already bound. Keeping ` +
+          `${incomingWins ? b.boundPayTo.join(",") : (existing ?? []).join(",")} ` +
+          `(${incomingVerified || existingVerified ? "verified binding wins" : "earliest/canonical wins"}). ` +
+          `The other binding is DROPPED — it was a second spelling of one resource (G-11).`,
+      );
+      if (incomingWins) {
+        catalog.ownership.set(key, b.boundPayTo);
+        catalog.loadedBoundAt.set(key, b.boundAt ?? 0);
+      }
+      if (incomingVerified || existingVerified) catalog.everVerified.add(key);
     }
     await catalog.load(opts.maxEntries ?? MAX_ENTRIES);
     return catalog;
@@ -526,7 +636,7 @@ export class BazaarCatalog {
    * A settlement whose payTo is not bound may not append accepts or overwrite
    * metadata for that URL. */
   isBound(resourceUrl: string, payTo: string): boolean {
-    return this.entries.get(resourceUrl)?.boundPayTo.includes(payTo) ?? false;
+    return this.entries.get(BazaarCatalog.canonicalResourceKey(resourceUrl))?.boundPayTo.includes(payTo) ?? false;
   }
 
   /**
@@ -545,7 +655,7 @@ export class BazaarCatalog {
   static canonicalResourceKey(rawUrl: string): string {
     try {
       const u = new URL(rawUrl);
-      return `${u.origin}${u.pathname}`;
+      return `${u.origin}${normalizePath(u.pathname)}`;
     } catch {
       return rawUrl;
     }
@@ -648,7 +758,7 @@ export class BazaarCatalog {
    * (Fix 0 Layer 2). Consumers should treat an entry's accepts as authoritative
    * only when this is true. */
   isVerifiedOwner(resourceUrl: string): boolean {
-    return this.entries.get(resourceUrl)?.verifiedOwner ?? false;
+    return this.entries.get(BazaarCatalog.canonicalResourceKey(resourceUrl))?.verifiedOwner ?? false;
   }
 
   /** TEST ONLY — drop an entry the way evictToCap does, keeping ownership. The
@@ -799,7 +909,7 @@ export class BazaarCatalog {
    * bound owner verified; `mismatch`/`unverifiable` leave it unverified. No-op
    * if the entry vanished (e.g. restart) between settle and verification. */
   setVerifiedOwner(resourceUrl: string, verified: boolean): void {
-    const entry = this.entries.get(resourceUrl);
+    const entry = this.entries.get(BazaarCatalog.canonicalResourceKey(resourceUrl));
     if (!entry) return;
     if (entry.verifiedOwner === verified) return;
     entry.verifiedOwner = verified;
@@ -824,7 +934,14 @@ export class BazaarCatalog {
     discovered: DiscoveredResource,
     requirements: PaymentRequirements,
   ): Promise<boolean> {
-    const key = discovered.resourceUrl;
+    // CANONICAL, not raw. This line keyed the entry map on the merchant's
+    // ADVERTISED spelling while recordSettlement, isBoundResource and the spend
+    // policy all keyed on the canonical form — so they agreed only while the two
+    // happened to be identical, which is exactly what the demo seller made true
+    // by reporting one stable URL. G-3 fixed the policy side of that split and
+    // this side was left behind; G-11 is what surfaced it, because a second
+    // spelling is precisely when raw and canonical diverge.
+    const key = BazaarCatalog.canonicalResourceKey(discovered.resourceUrl);
     const existing = this.entries.get(key);
 
     // F3: an evicted entry leaves its ownership tombstone behind, so a URL that
@@ -1110,7 +1227,15 @@ export class BazaarCatalog {
         boundPayTo: [],
         verifiedOwner: false,
       };
-      this.entries.set(stored.resource.resource, this.bindLoadedEntry(stored));
+      // Keyed by the CANONICAL form, for the same reason as ownership above: the
+      // stored `resource.resource` is the merchant's advertised spelling, and
+      // two spellings must not become two entries. On collision the newer
+      // lastUpdated wins — entries are reconstructible, so this only decides
+      // which stale copy is served until the next settlement.
+      const entryKey = BazaarCatalog.canonicalResourceKey(stored.resource.resource);
+      const prior = this.entries.get(entryKey);
+      if (prior && prior.resource.lastUpdated >= stored.resource.lastUpdated) continue;
+      this.entries.set(entryKey, this.bindLoadedEntry(stored, entryKey));
     }
   }
 
@@ -1122,7 +1247,7 @@ export class BazaarCatalog {
    * served as authoritative. `boundPayTo` is re-derived from the surviving
    * accepts, never trusted from the file.
    */
-  private bindLoadedEntry(stored: StoredEntry): StoredEntry {
+  private bindLoadedEntry(stored: StoredEntry, key = stored.resource.resource): StoredEntry {
     const accepts = stored.resource.accepts ?? [];
     // G-5 CLOSES HERE. The owner comes from the OWNERSHIP TABLE, never from the
     // entry. The old code took `accepts[0].payTo` and seeded a binding from it,
@@ -1132,7 +1257,7 @@ export class BazaarCatalog {
     // no longer exists: an entry with no binding is now dropped, because a row
     // in `entry` without a row in `ownership` cannot be produced by
     // bindAndUpsertEntry and therefore means the data was tampered with.
-    const authoritative = this.ownership.get(stored.resource.resource);
+    const authoritative = this.ownership.get(key);
     if (!authoritative || authoritative.length === 0) {
       console.warn(
         `[catalog] load: dropped ${stored.resource.resource} — it has an entry but NO ownership row. ` +
