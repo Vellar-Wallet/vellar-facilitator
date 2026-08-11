@@ -177,6 +177,12 @@ cp .env.example .env   # set SPONSOR_SECRET_KEY (funded testnet account)
 npm run dev            # http://localhost:4100
 ```
 
+One-time setup, if you will be pushing branches:
+
+```sh
+git config core.hooksPath .githooks   # refuses pushes to a merged PR's branch
+```
+
 Tests and typecheck:
 
 ```sh

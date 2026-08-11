@@ -63,6 +63,7 @@ function verify(pr) {
   const meta = gh(["pr", "view", String(pr), "--json", "state,mergedAt,baseRefName,headRefName,headRefOid,mergeCommit,title"]);
   const problems = [];
   const notes = [];
+  let branchTipSeen = false;
 
   if (meta.state !== "MERGED") problems.push(`state is ${meta.state}, not MERGED`);
 
@@ -102,6 +103,7 @@ function verify(pr) {
     }
     if (branchTip) {
       const tipMs = Date.parse(branchTip.split(" ")[0]);
+      branchTipSeen = true;
       if (Number.isFinite(tipMs) && tipMs > mergedAtMs + 60_000) {
         problems.push(
           `branch "${meta.headRefName}" has commits AFTER the merge (${branchTip.slice(0, 60)}…) — ` +
@@ -161,7 +163,7 @@ function verify(pr) {
   }
   if (filesChecked === 0) notes.push("no substantive additions to verify (deletions/renames only)");
 
-  return { pr, title: meta.title, problems, notes };
+  return { pr, title: meta.title, problems, notes, branchChecked: Boolean(branchTipSeen) };
 }
 
 const selftest = process.argv.includes("--selftest");
@@ -176,7 +178,14 @@ for (const pr of prs) {
   const r = verify(pr);
   const ok = r.problems.length === 0;
   if (!ok) failed++;
+  // State the QUESTION, not just the verdict. "Is what was merged on main?" and
+  // "is everything I wrote on main?" have the same answer almost always, and
+  // diverge exactly when commits land on a closed PR's branch — which is how a
+  // truthful LANDED once covered two-thirds of a PR being missing. A correct
+  // answer to the wrong question is harder to catch than a wrong one, because
+  // there is nothing to disbelieve.
   console.log(`\n  ${ok ? "LANDED" : "NOT LANDED"}  #${r.pr}  ${r.title.slice(0, 62)}`);
+  console.log(`            ? checked: the MERGED diff is on main${r.branchChecked ? ", and the branch has nothing newer" : " (branch gone — nothing newer to check)"}`);
   for (const n of r.notes) console.log(`            · ${n}`);
   for (const p of r.problems) console.log(`      FAIL  ${p}`);
 }

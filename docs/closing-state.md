@@ -293,12 +293,26 @@ not to *"leave it on"*.
 `verify-merged.mjs` reported **LANDED** for #45 while `src/rpcstatus.ts`, its
 tests and the upstream draft were absent from `main`.
 
-**The tool was not wrong.** `gh pr diff` returns what was *merged*, so it answered
-*"is what was merged on main?"* — truthfully. The question actually being asked
-was *"is everything I wrote on main?"*, and those diverged because **I pushed two
-commits to the branch seven minutes after the PR was squash-merged and closed.**
-GitHub does not reopen or re-diff a merged PR, so those commits belonged to no PR
-and landed nowhere.
+**The tool was not wrong, and that is the whole finding.** `gh pr diff` returns
+what was *merged*, so it answered *"is what was merged on main?"* — truthfully.
+The question actually being asked was *"is everything I wrote on main?"*.
+
+Those two questions have the same answer almost always, and diverge in exactly
+one situation: **commits landing on a closed PR's branch.** I pushed two, seven
+minutes after #45 was squash-merged. GitHub does not reopen or re-diff a merged
+PR, so they belonged to no PR and landed nowhere.
+
+**A correct answer to the wrong question is harder to catch than a wrong answer,
+because there is nothing to disbelieve.** A wrong answer contradicts something —
+a count, an expectation, another tool. A right answer to a question you did not
+ask agrees with everything, and the only signal is the gap between what you meant
+and what you typed, which nothing in the output can show you. `LANDED` was
+accurate, printed confidently, and useless for the thing being checked.
+
+The generalisation, which is worth more than the fix: **a verification tool
+should state the question it answers, not just the verdict.** `verify-merged.mjs`
+now prints what it checked when the branch still exists, so "what was merged" and
+"what is on the branch" cannot be silently conflated again.
 
 Two errors, both mine: pushing to a merged PR's branch without checking it was
 still open (my own commit message said *"pushed onto #45"* — assumed, not
@@ -311,16 +325,60 @@ hygiene rather than a squash quirk.
 **Fixed structurally.** The verifier now fails when the head branch has commits
 newer than the merge. Two things went wrong while adding it, both worth keeping:
 
-- **The new check silently did nothing at first**, because `headRefName` was not
-  in the fields requested from `gh` — so the branch lookup threw, the `catch`
-  swallowed it, and the check passed everything. *A check written to catch silent
-  passes, silently passing.* It now distinguishes "branch deleted" (healthy) from
-  "could not determine the branch" (reported as unverified).
+- **THE SHARPEST INSTANCE OF THIS ENTIRE PATTERN, and it belongs on the record as
+  such: a check written to catch silent passes, silently passed.** `headRefName`
+  was not among the fields requested from `gh`, so the branch lookup threw on
+  `origin/undefined`, the `catch` swallowed it as "branch deleted, healthy", and
+  every PR sailed through. The mechanism, the failure mode and the blind spot
+  were identical to the defect it existed to prevent — written by someone who had
+  spent two days cataloguing that exact shape, in the tool built to stop it, on
+  the same afternoon. It now distinguishes "branch deleted" (healthy) from "could
+  not determine the branch" (reported as unverified), because those are different
+  answers and a bare `catch` made them one.
 - **It then produced a false positive on #43**, whose one distinctive line in
   `docs/using-it.md` had been legitimately rewritten by #45. "None present" is
   only evidence when there were enough candidate lines to mean something; below
   three it is now a note, not a failure. **A verifier that cries wolf gets
   ignored, which returns it to useless.**
+
+### 3.4g The same mistake three times, with the lesson written down in front of me
+
+Content failed to land **seven** times in this engagement. Three of them were the
+identical act: **pushing commits to a branch whose PR had already been
+squash-merged and closed.**
+
+The third occurrence is the one worth recording. By then:
+
+- the tool to detect it existed (`verify-merged.mjs`, with the post-merge-commit
+  check added an hour earlier),
+- §3.4f described the exact failure, written by me that afternoon,
+- and the push happened anyway — **with a message announcing that the PR state
+  had been verified first.** It was checked *after* the push. The claim was in
+  the output before the fact was true.
+
+**Twice is a mistake. Three times, holding the lesson, is a process that does not
+work.** Knowing about a failure mode is not a defence against it; the two
+occasions I caught it, I caught it by accident afterwards, not by remembering.
+
+So it stopped being something to remember. `.githooks/pre-push` refuses to push
+to a branch whose PR is `MERGED` or `CLOSED`, prints the recovery steps, and is
+bypassable with `--no-verify` for the case where you mean it. Install with
+`git config core.hooksPath .githooks`.
+
+Two deliberate choices in it, both from this register:
+
+- **It allows the push when `gh` is missing or unauthenticated**, warning
+  instead. A hook that blocks work when a helper is unavailable gets disabled,
+  and a disabled hook protects nothing.
+- **It self-tests**: exit 1 on a merged branch, 0 on an unmerged one, 0 on
+  `main`. Verified rather than assumed, because the last three things written to
+  catch silent failures each failed silently first.
+
+The through-line for the whole register: **every failure here was caught by
+accident, and every fix that held was the one that made the mistake impossible
+rather than memorable.** The mutation harness aborts on a bad anchor. The API
+returns the status so it cannot be read out of scope. The hook refuses the push.
+Notes did not work, three times.
 
 ### 3.5 Tests that passed for the wrong reason — three times
 
