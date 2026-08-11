@@ -21,12 +21,15 @@ without hardcoded integrations.
 Both are properties of *this deployment*, not of the code, and both are more
 surprising to find by experiment than to be told.
 
-**1. First request after idle takes ~50 seconds.** Render spins a free service
-down after 15 minutes without traffic; the container is replaced, not paused.
-Measured cold start: **42 seconds**. The catalog itself now survives this — it
-lives in libSQL/Turso rather than on the container — so your listings and
-ownership bindings are still there when it wakes. Only the latency is yours to
-absorb.
+**1. First request after idle takes ~50 seconds — but only outside
+08:00–23:59 UTC.** A keep-alive holds the service warm inside that window, so
+there is no cold start there. Outside it, Render spins a free service down after
+15 minutes without traffic and the container is replaced, not paused; measured
+cold start **42 seconds**. You pay it once — the service then stays warm for 15
+minutes past your last request.
+
+The catalog survives either way: it lives in libSQL/Turso rather than on the
+container, so your listings and ownership bindings are there when it wakes.
 
 **2. THE TRUST LAYER IS INERT HERE. Every verification badge reads `"unknown"`,
 and `?verified_only=true` returns an empty list.** Not a bug and not
