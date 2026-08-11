@@ -106,9 +106,52 @@ on:
   # failure mode is not a slow demo — it suspends every Free service in the
   # workspace, including unrelated production ones.
   #
-  # Window 08:00-23:59 UTC covers European working hours and the whole US
-  # working day (04:00-20:00 ET, 00:00-16:00 PT). It misses the Asia-Pacific
-  # morning; shifting it is a one-line change, and the cost is identical.
+  # ── THE WINDOW IS A KNOB, NOT A DECISION ─────────────────────────────────
+  #
+  # Every option below costs the SAME 16 h/day. Shifting the window is free —
+  # what changes is which region gets a warm service and which pays the ~50 s
+  # cold start. Pick against where evaluators actually are; nobody knows that
+  # yet, so this is written to be changed rather than defended.
+  #
+  # Local coverage (summer offsets: CEST +2, EDT -4, PDT -7, JST +9, SGT +8):
+  #
+  #   A. "*/5 8-23 * * *"          08:00-23:59 UTC   <- CURRENT
+  #        Europe      10:00-02:00   full working day, plus a dead evening
+  #        US East     04:00-20:00   full working day
+  #        US West     01:00-17:00   full working day
+  #        Japan       17:00-09:00   MISSES the working day entirely
+  #        Singapore   16:00-08:00   MISSES the working day entirely
+  #      Best for: the Americas. Wastes ~4 h on the European night.
+  #
+  #   B. "*/5 0-15 * * *"          00:00-15:59 UTC
+  #        Europe      02:00-18:00   full working day
+  #        US East     20:00-12:00   morning only, misses the afternoon
+  #        US West     17:00-09:00   MISSES the working day almost entirely
+  #        Japan       09:00-01:00   full working day
+  #        Singapore   08:00-00:00   full working day
+  #      Best for: Asia-Pacific + Europe. Trades the US afternoon away.
+  #
+  #   C. "*/5 0-7,12-19 * * *"     00:00-07:59 and 12:00-19:59 UTC  (split)
+  #        Europe      02:00-10:00 and 14:00-22:00   morning + afternoon
+  #        US East     20:00-04:00 and 08:00-16:00   full working day
+  #        US West     17:00-01:00 and 05:00-13:00   morning, misses afternoon
+  #        Japan       09:00-17:00 and 21:00-05:00   full working day
+  #        Singapore   08:00-16:00 and 20:00-04:00   full working day
+  #      Best OVERALL coverage: the only option where APAC, Europe and US East
+  #      all get their working day. Costs the same. The gap is US West
+  #      afternoons and a two-hour European lunch.
+  #
+  # WHAT YOU ARE TRADING, stated plainly: A gives the Americas everything and
+  # Asia-Pacific nothing. B reverses it. C spreads the same 16 hours to cover
+  # three regions' working days at the price of two holes.
+  #
+  # A is in force only because it was chosen before anyone asked where the
+  # traffic comes from. If the first real evaluators are in Asia-Pacific, B or C
+  # is strictly better and the change is one line.
+  #
+  # Winter shifts everything by an hour (CET +1, EST -5, PST -8); JST and SGT do
+  # not observe DST, so A and B get slightly better for APAC in winter and worse
+  # for the US.
   #
   # */5 rather than */10 because the ping is FREE: this repo is public, so
   # GitHub Actions minutes are unmetered, and instance-hours accrue from the

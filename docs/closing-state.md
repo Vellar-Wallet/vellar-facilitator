@@ -401,9 +401,23 @@ awake rather than from how often it is pinged. Scheduled workflows can be delaye
 under load, and a 15-minute idle timeout leaves no room for a 10-minute interval
 to slip.
 
-**The window** covers European working hours and the whole US working day
-(04:00–20:00 ET, 00:00–16:00 PT). It misses the Asia-Pacific morning; shifting it
-costs nothing and is a one-line change.
+**The window is a knob, not a decision.** All three options below cost the same
+16 h/day; shifting it is free, and what changes is which region gets a warm
+service. The workflow carries the full local-time table.
+
+| | UTC | Europe | US East | US West | Japan / Singapore |
+| --- | --- | --- | --- | --- | --- |
+| **A** *(current)* | 08:00–23:59 | ✅ + dead evening | ✅ | ✅ | ❌ misses entirely |
+| **B** | 00:00–15:59 | ✅ | morning only | ❌ | ✅ |
+| **C** *(split)* | 00–07:59, 12–19:59 | ✅ | ✅ | morning only | ✅ |
+
+**C is the best overall coverage** — the only option where Asia-Pacific, Europe
+and US East all get their working day, at the same cost, trading US West
+afternoons and a two-hour European lunch.
+
+**A is in force only because it was chosen before anyone asked where the traffic
+comes from.** If the first real evaluators are in Asia-Pacific, B or C is
+strictly better and the change is one line.
 
 ### What a developer experiences
 
