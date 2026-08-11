@@ -27,11 +27,11 @@ const testConfig = {
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
   maxTransactionFeeStroops: 2_000_000,
-  catalogFile: undefined,
+  catalogDbUrl: undefined,
+  catalogDbAuthToken: undefined,
   verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
-  catalogOwnershipBootstrap: false,
 };
 
 function reqs(): PaymentRequirements {
@@ -60,10 +60,10 @@ function spyPolicy() {
 }
 
 async function settleWith(rawUrl: string) {
-  const catalog = new BazaarCatalog();
+  const catalog = await BazaarCatalog.create();
   // The merchant is bound under the CANONICAL key, as extractDiscoveryInfo
   // would have stored it.
-  catalog.upsertFromPayment(
+  await catalog.upsertFromPayment(
     { resourceUrl: CANONICAL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as DiscoveredResource,
     reqs(),
   );

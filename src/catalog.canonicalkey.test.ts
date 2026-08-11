@@ -38,15 +38,15 @@ function disc(): DiscoveredResource {
   } as DiscoveredResource;
 }
 
-function bound(): BazaarCatalog {
-  const c = new BazaarCatalog();
-  c.upsertFromPayment(disc(), reqs(PAY));
+async function bound(): Promise<BazaarCatalog> {
+  const c = await BazaarCatalog.create();
+  await c.upsertFromPayment(disc(), reqs(PAY));
   return c;
 }
 
 describe("G-3 — spend-policy identity must use the catalog's canonical key", () => {
-  it("isBoundResource matches a bound merchant despite a query string", () => {
-    const c = bound();
+  it("isBoundResource matches a bound merchant despite a query string", async () => {
+    const c = await bound();
     // The catalog stores the canonical key...
     expect(c.isBound(CANONICAL, PAY), "precondition: bound under the canonical key").toBe(true);
     // ...but /settle receives the RAW url the buyer paid, query and all.
@@ -56,8 +56,8 @@ describe("G-3 — spend-policy identity must use the catalog's canonical key", (
     ).toBe(true);
   });
 
-  it("normalizes the shapes a real payload varies in, without widening the binding", () => {
-    const c = bound();
+  it("normalizes the shapes a real payload varies in, without widening the binding", async () => {
+    const c = await bound();
     for (const raw of [
       `${CANONICAL}?a=1`,
       `${CANONICAL}#frag`,
@@ -76,14 +76,14 @@ describe("G-3 — spend-policy identity must use the catalog's canonical key", (
     }
   });
 
-  it("still refuses a payTo that is not bound to that resource", () => {
-    const c = bound();
+  it("still refuses a payTo that is not bound to that resource", async () => {
+    const c = await bound();
     // Canonicalizing must not weaken the F11 check it feeds.
     expect(c.isBoundResource(`${CANONICAL}?x=1`, OTHER)).toBe(false);
   });
 
-  it("returns the canonical key so per-URL budgets cannot be multiplied by query", () => {
-    const c = bound();
+  it("returns the canonical key so per-URL budgets cannot be multiplied by query", async () => {
+    const c = await bound();
     // If the budget key were the raw url, an attacker could mint a fresh
     // per-URL budget per query string. All of these must reduce to ONE key.
     const keys = new Set(
@@ -95,11 +95,11 @@ describe("G-3 — spend-policy identity must use the catalog's canonical key", (
     expect([...keys][0]).toBe(CANONICAL);
   });
 
-  it("never throws on a malformed url — it degrades to the raw string", () => {
+  it("never throws on a malformed url — it degrades to the raw string", async () => {
     // /settle takes this from a client-supplied payload, so it must not be a
     // crash vector; an unparseable value simply cannot match a binding.
     expect(() => BazaarCatalog.canonicalResourceKey("not a url")).not.toThrow();
-    expect(bound().isBoundResource("not a url", PAY)).toBe(false);
-    expect(bound().isBoundResource("", PAY)).toBe(false);
+    expect((await bound()).isBoundResource("not a url", PAY)).toBe(false);
+    expect((await bound()).isBoundResource("", PAY)).toBe(false);
   });
 });

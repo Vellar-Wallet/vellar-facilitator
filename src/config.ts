@@ -6,7 +6,10 @@ export interface FacilitatorConfig {
   sponsorSecretKey: string;
   maxTransactionFeeStroops: number;
   /** Optional JSON file path for Bazaar catalog persistence across restarts. */
-  catalogFile: string | undefined;
+  /** libSQL/Turso URL. `file:…` locally, `libsql://…` in production. Unset means
+   *  in-memory only: the catalog works but nothing survives a restart. */
+  catalogDbUrl: string | undefined;
+  catalogDbAuthToken: string | undefined;
   /** Base URL of the Vellar verification API (e.g. https://…/verification) for
    * the Bazaar trust layer. Unset ⇒ verification verdicts are "unknown". */
   verificationApiUrl: string | undefined;
@@ -41,7 +44,6 @@ export interface FacilitatorConfig {
    * first upgrade produces, and equally the state a tamperer produces. Off by
    * default; must be set deliberately and removed once the upgrade is done.
    */
-  catalogOwnershipBootstrap: boolean;
   /** Fix 3 sponsor balance guard floors, in stroops. */
   balance: {
     /** Warn below this (default 250_000_000 = 25 XLM). */
@@ -64,20 +66,53 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
 
   const network = env.STELLAR_NETWORK === "pubnet" ? "stellar:pubnet" : "stellar:testnet";
 
+  // ==========================================================================
+  // "THE FEE" IS THREE DIFFERENT NUMBERS. Read this before touching any
+  // threshold below, and name the quantity whenever you cite one.
+  //
+  //   CHARGED   what the network actually deducted (Horizon `fee_charged`).
+  //             Consumer: the SPONSOR'S BALANCE — so the balance guard, the
+  //             hard floor, and any "how long can this be sustained" argument.
+  //             Measured: 22,579 stroops, four Horizon-confirmed settlements
+  //             (8c0d9682…, 9726d45e…, 867632de…, c4ee7bdd…, 2026-08-10).
+  //
+  //   BID       minResourceFee + BASE_FEE, computed from simulation BEFORE
+  //             submission. Consumer: MAX_TX_FEE_STROOPS immediately below —
+  //             which compares against EXACTLY THIS and never sees the charge
+  //             (@x402/stellar/dist/cjs/exact/facilitator/index.js:487-489).
+  //             Measured: 32,655, two independent simulations. It carries NO
+  //             transaction hash AND NONE IS OBTAINABLE — a bid that is never
+  //             submitted leaves no chain record. That is a property of the
+  //             quantity, not a gap in the evidence.
+  //
+  //   ESTIMATE  a constant used for spend accounting, currently the ceiling
+  //             itself (500,000). Consumer: SPEND_CEILING_STROOPS. Not a
+  //             measurement at all.
+  //
+  // The charged fee runs ~31% BELOW the bid, which is normal: simulation
+  // over-reserves. Sizing this ceiling against the charged fee would tighten it
+  // by that much against a number it never sees. Sizing the balance guard
+  // against the bid would overstate the burn. Conflating the three is what
+  // produced the 127,808 confusion recorded in docs/security-audit.md.
+  // ==========================================================================
+  //
   // Raised well above @x402/stellar's 50_000 default: policy-governed
   // smart-account payments run the policy contract inside __check_auth, which
-  // pushes the simulation-derived fee to ~130k stroops. Rejecting those was the
-  // exact hosted-facilitator bug that motivated this project — so this ceiling
-  // must never dip toward 50k.
+  // pushes the BID to ~130k stroops on a policy-governed account. Rejecting
+  // those was the exact hosted-facilitator bug that motivated this project — so
+  // this ceiling must never dip toward 50k.
   //
-  // Sized from MEASURED testnet data rather than guessed: across the dedicated
-  // facilitator sponsor's settlement history the worst real settlement charged
-  // 127,808 stroops (higher-fee transactions on shared dev accounts are contract
-  // deploys and add_signer calls, which never reach /settle). 500,000 clears that
-  // by ~3.9x and stays 2.5x above the documented 200k floor, while cutting the
-  // worst-case sponsor drain per settle from 0.2 XLM to 0.05 XLM. Raise via
-  // MAX_TX_FEE_STROOPS if a heavier policy ever legitimately exceeds it — the
-  // failure is loud (fee_exceeds_maximum), not silent.
+  // Sizing, with provenance stated per figure:
+  //   - measured BID for the walkthrough wallet: 32,655 -> 500,000 clears it 15.3x
+  //   - cited worst-case bid: 127,808 -> 500,000 clears it 3.9x. THIS FIGURE
+  //     CARRIES NO HASH and has never been re-derived; it is retained because it
+  //     is the conservative one and describes a heavier policy contract than the
+  //     wallet we measured, NOT because it has been verified. Do not cite it as
+  //     measured.
+  // The ceiling also stays 2.5x above the documented 200k floor, and caps the
+  // worst-case sponsor drain per settle at 0.05 XLM. Raise via MAX_TX_FEE_STROOPS
+  // if a heavier policy ever legitimately exceeds it — the failure is loud
+  // (fee_exceeds_maximum), not silent.
   const maxTransactionFeeStroops = Number(env.MAX_TX_FEE_STROOPS ?? 500_000);
   if (!Number.isInteger(maxTransactionFeeStroops) || maxTransactionFeeStroops <= 0) {
     throw new Error(`MAX_TX_FEE_STROOPS must be a positive integer, got: ${env.MAX_TX_FEE_STROOPS}`);
@@ -85,9 +120,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
 
   const spend = {
     rateWindowMs: positiveIntEnv(env.SETTLE_RATE_WINDOW_MS, 60_000, "SETTLE_RATE_WINDOW_MS"),
-    // 50,000,000 stroops = 5 XLM per window. At the 500,000-stroop worst-case
-    // fee that is 100 settlements per window across ALL merchants, and
-    // perPayToMax (50) is deliberately half of it.
+    // 50,000,000 stroops = 5 XLM per window. Accounted at the ESTIMATE (500,000,
+    // see the three-quantities note above), so that is 100 settlements per window
+    // across ALL merchants, and perPayToMax (50) is deliberately half of it.
+    //
+    // OPEN (pubnet tuning, deliberately NOT changed here): the estimate is 22x
+    // the measured CHARGED fee, so this ceiling trips after 100 settles having
+    // actually spent ~0.23 XLM of the 5 XLM it names — 4.5%. It fails safe and
+    // the over-count is deliberate (server.ts), but honest throughput is
+    // throttled ~22x earlier than sponsor exposure requires. Tracked in
+    // docs/security-audit.md under "Still open".
     //
     // These numbers are asserted in src/config.thresholds.test.ts rather than
     // only described here: an earlier version of this comment still reasoned
@@ -145,27 +187,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
   // Announce the escape hatch on EVERY boot while it is set, not only when it
   // is exercised. A quiet flag that silently downgrades a security control is
   // how "temporary" becomes permanent.
-  const catalogOwnershipBootstrap = /^(1|true)$/i.test(env.CATALOG_OWNERSHIP_BOOTSTRAP ?? "");
-  if (catalogOwnershipBootstrap) {
+  // CATALOG_OWNERSHIP_BOOTSTRAP is GONE. It existed only because an ownership
+  // FILE could be absent while a catalog FILE was present — indistinguishable
+  // between "first upgrade" and "someone deleted it", so the migration had to be
+  // opted into explicitly. A single database cannot be half-present, so the
+  // ambiguity the hatch resolved no longer exists. If the variable is still set
+  // anywhere, say so loudly rather than ignoring it: a stale escape hatch that
+  // silently does nothing is how an operator ends up believing a migration ran.
+  if (env.CATALOG_OWNERSHIP_BOOTSTRAP !== undefined) {
     console.warn(
-      "[config] CATALOG_OWNERSHIP_BOOTSTRAP is SET. On boot, if the catalog file exists without its " +
-        "companion ownership store, ownership bindings will be DERIVED FROM THAT CATALOG FILE. " +
-        "It grants no more trust than that file already had — if an attacker wrote the file, they " +
-        "choose the owners. This exists only to migrate a pre-existing catalog once; REMOVE IT " +
-        "immediately afterwards. While it is set, the fail-closed protection against a missing or " +
-        "deleted ownership store is DISABLED.",
+      "[config] CATALOG_OWNERSHIP_BOOTSTRAP is set but NO LONGER EXISTS. Durable storage removed the " +
+        "ambiguity it resolved (one database cannot be half-present). It is being IGNORED — remove it " +
+        "from the environment so nobody reads it as still doing something.",
+    );
+  }
+  if (env.CATALOG_FILE !== undefined) {
+    console.warn(
+      "[config] CATALOG_FILE is set but NO LONGER USED. The catalog is stored in libSQL/Turso — set " +
+        "CATALOG_DB_URL (and CATALOG_DB_AUTH_TOKEN for a remote database) instead. The file is being " +
+        "IGNORED, not migrated: there was never a durable catalog on the hosted instance to carry over, " +
+        "and an importer would have to trust a file to name each resource's owner.",
     );
   }
 
   return {
     port: Number(env.PORT ?? 4100),
-    catalogOwnershipBootstrap,
     host: env.HOST ?? "0.0.0.0",
     network,
     rpcUrl: env.STELLAR_RPC_URL,
     sponsorSecretKey,
     maxTransactionFeeStroops,
-    catalogFile: env.CATALOG_FILE,
+    catalogDbUrl: env.CATALOG_DB_URL,
+    catalogDbAuthToken: env.CATALOG_DB_AUTH_TOKEN,
     verificationApiUrl: env.VERIFICATION_API_URL,
     spend,
     balance,

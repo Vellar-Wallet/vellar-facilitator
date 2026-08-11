@@ -12,15 +12,15 @@ import { buildServer } from "./server.js";
 const testConfig = {
   port: 0, host: "127.0.0.1", network: "stellar:testnet" as const, rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(), maxTransactionFeeStroops: 500_000,
-  catalogFile: undefined, verificationApiUrl: undefined,
+  catalogDbUrl: undefined,
+  catalogDbAuthToken: undefined, verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 50, unboundPoolMax: 10 },
   balance: { softFloorStroops: 250_000_000, hardFloorStroops: 100_000_000, intervalMs: 60_000 },
-  catalogOwnershipBootstrap: false,
 };
 
 describe("/health carries enough to detect a spin-down", () => {
   it("reports process uptime and catalog size", async () => {
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     const app = await buildServer(buildFacilitator(testConfig), catalog);
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
 
@@ -35,8 +35,8 @@ describe("/health carries enough to detect a spin-down", () => {
   });
 
   it("catalogSize tracks the catalog", async () => {
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(
       { resourceUrl: "https://a.example/x", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       { scheme: "exact", network: "stellar:testnet", asset: "CA", amount: "1", payTo: "GA", maxTimeoutSeconds: 60, extra: {} } as never,
     );
@@ -52,7 +52,7 @@ describe("/health carries enough to detect a spin-down", () => {
     // how a stale build went unnoticed twice in one session, and only works
     // when a release happens to change something externally visible.
     process.env.RENDER_GIT_COMMIT = "abc1234def5678";
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
     expect(body.commit, "must be short enough to eyeball against git rev-parse").toBe("abc1234");
     await app.close();
@@ -61,14 +61,14 @@ describe("/health carries enough to detect a spin-down", () => {
 
   it("omits commit entirely when not deployed on a platform that sets it", async () => {
     delete process.env.RENDER_GIT_COMMIT;
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
     expect("commit" in body, "absent rather than a misleading placeholder").toBe(false);
     await app.close();
   });
 
   it("stays exempt from the rate limit so the pinger cannot throttle real traffic", async () => {
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, undefined, {
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, undefined, {
       rateMaxPerMinute: 2,
     });
     for (let i = 0; i < 8; i++) {
@@ -81,8 +81,8 @@ describe("/health carries enough to detect a spin-down", () => {
 
 describe("/health surfaces structurally unverifiable entries", () => {
   it("reports the count when a seller advertises an unfetchable address", async () => {
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(
       { resourceUrl: "http://localhost:10000/quote", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       { scheme: "exact", network: "stellar:testnet", asset: "CA", amount: "1", payTo: "GA", maxTimeoutSeconds: 60, extra: {} } as never,
     );
@@ -93,8 +93,8 @@ describe("/health surfaces structurally unverifiable entries", () => {
   });
 
   it("stays quiet when every entry is fetchable", async () => {
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(
       { resourceUrl: "https://seller.example/quote", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       { scheme: "exact", network: "stellar:testnet", asset: "CA", amount: "1", payTo: "GA", maxTimeoutSeconds: 60, extra: {} } as never,
     );

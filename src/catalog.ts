@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { z } from "zod";
+import {
+  loadWithRetry,
+  StoreInvalidError,
+  type CatalogStore,
+  type StoredEntryRow,
+} from "./store.js";
 import type { PaymentRequirements } from "@x402/core/types";
 import type {
   DiscoveredResource,
@@ -91,26 +95,11 @@ function isStructurallyUnverifiable(key: string): boolean {
  * debounced. */
 const PERSIST_DEBOUNCE_MS = 250;
 
-/** Companion ownership file path. Kept separate from the entry file so it can be
- * flushed synchronously without rewriting all entries. */
-export function ownershipPathFor(catalogPath: string): string {
-  return `${catalogPath}.ownership`;
-}
-
-/** Atomic write: temp + fsync + rename. A torn ownership file is worse than a
- * torn catalog — entries rebuild from settlements, ownership does not. */
-function writeFileAtomic(path: string, data: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, data);
-  const fd = openSync(tmp, "r+");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, path);
-}
+// writeFileAtomic (temp + fsync + rename) and ownershipPathFor are GONE. The
+// atomicity they hand-rolled across two files is now a transaction across two
+// tables, which is strictly stronger: the file version could still leave a
+// binding written and its entry not, because "atomic per file" is not "atomic
+// across files". See store.ts bindAndUpsertEntry.
 
 /** Ownership file shape: validated on load exactly like the catalog file, so a
  * crafted file cannot inject a malformed or forged binding. NOTE: absence is
@@ -407,7 +396,7 @@ interface StoredEntry {
 
 export class BazaarCatalog {
   private readonly entries = new Map<string, StoredEntry>();
-  private readonly persistPath: string | undefined;
+  private readonly store: CatalogStore | undefined;
 
   /**
    * F3 — ownership tombstones: `resourceUrl -> boundPayTo[]`, the record that
@@ -429,50 +418,69 @@ export class BazaarCatalog {
    * settlement is unaffected. Refusing new entries is a visible availability
    * problem; forgetting ownership is a silent security one.
    */
-  private frozen: false | "ownership-unreadable" | "tombstone-cap" = false;
+  private frozen: false | "ownership-unreachable" | "ownership-invalid" | "tombstone-cap" = false;
   /** G-1 verification scheduling state. In-memory ONLY: never persisted (RA-9)
    * and never on the wire (no attacker-forceable signal for consumers). */
   private readonly verifyState = new Map<string, { verdict: OwnershipVerdict; at: number }>();
   private readonly verifyInFlight = new Set<string>();
-  /** G-7: set when load() derives a binding that was not already in the
-   * ownership store, so the constructor can flush it exactly once. */
-  private ownershipSeededDuringLoad = false;
+  // G-7's `ownershipSeededDuringLoad` flag is GONE along with the bootstrap
+  // hatch. The hatch existed only because an ownership FILE could be absent
+  // while a catalog FILE was present — an ambiguity between "first upgrade" and
+  // "someone deleted it". One database cannot be half-present, so the ambiguity,
+  // the hatch, and CATALOG_OWNERSHIP_BOOTSTRAP all cease to exist.
   /** URLs already warned about, so the log fires once per resource rather than
    * once per settlement. */
   private readonly warnedUnverifiable = new Set<string>();
 
-  constructor(persistPath?: string, opts: { bootstrapOwnership?: boolean } = {}) {
-    this.persistPath = persistPath;
-    if (persistPath) {
-      // Ownership loads FIRST: if it is unusable we must not serve a catalog
-      // whose bindings are missing.
-      const ownershipOk = this.loadOwnership(ownershipPathFor(persistPath), opts.bootstrapOwnership === true);
-      if (!ownershipOk) {
-        this.frozen = "ownership-unreadable";
-        console.error(
-          `[catalog] ownership store at ${ownershipPathFor(persistPath)} is missing or unreadable — ` +
-            `refusing to load the catalog and freezing new bindings. An intact catalog with absent ` +
-            `ownership is exactly the state a tampered file produces; serving it would reopen every ` +
-            `URL to first-writer claim. Resolve the ownership file, then restart.`,
-        );
-        return; // catalog stays empty; frozen blocks new bindings
-      }
-      this.load(persistPath);
-      // G-7: persist anything load() derived. Without this the bootstrap
-      // migration is a no-op on disk and the NEXT boot fails closed again.
-      if (this.ownershipSeededDuringLoad) {
-        this.saveOwnership();
-        console.warn(
-          `[catalog] wrote ${this.ownership.size} ownership binding(s) derived during load to ` +
-            `${ownershipPathFor(persistPath)}. If this was a CATALOG_OWNERSHIP_BOOTSTRAP migration, ` +
-            `verify that file now and REMOVE the flag before the next boot.`,
-        );
-      }
+  constructor(store?: CatalogStore) {
+    this.store = store;
+  }
+
+  /**
+   * Build a catalog, loading durable state first. Async because the store is a
+   * network call; `buildServer` is already async and there is one production
+   * call site.
+   *
+   * FAIL-CLOSED, KEPT. If ownership cannot be loaded the catalog stays EMPTY and
+   * frozen. Serving entries whose bindings did not load means serving entries
+   * with no enforceable ownership — every URL open to first-writer claim, which
+   * is F11 disabled at exactly the moment nobody is watching. Discovery going
+   * quiet is recoverable; discovery serving attacker-claimable entries is not.
+   *
+   * What changed from the file store is the DIAGNOSIS, not the default:
+   * unreachable is retried with backoff and reported as retryable; invalid
+   * freezes immediately and says so.
+   */
+  static async create(store?: CatalogStore, opts: { maxEntries?: number } = {}): Promise<BazaarCatalog> {
+    const catalog = new BazaarCatalog(store);
+    if (!store) return catalog;
+    await store.init();
+    // Ownership loads FIRST: if it is unusable we must not serve a catalog whose
+    // bindings are missing.
+    let bindings;
+    try {
+      bindings = await loadWithRetry(() => store.loadOwnership());
+    } catch (err) {
+      catalog.frozen = err instanceof StoreInvalidError ? "ownership-invalid" : "ownership-unreachable";
+      console.error(
+        `[catalog] ownership could not be loaded (${catalog.frozen}) — refusing to load the catalog and ` +
+          `freezing new bindings. Serving entries whose ownership did not load would reopen every URL to ` +
+          `first-writer claim. ${
+            catalog.frozen === "ownership-unreachable"
+              ? "The store was unreachable after retries: this is usually transient, and a restart once it " +
+                "answers is the whole fix."
+              : "The store ANSWERED with something unusable: do not restart in a loop, investigate the data."
+          } Cause: ${String((err as Error)?.message ?? err)}`,
+      );
+      return catalog; // empty + frozen
     }
+    for (const b of bindings) catalog.ownership.set(b.resourceKey, b.boundPayTo);
+    await catalog.load(opts.maxEntries ?? MAX_ENTRIES);
+    return catalog;
   }
 
   /** Whether new URL bindings are currently refused, and why (see /health). */
-  get catalogFrozen(): false | "ownership-unreadable" | "tombstone-cap" {
+  get catalogFrozen(): false | "ownership-unreachable" | "ownership-invalid" | "tombstone-cap" {
     return this.frozen;
   }
 
@@ -640,7 +648,10 @@ export class BazaarCatalog {
    * created), so the caller can trigger Layer 2 402-challenge verification. A
    * rejected or already-existing upsert returns `false`.
    */
-  upsertFromPayment(discovered: DiscoveredResource, requirements: PaymentRequirements): boolean {
+  async upsertFromPayment(
+    discovered: DiscoveredResource,
+    requirements: PaymentRequirements,
+  ): Promise<boolean> {
     const key = discovered.resourceUrl;
     const existing = this.entries.get(key);
 
@@ -721,20 +732,25 @@ export class BazaarCatalog {
 
     // Bind the payTo on first settlement (TOFU); a bound update keeps the set.
     const isFirstCatalog = existing === undefined;
+    const candidate: StoredEntry = {
+      resource: entry,
+      stats: existing?.stats ?? { settlements: 0, payers: [], observed: 0 },
+      boundPayTo: existing ? existing.boundPayTo : [requirements.payTo],
+      verifiedOwner: existing?.verifiedOwner ?? false,
+    };
     if (isFirstCatalog) {
       // Ownership is recorded when the binding is ESTABLISHED (not at eviction),
-      // so it is durable from the moment it exists. Refused when frozen.
-      if (this.frozen === "ownership-unreadable" || !this.bindOwnership(key, requirements.payTo)) {
+      // so it is durable from the moment it exists. Refused when frozen for ANY
+      // ownership reason — unreachable and invalid are different diagnoses but
+      // the same answer here: do not bind.
+      const frozenOnOwnership =
+        this.frozen === "ownership-unreachable" || this.frozen === "ownership-invalid";
+      if (frozenOnOwnership || !(await this.bindOwnership(key, requirements.payTo, candidate))) {
         return false;
       }
     }
     const boundPayTo = existing ? existing.boundPayTo : (this.ownership.get(key) ?? [requirements.payTo]);
-    this.entries.set(key, {
-      resource: entry,
-      stats: existing?.stats ?? { settlements: 0, payers: [], observed: 0 },
-      boundPayTo,
-      verifiedOwner: existing?.verifiedOwner ?? false,
-    });
+    this.entries.set(key, { ...candidate, boundPayTo });
     // Active half of the signal: /health carries a standing count, but nothing
     // polls it now that the keep-alive is off, so say it once per URL in the log.
     if (isStructurallyUnverifiable(key) && !this.warnedUnverifiable.has(key)) {
@@ -868,18 +884,35 @@ export class BazaarCatalog {
     });
   }
 
-  private load(path: string): void {
-    let raw: unknown;
+  /**
+   * Load entries from the store. Ownership is already in memory by the time this
+   * runs (see create) — which is what lets bindLoadedEntry take the owner from
+   * the BINDING instead of re-deriving it from accepts[0]. That derivation was
+   * G-5, and it is gone.
+   *
+   * The `limit` is applied by the query (store.loadEntries), not here: that is
+   * G-6, where the file store enforced MAX_ENTRIES on write but not on load and
+   * a large file became an unbounded startup allocation.
+   */
+  private async load(limit: number): Promise<void> {
+    let rows: StoredEntryRow[];
     try {
-      raw = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      // Missing or unreadable file: start empty. Corrupt persistence must
-      // never prevent the facilitator from starting.
+      rows = await loadWithRetry(() => this.store!.loadEntries(limit));
+    } catch (err) {
+      // Entries are RECONSTRUCTIBLE from settlement traffic, so failing to load
+      // them is an availability dent, not a security event — unlike ownership,
+      // which has already succeeded by this point. Start empty and repopulate.
+      console.error(`[catalog] entries could not be loaded, starting empty: ${String((err as Error)?.message ?? err)}`);
       return;
     }
-    if (!Array.isArray(raw)) return;
-
-    for (const item of raw) {
+    for (const row of rows) {
+      let item: unknown;
+      try {
+        item = JSON.parse(row.payload);
+      } catch {
+        console.warn(`[catalog] load: dropped an entry whose payload is not JSON (${row.resourceKey})`);
+        continue;
+      }
       // Accept both the current { resource, stats } shape and the pre-binding
       // bare-DiscoveryResource shape; validate, drop the malformed, sanitize.
       const candidate =
@@ -919,8 +952,21 @@ export class BazaarCatalog {
    */
   private bindLoadedEntry(stored: StoredEntry): StoredEntry {
     const accepts = stored.resource.accepts ?? [];
-    const ownerPayTo = accepts[0]?.payTo;
-    if (ownerPayTo === undefined) {
+    // G-5 CLOSES HERE. The owner comes from the OWNERSHIP TABLE, never from the
+    // entry. The old code took `accepts[0].payTo` and seeded a binding from it,
+    // which meant an entry with an EMPTY accepts array loaded with no binding
+    // and no tombstone — and was then permanently unclaimable, because binding
+    // is refused once an entry exists. The derivation that produced that state
+    // no longer exists: an entry with no binding is now dropped, because a row
+    // in `entry` without a row in `ownership` cannot be produced by
+    // bindAndUpsertEntry and therefore means the data was tampered with.
+    const authoritative = this.ownership.get(stored.resource.resource);
+    if (!authoritative || authoritative.length === 0) {
+      console.warn(
+        `[catalog] load: dropped ${stored.resource.resource} — it has an entry but NO ownership row. ` +
+          `One transaction writes both, so this state is not reachable through the code; it means the ` +
+          `store was written by something else.`,
+      );
       return {
         ...stored,
         resource: { ...stored.resource, accepts: [] },
@@ -928,6 +974,7 @@ export class BazaarCatalog {
         verifiedOwner: false,
       };
     }
+    const ownerPayTo = authoritative[0]!;
     const kept = accepts.filter((a) => a.payTo === ownerPayTo);
     if (kept.length !== accepts.length) {
       console.warn(
@@ -935,23 +982,10 @@ export class BazaarCatalog {
           `${stored.resource.resource} with a payTo other than the bound owner ${ownerPayTo} (F11)`,
       );
     }
-    // Ownership tombstone wins over whatever the entry file claims; only seed it
-    // when there is none (first upgrade / bootstrap).
-    const authoritative = this.ownership.get(stored.resource.resource);
-    if (!authoritative) {
-      this.ownership.set(stored.resource.resource, [ownerPayTo]);
-      // G-7: this seeding is the ENTIRE product of a CATALOG_OWNERSHIP_BOOTSTRAP
-      // migration, and unlike bindOwnership it used to write nothing. The
-      // migration therefore appeared to succeed and persisted nothing: the next
-      // boot found a catalog with no ownership file again and failed closed.
-      // Flushed once after the load loop rather than per entry — saving here
-      // would be O(n^2) over the catalog.
-      this.ownershipSeededDuringLoad = true;
-    }
     return {
       resource: { ...stored.resource, accepts: kept },
       stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
-      boundPayTo: authoritative ?? [ownerPayTo],
+      boundPayTo: authoritative,
       // Never trust a stored verified flag — a crafted file could forge it (RA-9).
       // Layer 2 re-verifies from the resource on the bound owner's next
       // settlement, via `reverify` (G-1).
@@ -967,64 +1001,24 @@ export class BazaarCatalog {
   }
 
   /**
-   * Load the ownership store. Returns false when it is missing or unparseable,
-   * which the constructor treats as fail-closed. Validated by its own schema so
-   * a crafted file cannot inject a malformed binding.
+   * Establish ownership for a URL, DURABLY, before anything relies on it.
+   *
+   * This is the guarantee the whole migration turns on, and the reason
+   * saveOwnership was synchronous in the file store. G-7 was precisely the bug
+   * where a binding lived in memory and never reached disk; an async write
+   * reintroduces that window with a network in the middle unless the caller
+   * waits for the commit and treats a failure as "not bound".
+   *
+   * So: the in-memory map is populated ONLY after the write commits. On failure
+   * nothing is recorded and `false` is returned, which refuses the upsert — the
+   * same fail-closed path already used at the tombstone cap. It must never
+   * optimistically bind and hope the write lands.
+   *
+   * The entry is written in the SAME transaction (store.bindAndUpsertEntry), so
+   * a binding without its entry, or an entry without its binding, is not a state
+   * this code can produce.
    */
-  private loadOwnership(path: string, bootstrap: boolean): boolean {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      // Missing or unreadable. A brand-new deployment has no ownership file yet
-      // AND no catalog file; that is the only benign case, handled by the caller
-      // seeing no catalog file either.
-      try {
-        readFileSync(this.persistPath!, "utf8");
-      } catch {
-        return true; // neither file exists: a genuinely fresh start
-      }
-      // A catalog file with NO ownership file is ambiguous: it is either a
-      // first upgrade from a version that had no ownership store, or an attacker
-      // (or half-finished deploy) removing it. These are indistinguishable, so
-      // the default is fail-closed and the migration must be opted into
-      // explicitly — never inferred.
-      if (!bootstrap) return false;
-      console.warn(
-        "[catalog] bootstrapping the ownership store from the existing catalog file " +
-          "(CATALOG_OWNERSHIP_BOOTSTRAP). Do this ONCE on upgrade. It derives bindings from a file " +
-          "an attacker could have written, so it grants no more trust than that file already had.",
-      );
-      return true; // bindings get derived per-entry in bindLoadedEntry
-    }
-    const parsed = ownershipFileSchema.safeParse(raw);
-    if (!parsed.success) return false;
-    for (const row of parsed.data) this.ownership.set(row.resource, row.boundPayTo);
-    return true;
-  }
-
-  /**
-   * Persist ownership SYNCHRONOUSLY and atomically. Never debounced: entries are
-   * reconstructible from settlement traffic, ownership is not — losing a
-   * tombstone silently reopens that URL to first-writer claim, which is the
-   * vulnerability F11 closed.
-   */
-  private saveOwnership(): void {
-    if (!this.persistPath) return;
-    try {
-      const rows = [...this.ownership.entries()].map(([resource, boundPayTo]) => ({
-        resource,
-        boundPayTo,
-      }));
-      writeFileAtomic(ownershipPathFor(this.persistPath), JSON.stringify(rows));
-    } catch (err) {
-      console.error("[catalog] ownership persist FAILED — bindings are at risk:", err);
-    }
-  }
-
-  /** Record ownership for a URL. Returns false when frozen (cap reached), which
-   * refuses the binding rather than silently forgetting an older one. */
-  private bindOwnership(resourceUrl: string, payTo: string): boolean {
+  private async bindOwnership(resourceUrl: string, payTo: string, entry: StoredEntry): Promise<boolean> {
     if (this.ownership.has(resourceUrl)) return true; // already bound
     if (this.ownership.size >= MAX_TOMBSTONES) {
       if (this.frozen !== "tombstone-cap") {
@@ -1039,8 +1033,25 @@ export class BazaarCatalog {
       );
       return false;
     }
+    if (this.store) {
+      try {
+        await this.store.bindAndUpsertEntry(
+          { resourceKey: resourceUrl, boundPayTo: [payTo] },
+          { resourceKey: resourceUrl, payload: JSON.stringify(entry), lastUpdated: Date.now() },
+        );
+      } catch (err) {
+        // NOT bound. Refusing the upsert loses a catalog listing, which the next
+        // settlement rebuilds. Binding in memory only would lose the BINDING on
+        // the next restart and reopen the URL to first-writer claim, which
+        // nothing rebuilds.
+        console.error(
+          `[catalog] ownership write FAILED for ${resourceUrl} — the binding is NOT established and the ` +
+            `upsert is refused: ${String((err as Error)?.message ?? err)}`,
+        );
+        return false;
+      }
+    }
     this.ownership.set(resourceUrl, [payTo]);
-    this.saveOwnership();
     return true;
   }
 
@@ -1061,27 +1072,39 @@ export class BazaarCatalog {
 
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Debounced, atomic entry persistence. Entries are reconstructible from
-   * settlement traffic, so coalescing writes is safe; ownership is written
-   * separately and synchronously. */
+  /**
+   * Debounced entry persistence. Entries are RECONSTRUCTIBLE from settlement
+   * traffic, so coalescing writes is safe and a lost write costs a listing until
+   * the next settlement. Ownership is never debounced — losing a binding
+   * silently reopens that URL to first-writer claim, and nothing rebuilds it.
+   *
+   * That asymmetry is the existing design and it survives the move unchanged.
+   */
   private save(): void {
-    if (!this.persistPath) return;
+    if (!this.store) return;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = undefined;
-      this.flush();
+      void this.flush();
     }, PERSIST_DEBOUNCE_MS);
     this.saveTimer.unref?.();
   }
 
   /** Write entries now (also used by tests and shutdown). */
-  flush(): void {
-    if (!this.persistPath) return;
+  async flush(): Promise<void> {
+    if (!this.store) return;
     try {
-      writeFileAtomic(this.persistPath, JSON.stringify([...this.entries.values()], null, 2));
+      await this.store.saveEntries(
+        [...this.entries.entries()].map(([key, e]) => ({
+          resourceKey: key,
+          payload: JSON.stringify(e),
+          lastUpdated: Date.now(),
+        })),
+      );
     } catch (err) {
-      // Persistence is best-effort; the in-memory catalog stays authoritative.
-      console.error("[catalog] persist failed:", err);
+      // Best-effort by design; the in-memory catalog stays authoritative and the
+      // next settlement rewrites the row.
+      console.error("[catalog] entry persist failed:", err);
     }
   }
 }

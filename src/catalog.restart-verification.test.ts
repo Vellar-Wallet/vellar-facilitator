@@ -6,6 +6,7 @@ import type { PaymentRequirements } from "@x402/core/types";
 import type { DiscoveredResource } from "@x402/extensions/bazaar";
 import { afterEach, describe, expect, it } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
+import { readOwnership, reopen, seedRows } from "./store.testkit.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
 import type { TrustResolver, TrustedDiscoveryResource } from "./trust.js";
@@ -33,7 +34,7 @@ function tmpDir(): string {
   dirs.push(d);
   return d;
 }
-afterEach(() => {
+afterEach(async () => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -75,11 +76,11 @@ const testConfig = {
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
   maxTransactionFeeStroops: 2_000_000,
-  catalogFile: undefined,
+  catalogDbUrl: undefined,
+  catalogDbAuthToken: undefined,
   verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
-  catalogOwnershipBootstrap: false,
 };
 
 async function serve(catalog: BazaarCatalog) {
@@ -94,13 +95,13 @@ function trustOf(item: unknown) {
 
 describe("G-1 — verifiedOwner does not survive a restart, and never recovers", () => {
   it("a verified entry serves ownerVerified:false after restart, with every verdict clamped", async () => {
-    const file = join(tmpDir(), "catalog.json");
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
 
     // --- Run 1: entry is cataloged AND passes Layer 2 ownership verification.
-    const before = new BazaarCatalog(file);
-    before.upsertFromPayment(disc(), reqs(PAY_OLD));
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(disc(), reqs(PAY_OLD));
     before.setVerifiedOwner(URL_X, true);
-    before.flush();
+    await before.flush();
 
     const appBefore = await serve(before);
     const preBody = (await appBefore.inject({ method: "GET", url: "/discovery/resources" })).json();
@@ -109,7 +110,7 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
     await appBefore.close();
 
     // --- Run 2: same file, fresh process. Nothing about the resource changed.
-    const after = new BazaarCatalog(file);
+    const after = await BazaarCatalog.create(reopen(file));
     expect(after.size, "entry must survive the restart").toBe(1);
 
     const appAfter = await serve(after);
@@ -124,18 +125,18 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
   });
 
   it("verified_only=true serves an EMPTY catalog after restart", async () => {
-    const file = join(tmpDir(), "catalog.json");
-    const before = new BazaarCatalog(file);
-    before.upsertFromPayment(disc(), reqs(PAY_OLD));
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(disc(), reqs(PAY_OLD));
     before.setVerifiedOwner(URL_X, true);
-    before.flush();
+    await before.flush();
 
     const appBefore = await serve(before);
     const pre = (await appBefore.inject({ method: "GET", url: "/discovery/resources?verified_only=true" })).json();
     expect(pre.items, "precondition: visible to verified_only before restart").toHaveLength(1);
     await appBefore.close();
 
-    const appAfter = await serve(new BazaarCatalog(file));
+    const appAfter = await serve(await BazaarCatalog.create(reopen(file)));
     const post = (await appAfter.inject({ method: "GET", url: "/discovery/resources?verified_only=true" })).json();
     // An agent filtering for verified resources sees NOTHING — indistinguishable
     // from "this facilitator has no trustworthy resources".
@@ -144,13 +145,13 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
   });
 
   it("search is affected identically (same annotate path, so the gap is not list-only)", async () => {
-    const file = join(tmpDir(), "catalog.json");
-    const before = new BazaarCatalog(file);
-    before.upsertFromPayment(disc(), reqs(PAY_OLD));
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(disc(), reqs(PAY_OLD));
     before.setVerifiedOwner(URL_X, true);
-    before.flush();
+    await before.flush();
 
-    const appAfter = await serve(new BazaarCatalog(file));
+    const appAfter = await serve(await BazaarCatalog.create(reopen(file)));
     const post = (await appAfter.inject({ method: "GET", url: "/discovery/search?query=Merchant" })).json();
     expect(post.resources.length).toBeGreaterThan(0);
     expect(trustOf(post.resources[0]).ownerVerified, "G-1 hits /discovery/search too").toBe(false);
@@ -158,10 +159,10 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
   });
 
   it("does not recover under normal traffic: further settles never re-verify", async () => {
-    const file = join(tmpDir(), "catalog.json");
-    const before = new BazaarCatalog(file);
-    before.upsertFromPayment(disc(), reqs(PAY_OLD));
-    before.flush();
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(disc(), reqs(PAY_OLD));
+    await before.flush();
 
     // After restart the URL is already present, so upsertFromPayment reports
     // isFirstCatalog=false — and `if (firstCatalog)` in bazaar.ts is the ONLY
@@ -172,10 +173,10 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
     // settle a first-catalog again, which does re-verify (verified by probe).
     // So the honest statement is "does not recover below the eviction cap",
     // NOT "never" — and nobody should mistake cache pressure for a fix.
-    const after = new BazaarCatalog(file);
+    const after = await BazaarCatalog.create(reopen(file));
     for (let i = 0; i < 5; i++) {
       expect(
-        after.upsertFromPayment(disc(), reqs(PAY_OLD)),
+        await after.upsertFromPayment(disc(), reqs(PAY_OLD)),
         "isFirstCatalog must stay false, so verification never re-fires",
       ).toBe(false);
     }
@@ -184,12 +185,12 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
 });
 
 describe("G-2 — a bound URL has no payTo rotation path", () => {
-  it("refuses a rotated payTo permanently, keeping the OLD address in accepts", () => {
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
+  it("refuses a rotated payTo permanently, keeping the OLD address in accepts", async () => {
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
 
     // The merchant rotates their payment address and re-settles.
-    expect(catalog.upsertFromPayment(disc(), reqs(PAY_NEW)), "rotation refused").toBe(false);
+    expect(await catalog.upsertFromPayment(disc(), reqs(PAY_NEW)), "rotation refused").toBe(false);
 
     // The catalog still advertises ONLY the old address, and there is no method
     // on BazaarCatalog and no route on the server to change it.
@@ -198,23 +199,23 @@ describe("G-2 — a bound URL has no payTo rotation path", () => {
     expect(catalog.isBound(URL_X, PAY_NEW)).toBe(false);
   });
 
-  it("survives eviction: the tombstone refuses the new payTo even once the entry is gone", () => {
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
+  it("survives eviction: the tombstone refuses the new payTo even once the entry is gone", async () => {
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
     // Even with the entry evicted, the F3 tombstone keeps the binding, so a
     // rotation cannot be achieved by waiting for cache pressure either.
     expect(catalog.isBound(URL_X, PAY_OLD)).toBe(true);
     expect(catalog.isBound(URL_X, PAY_NEW)).toBe(false);
   });
 
-  it("the merchant IS still paid — only the catalog entry goes stale", () => {
+  it("the merchant IS still paid — only the catalog entry goes stale", async () => {
     // upsertFromPayment rejecting is a CATALOG decision. It runs inside
     // onAfterSettle, i.e. after settlement already succeeded on-chain, and
     // registerBazaar swallows its own errors so settlement is never affected.
     // The consequence is narrower but sharper than "payments break":
-    const catalog = new BazaarCatalog();
-    catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
-    catalog.upsertFromPayment(disc(), reqs(PAY_NEW)); // refused
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(disc(), reqs(PAY_OLD));
+    await catalog.upsertFromPayment(disc(), reqs(PAY_NEW)); // refused
 
     // G-4 narrowed this. recordSettlement still runs after the rejected upsert,
     // but it now refuses any payTo that is not bound, so settlements to the NEW

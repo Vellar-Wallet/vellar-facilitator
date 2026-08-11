@@ -6,7 +6,8 @@ import type { PaymentPayload, PaymentRequirements, SchemeNetworkFacilitator } fr
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerBazaar } from "./bazaar.js";
-import { BazaarCatalog, ownershipPathFor } from "./catalog.js";
+import { BazaarCatalog } from "./catalog.js";
+import { readOwnership, reopen, seedRows } from "./store.testkit.js";
 import type { OwnershipVerdict } from "./ownership.js";
 
 // G-1 — re-verify on settle.
@@ -37,7 +38,7 @@ function tmpDir(): string {
   dirs.push(d);
   return d;
 }
-afterEach(() => {
+afterEach(async () => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -93,9 +94,9 @@ function counter(verdict: OwnershipVerdict | ((url: string, payTos: string[]) =>
   return { calls, fn };
 }
 
-function seeded(): BazaarCatalog {
-  const c = new BazaarCatalog();
-  c.upsertFromPayment(
+async function seeded(): Promise<BazaarCatalog> {
+  const c = await BazaarCatalog.create();
+  await c.upsertFromPayment(
     { resourceUrl: URL_X, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
     reqs(OWNER),
   );
@@ -104,21 +105,21 @@ function seeded(): BazaarCatalog {
 
 describe("G-1 — the behaviour bindLoadedEntry's comment promised", () => {
   it("a restored entry re-verifies on the bound owner's next settlement", async () => {
-    const file = join(tmpDir(), "catalog.json");
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
 
     // Run 1: cataloged and verified.
-    const before = new BazaarCatalog(file);
+    const before = await BazaarCatalog.create(reopen(file));
     const v1 = counter("match");
     const f1 = new x402Facilitator().register("stellar:testnet", stubScheme());
     registerBazaar(f1, before, { verifyOwnership: v1.fn as never });
     await f1.settle(payload(URL_X, OWNER), reqs(OWNER));
     await new Promise((r) => setImmediate(r));
     expect(before.isVerifiedOwner(URL_X), "precondition: verified in run 1").toBe(true);
-    before.flush();
+    await before.flush();
 
     // Run 2: restart. The entry is restored UNVERIFIED (RA-9 — never trusted
     // from disk), and before this fix nothing could ever restore it.
-    const after = new BazaarCatalog(file);
+    const after = await BazaarCatalog.create(reopen(file));
     expect(after.isVerifiedOwner(URL_X), "restored entries start unverified").toBe(false);
 
     const v2 = counter("match");
@@ -132,7 +133,7 @@ describe("G-1 — the behaviour bindLoadedEntry's comment promised", () => {
   });
 
   it("re-verification asks about the BOUND owner, not the settling payTo", async () => {
-    const c = seeded();
+    const c = await seeded();
     const v = counter("match");
     await c.reverify(URL_X, OWNER, v.fn, 0);
     expect(v.calls[0]!.payTos, "must ask about the durable binding").toEqual([OWNER]);
@@ -140,18 +141,38 @@ describe("G-1 — the behaviour bindLoadedEntry's comment promised", () => {
 
   it("matches ANY bound address, so a runbook rotation can restore the badge", async () => {
     // The operator rotation procedure produces boundPayTo: [OLD, NEW].
-    const file = join(tmpDir(), "catalog.json");
-    const c = seeded();
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
+    const c = await seeded();
     // Simulate the operator's edit by loading an ownership file with both.
-    const path = join(tmpDir(), "c2.json");
-    const { writeFileSync } = await import("node:fs");
-    writeFileSync(ownershipPathFor(path), JSON.stringify([{ resource: URL_X, boundPayTo: [OWNER, OTHER] }]));
-    writeFileSync(path, JSON.stringify([{
-      resource: { resource: URL_X, type: "http", x402Version: 2, lastUpdated: "2026-08-01T00:00:00.000Z",
-        accepts: [{ scheme: "exact", network: "stellar:testnet", asset: ASSET, amount: "1", payTo: OWNER }] },
-      stats: { settlements: 0, payers: [], observed: 0 },
-    }]));
-    const rotated = new BazaarCatalog(path);
+    const path = `file:${join(tmpDir(), "c2.json.db")}`;
+    // The operator's edit, expressed as the runbook now expresses it: a SECOND
+    // ownership row for the same URL. This is the case that forced the composite
+    // primary key — a one-row-per-URL schema cannot hold [OLD, NEW], and would
+    // have silently broken the only recovery a squat has before displacement.
+    await seedRows(path, {
+      ownership: [
+        { key: URL_X, payTo: OWNER },
+        { key: URL_X, payTo: OTHER },
+      ],
+      entries: [
+        {
+          key: URL_X,
+          payload: {
+            resource: {
+              resource: URL_X,
+              type: "http",
+              x402Version: 2,
+              lastUpdated: "2026-08-01T00:00:00.000Z",
+              accepts: [
+                { scheme: "exact", network: "stellar:testnet", asset: ASSET, amount: "1", payTo: OWNER },
+              ],
+            },
+            stats: { settlements: 0, payers: [], observed: 0 },
+          },
+        },
+      ],
+    });
+    const rotated = await BazaarCatalog.create(reopen(path));
     const v = counter((_u, payTos) => (payTos.includes(OTHER) ? "match" : "mismatch"));
     await rotated.reverify(URL_X, OWNER, v.fn, 0);
     expect(v.calls[0]!.payTos, "one fetch, both addresses").toEqual([OWNER, OTHER]);
@@ -163,7 +184,7 @@ describe("G-1 — the behaviour bindLoadedEntry's comment promised", () => {
 
 describe("G-1 — the 24h mismatch cooldown is the brake (measured in fetches)", () => {
   it("a mismatching resource is fetched ONCE, not once per settlement", async () => {
-    const c = seeded();
+    const c = await seeded();
     const v = counter("mismatch");
     // 50 settlements from the bound owner across 23 hours.
     for (let i = 0; i < 50; i++) {
@@ -173,7 +194,7 @@ describe("G-1 — the 24h mismatch cooldown is the brake (measured in fetches)",
   });
 
   it("retries only after the full 24h", async () => {
-    const c = seeded();
+    const c = await seeded();
     const v = counter("mismatch");
     await c.reverify(URL_X, OWNER, v.fn, 0);
     await c.reverify(URL_X, OWNER, v.fn, 24 * HOUR - 1);
@@ -184,7 +205,7 @@ describe("G-1 — the 24h mismatch cooldown is the brake (measured in fetches)",
 
   it("an UNVERIFIABLE endpoint uses the shorter 15min floor, not 24h", async () => {
     // Uncertainty is not a definite answer, so it must not be parked for a day.
-    const c = seeded();
+    const c = await seeded();
     const v = counter("unverifiable");
     await c.reverify(URL_X, OWNER, v.fn, 0);
     await c.reverify(URL_X, OWNER, v.fn, 15 * MIN - 1);
@@ -194,7 +215,7 @@ describe("G-1 — the 24h mismatch cooldown is the brake (measured in fetches)",
   });
 
   it("stops fetching entirely once verified", async () => {
-    const c = seeded();
+    const c = await seeded();
     const v = counter("match");
     for (let i = 0; i < 20; i++) await c.reverify(URL_X, OWNER, v.fn, i * 48 * HOUR);
     expect(v.calls.length, "a verified entry is never re-probed").toBe(1);
@@ -203,7 +224,7 @@ describe("G-1 — the 24h mismatch cooldown is the brake (measured in fetches)",
 
 describe("G-1 — amplification gates: no fetch at all", () => {
   it("an UNBOUND settling payTo triggers no fetch", async () => {
-    const c = seeded();
+    const c = await seeded();
     const v = counter("match");
     for (let i = 0; i < 10; i++) await c.reverify(URL_X, OTHER, v.fn, i * 48 * HOUR);
     expect(v.calls.length, "only the bound owner's settle may trigger a probe").toBe(0);
@@ -212,14 +233,29 @@ describe("G-1 — amplification gates: no fetch at all", () => {
   it("an entry with an EMPTY binding triggers no fetch", async () => {
     // bindLoadedEntry produces boundPayTo:[] for a stored entry with no accepts
     // (G-5). Probing it would pass no address and read back a false MISMATCH.
-    const path = join(tmpDir(), "empty.json");
-    const { writeFileSync } = await import("node:fs");
-    writeFileSync(ownershipPathFor(path), JSON.stringify([]));
-    writeFileSync(path, JSON.stringify([{
-      resource: { resource: URL_X, type: "http", x402Version: 2, lastUpdated: "2026-08-01T00:00:00.000Z", accepts: [] },
-      stats: { settlements: 0, payers: [], observed: 0 },
-    }]));
-    const c = new BazaarCatalog(path);
+    const path = `file:${join(tmpDir(), "empty.json.db")}`;
+    // An entry row with NO ownership row. Under the file store this arose from
+    // an empty `accepts`; here it can only be produced by writing the database
+    // directly, which is the point — it is the tampered state, and the loader
+    // must refuse to serve it as owned rather than inventing an owner.
+    await seedRows(path, {
+      entries: [
+        {
+          key: URL_X,
+          payload: {
+            resource: {
+              resource: URL_X,
+              type: "http",
+              x402Version: 2,
+              lastUpdated: "2026-08-01T00:00:00.000Z",
+              accepts: [],
+            },
+            stats: { settlements: 0, payers: [], observed: 0 },
+          },
+        },
+      ],
+    });
+    const c = await BazaarCatalog.create(reopen(path));
     const v = counter("match");
     await c.reverify(URL_X, OWNER, v.fn, 0);
     expect(v.calls.length, "a missing claim is not a refuted claim — do not probe").toBe(0);
@@ -228,7 +264,7 @@ describe("G-1 — amplification gates: no fetch at all", () => {
   it("a routeTemplate key triggers no fetch", async () => {
     // The canonical key becomes `origin + /quote/:symbol`; fetching it would GET
     // a literal `:symbol`. Structurally unverifiable — skip rather than probe.
-    const c = new BazaarCatalog();
+    const c = await BazaarCatalog.create();
     const f = new x402Facilitator().register("stellar:testnet", stubScheme());
     const v = counter("match");
     registerBazaar(f, c, { verifyOwnership: v.fn as never });
@@ -238,7 +274,7 @@ describe("G-1 — amplification gates: no fetch at all", () => {
   });
 
   it("an uncataloged resource triggers no fetch", async () => {
-    const c = new BazaarCatalog();
+    const c = await BazaarCatalog.create();
     const v = counter("match");
     await c.reverify("https://nowhere.example/x", OWNER, v.fn, 0);
     expect(v.calls.length).toBe(0);
@@ -247,15 +283,14 @@ describe("G-1 — amplification gates: no fetch at all", () => {
 
 describe("G-1 — a failed re-verify is never a route to rebinding", () => {
   it("no verdict, under any retry path, changes a binding", async () => {
-    const path = join(tmpDir(), "bind.json");
-    const c = new BazaarCatalog(path);
-    c.upsertFromPayment(
+    const path = `file:${join(tmpDir(), "bind.json.db")}`;
+    const c = await BazaarCatalog.create(reopen(path));
+    await c.upsertFromPayment(
       { resourceUrl: URL_X, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       reqs(OWNER),
     );
-    c.flush();
-    const { readFileSync } = await import("node:fs");
-    const ownershipBefore = readFileSync(ownershipPathFor(path), "utf8");
+    await c.flush();
+    const ownershipBefore = JSON.stringify(await readOwnership(path));
 
     // Every verdict, repeatedly, across many cooldown windows.
     let t = 0;
@@ -267,14 +302,14 @@ describe("G-1 — a failed re-verify is never a route to rebinding", () => {
 
     expect(c.isBound(URL_X, OWNER), "the original owner stays bound").toBe(true);
     expect(c.isBound(URL_X, OTHER), "no verdict may bind anyone new").toBe(false);
-    c.flush();
-    expect(readFileSync(ownershipPathFor(path), "utf8"), "ownership store byte-identical").toBe(ownershipBefore);
+    await c.flush();
+    expect(JSON.stringify(await readOwnership(path)), "ownership rows unchanged").toBe(ownershipBefore);
   });
 
   it("a MATCH for a different address does not bind that address", async () => {
     // The verifier is told the bound set; a hostile one claiming "match" must
     // not be able to smuggle in a new owner.
-    const c = seeded();
+    const c = await seeded();
     const v = counter("match");
     await c.reverify(URL_X, OWNER, v.fn, 0);
     expect(c.isBound(URL_X, OTHER)).toBe(false);
@@ -284,7 +319,7 @@ describe("G-1 — a failed re-verify is never a route to rebinding", () => {
   it("does not hand out the ownership array (it aliases the tombstone)", async () => {
     // entry.boundPayTo IS the tombstone array object; a caller that mutated it
     // would durably rebind at the next saveOwnership.
-    const c = seeded();
+    const c = await seeded();
     const v = counter((_u, payTos) => {
       payTos.push(OTHER); // a caller mutating what it was given
       return "match";
@@ -296,7 +331,7 @@ describe("G-1 — a failed re-verify is never a route to rebinding", () => {
 
 describe("G-1 — uncertainty never downgrades, and the hot path is preserved", () => {
   it("a verified entry is never re-probed, so nothing can strip its badge", async () => {
-    const c = seeded();
+    const c = await seeded();
     await c.reverify(URL_X, OWNER, counter("match").fn, 0);
     expect(c.isVerifiedOwner(URL_X)).toBe(true);
 
@@ -313,7 +348,7 @@ describe("G-1 — uncertainty never downgrades, and the hot path is preserved", 
   it("settlement never waits on the verification fetch", async () => {
     // @x402/core AWAITS the afterSettle hook, so a verifier that never resolves
     // would stall every settlement if the hook awaited it.
-    const c = new BazaarCatalog();
+    const c = await BazaarCatalog.create();
     const f = new x402Facilitator().register("stellar:testnet", stubScheme());
     registerBazaar(f, c, { verifyOwnership: (() => new Promise<never>(() => {})) as never });
     const settled = await Promise.race([
@@ -324,7 +359,7 @@ describe("G-1 — uncertainty never downgrades, and the hot path is preserved", 
   });
 
   it("a THROWING verifier neither fails nor delays settlement", async () => {
-    const c = new BazaarCatalog();
+    const c = await BazaarCatalog.create();
     const f = new x402Facilitator().register("stellar:testnet", stubScheme());
     registerBazaar(f, c, { verifyOwnership: (async () => { throw new Error("hostile"); }) as never });
     const res = await f.settle(payload(URL_X, OWNER), reqs(OWNER));

@@ -47,51 +47,51 @@ describe("assertPublicHttpsUrl — SSRF guard", () => {
   // D1/D12 (audit) — literal IP hosts skip DNS and go straight to the range
   // check. The hex-normalized IPv4-mapped and IPv4-compatible IPv6 forms that
   // Node's URL parser emits for [::ffff:127.0.0.1] etc. must be blocked.
-  it("blocks a hex IPv4-mapped IPv6 loopback literal (::ffff:7f00:1)", () => {
+  it("blocks a hex IPv4-mapped IPv6 loopback literal (::ffff:7f00:1)", async () => {
     expect(isBlockedAddress("::ffff:7f00:1")).toBe(true); // 127.0.0.1
   });
-  it("blocks a hex IPv4-mapped IPv6 metadata literal (::ffff:a9fe:a9fe)", () => {
+  it("blocks a hex IPv4-mapped IPv6 metadata literal (::ffff:a9fe:a9fe)", async () => {
     expect(isBlockedAddress("::ffff:a9fe:a9fe")).toBe(true); // 169.254.169.254
   });
-  it("blocks a hex IPv4-mapped IPv6 RFC1918 literal (::ffff:c0a8:1)", () => {
+  it("blocks a hex IPv4-mapped IPv6 RFC1918 literal (::ffff:c0a8:1)", async () => {
     expect(isBlockedAddress("::ffff:c0a8:1")).toBe(true); // 192.168.0.1
   });
-  it("blocks a fully-expanded IPv4-mapped loopback (0:0:0:0:0:ffff:127.0.0.1)", () => {
+  it("blocks a fully-expanded IPv4-mapped loopback (0:0:0:0:0:ffff:127.0.0.1)", async () => {
     expect(isBlockedAddress("0:0:0:0:0:ffff:127.0.0.1")).toBe(true);
   });
-  it("blocks an IPv4-compatible IPv6 loopback literal (::7f00:1)", () => {
+  it("blocks an IPv4-compatible IPv6 loopback literal (::7f00:1)", async () => {
     expect(isBlockedAddress("::7f00:1")).toBe(true); // ::127.0.0.1
   });
-  it("blocks site-local fec0::/10", () => {
+  it("blocks site-local fec0::/10", async () => {
     expect(isBlockedAddress("fec0::1")).toBe(true);
   });
-  it("blocks link-local fe80::/10 in non-fe80-prefixed form (febf::1)", () => {
+  it("blocks link-local fe80::/10 in non-fe80-prefixed form (febf::1)", async () => {
     expect(isBlockedAddress("febf::1")).toBe(true);
   });
-  it("still allows a genuine public IPv6 (2606:2800::1)", () => {
+  it("still allows a genuine public IPv6 (2606:2800::1)", async () => {
     expect(isBlockedAddress("2606:2800::1")).toBe(false);
   });
 
   // Re-audit: standard IPv4-in-IPv6 transition prefixes carry a routable private
   // IPv4. Behind a NAT64/DNS64 gateway (an ordinary cloud setup) the gateway
   // translates these to the embedded address, tunnelling into RFC1918 space.
-  it("blocks NAT64-embedded private IPv4 (64:ff9b::/96)", () => {
+  it("blocks NAT64-embedded private IPv4 (64:ff9b::/96)", async () => {
     expect(isBlockedAddress("64:ff9b::a00:1")).toBe(true); // 10.0.0.1
     expect(isBlockedAddress("64:ff9b::c0a8:1")).toBe(true); // 192.168.0.1
   });
-  it("blocks 6to4-embedded private IPv4 (2002::/16)", () => {
+  it("blocks 6to4-embedded private IPv4 (2002::/16)", async () => {
     expect(isBlockedAddress("2002:0a00:0001::")).toBe(true); // 10.0.0.1
   });
-  it("blocks IPv4-translated private IPv4 (::ffff:0:0/96)", () => {
+  it("blocks IPv4-translated private IPv4 (::ffff:0:0/96)", async () => {
     expect(isBlockedAddress("::ffff:0:a00:1")).toBe(true); // 10.0.0.1
   });
-  it("still allows 6to4 wrapping a PUBLIC IPv4", () => {
+  it("still allows 6to4 wrapping a PUBLIC IPv4", async () => {
     expect(isBlockedAddress("2002:5db8:0001::")).toBe(false); // 93.184.x
   });
 
   // Re-audit: multicast, reserved Class E, limited broadcast and IETF-protocol
   // space were treated as public, directly and via the mapped path.
-  it("blocks multicast, reserved, broadcast and IETF-protocol IPv4", () => {
+  it("blocks multicast, reserved, broadcast and IETF-protocol IPv4", async () => {
     expect(isBlockedAddress("224.0.0.1")).toBe(true); // multicast
     expect(isBlockedAddress("240.0.0.1")).toBe(true); // reserved class E
     expect(isBlockedAddress("255.255.255.255")).toBe(true); // limited broadcast
@@ -438,7 +438,7 @@ describe("mutation guards (audit: these all went undetected)", () => {
   // a different bundled undici and rejects our Agent before opening a socket —
   // silently disabling Layer 2. defaultFetch is the single source of truth used
   // by verifyResourceOwnership, so guarding the constant guards the behaviour.
-  it("does not default to Node's global fetch", () => {
+  it("does not default to Node's global fetch", async () => {
     expect(defaultFetch).not.toBe(globalThis.fetch);
   });
 });

@@ -205,19 +205,19 @@ describe("filter + rerank", () => {
   const unverified = { ...item("CU"), trust: { settlements: 0, uniquePayers: 0, verification: "unverified" as const } };
   const unknown = { ...item("CX"), trust: { settlements: 0, uniquePayers: 0, verification: "unknown" as const } };
 
-  it("filterVerifiedOnly keeps only verified", () => {
+  it("filterVerifiedOnly keeps only verified", async () => {
     expect(filterVerifiedOnly([verified, unverified, unknown])).toEqual([verified]);
   });
 
-  it("rerankVerifiedFirst orders verified > unknown > unverified, stably", () => {
+  it("rerankVerifiedFirst orders verified > unknown > unverified, stably", async () => {
     const ranked = rerankVerifiedFirst([unverified, unknown, verified]);
     expect(ranked.map((r) => r.trust?.verification)).toEqual(["verified", "unknown", "unverified"]);
   });
 });
 
 describe("catalog settlement stats", () => {
-  function seed(catalog: BazaarCatalog, url = "https://api.example.com/weather") {
-    catalog.upsertFromPayment(
+  async function seed(catalog: BazaarCatalog, url = "https://api.example.com/weather") {
+    await catalog.upsertFromPayment(
       {
         resourceUrl: url,
         x402Version: 2,
@@ -235,9 +235,9 @@ describe("catalog settlement stats", () => {
     );
   }
 
-  it("counts settlements and dedupes unique payers", () => {
-    const catalog = new BazaarCatalog();
-    seed(catalog);
+  it("counts settlements and dedupes unique payers", async () => {
+    const catalog = await BazaarCatalog.create();
+    await seed(catalog);
     catalog.recordSettlement("https://api.example.com/weather", "CPAYER1", "G");
     catalog.recordSettlement("https://api.example.com/weather", "CPAYER1", "G");
     catalog.recordSettlement("https://api.example.com/weather", "CPAYER2", "G");
@@ -248,17 +248,17 @@ describe("catalog settlement stats", () => {
     expect(trust?.lastSettled).toBeTruthy();
   });
 
-  it("ignores settlements for uncataloged resources", () => {
-    const catalog = new BazaarCatalog();
+  it("ignores settlements for uncataloged resources", async () => {
+    const catalog = await BazaarCatalog.create();
     catalog.recordSettlement("https://nowhere.example.com/x", "CPAYER", "G");
     expect(catalog.size).toBe(0);
   });
 
-  it("stats survive re-upserts of the same resource", () => {
-    const catalog = new BazaarCatalog();
-    seed(catalog);
+  it("stats survive re-upserts of the same resource", async () => {
+    const catalog = await BazaarCatalog.create();
+    await seed(catalog);
     catalog.recordSettlement("https://api.example.com/weather", "CPAYER1", "G");
-    seed(catalog); // repeat payment re-catalogs the resource
+    await seed(catalog); // repeat payment re-catalogs the resource
     const trust = (catalog.list().items[0] as TrustedDiscoveryResource).trust;
     expect(trust?.settlements).toBe(1);
     expect(trust?.uniquePayers).toBe(1);

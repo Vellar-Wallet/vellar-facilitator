@@ -6,6 +6,7 @@ import { TransactionBuilder } from "@stellar/stellar-sdk";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator } from "./facilitator.js";
+import { LibsqlCatalogStore } from "./store.js";
 import { BazaarCatalog } from "./catalog.js";
 import { registerBazaar } from "./bazaar.js";
 import {
@@ -333,9 +334,20 @@ function isParseableTransactionXdr(payload: PaymentPayload): boolean {
 const isDirectRun = process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js");
 if (isDirectRun) {
   const config = loadConfig();
-  const catalog = new BazaarCatalog(config.catalogFile, {
-    bootstrapOwnership: config.catalogOwnershipBootstrap,
-  });
+  // Durable catalog. Unset CATALOG_DB_URL means in-memory only — the catalog
+  // works, and nothing survives a restart, which is exactly the state this
+  // milestone exists to end. Say so at boot rather than letting an operator
+  // discover it from an empty /discovery/resources after a deploy.
+  const store = config.catalogDbUrl
+    ? new LibsqlCatalogStore(config.catalogDbUrl, config.catalogDbAuthToken)
+    : undefined;
+  if (!store) {
+    console.warn(
+      "[catalog] CATALOG_DB_URL is not set — running IN-MEMORY. Listings and ownership bindings will be " +
+        "lost on every restart and every idle spin-down. Set CATALOG_DB_URL to a libSQL/Turso database.",
+    );
+  }
+  const catalog = await BazaarCatalog.create(store);
   const { createTrustResolver } = await import("./trust.js");
   const trust = createTrustResolver({
     verificationApiUrl: config.verificationApiUrl,

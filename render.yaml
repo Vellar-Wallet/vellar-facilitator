@@ -5,11 +5,16 @@
 # (sync:false keeps it out of git).
 #
 # Free-tier caveat: Render spins the service down after 15 min without inbound
-# traffic. Spin-down DESTROYS the container, so this is not merely a ~1 min cold
-# start — it wipes CATALOG_FILE and its ownership store, emptying the Bazaar
-# catalog and resetting every URL ownership binding. The keep-alive workflow
-# (.github/workflows/keepalive.yml) is what prevents that between deploys.
-# Fine for a testnet demo; upgrade the plan before any uptime commitment.
+# traffic, and spin-down DESTROYS the container — measured at a 35.7s cold start
+# on 2026-08-11, which is a replacement rather than a resume.
+#
+# That USED to empty the catalog and reset every ownership binding. With the
+# catalog in libSQL/Turso it no longer does: the container is disposable and the
+# data is not. Spin-down now costs only the cold start.
+#
+# The corollary is the cost of durability, and it is not a footnote: a squatted
+# URL used to clear itself on the next spin-down. It no longer does. Recovery is
+# docs/operator-runbook.md §1, by hand, until the displacement variant ships.
 
 services:
   - type: web
@@ -40,15 +45,15 @@ services:
     # A disk alone would not stop the sleeping, and not sleeping alone would not
     # survive a deploy. You need both, which is why they are one change here.
     #
-    # BEFORE the first boot with a disk, read docs/operator-runbook.md §2. The
-    # first boot finds a catalog file with no companion ownership store and
-    # FAILS CLOSED by design; the one-boot CATALOG_OWNERSHIP_BOOTSTRAP procedure
-    # is how you migrate, and it has a removal step that must not be skipped.
+    # The CATALOG_OWNERSHIP_BOOTSTRAP migration this block used to reference no
+    # longer exists — see docs/brief-turso-migration.md. It was needed only
+    # because an ownership FILE could be absent while a catalog FILE was present,
+    # and one database cannot be half-present.
     #
     # disk:
     #   name: vellar-facilitator-data
-    #   mountPath: /var/data      # must match the dirname of CATALOG_FILE below
-    #   sizeGB: 1                 # the catalog is small; 1 GB is ample
+    #   mountPath: /var/data
+    #   sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: "22"
@@ -63,36 +68,51 @@ services:
       # policy legitimately needs it — rejection is loud, not silent.
       - key: MAX_TX_FEE_STROOPS
         value: "500000"
-      # Bazaar catalog persistence (single-instance file store).
+      # Bazaar catalog persistence — libSQL/Turso, NOT a file and NOT a disk.
       #
-      # NOTE: `plan: free` has NO persistent disk, so /var/data does NOT survive
-      # a restart or redeploy. This path therefore implies a durability that
-      # does not currently exist: the catalog is effectively in-memory and
-      # re-populates from the next settled payment. That is the documented
-      # free-tier behaviour, not a fault.
+      # CATALOG_FILE is GONE. It is not merely unused: setting it now produces a
+      # loud "NO LONGER USED" warning at boot, and leaving a stale reference here
+      # would be exactly the confusion that warning exists to prevent.
       #
-      # BEFORE ATTACHING A DISK, read this. Once the files DO persist, the first
-      # boot after upgrading finds a catalog file with no companion
-      # `<CATALOG_FILE>.ownership` store — indistinguishable from an attacker
-      # deleting it — so the catalog FAILS CLOSED: it comes up healthy, serves
-      # settlements, and returns an EMPTY discovery catalog, signalled only by
-      # `catalogFrozen: "ownership-unreadable"` on /health.
+      # Two variables, both set in the DASHBOARD and never in this file:
       #
-      # To migrate an existing catalog once, set CATALOG_OWNERSHIP_BOOTSTRAP=1 in
-      # the Render dashboard for a single boot, then REMOVE it. It is
-      # deliberately not declared here: it derives ownership from a file an
-      # attacker could have written, and it disables the fail-closed protection
-      # while set. It warns loudly on every boot.
+      #   CATALOG_DB_URL         libsql://<database>-<org>.turso.io
+      #   CATALOG_DB_AUTH_TOKEN  a DATABASE-SCOPED read-write token
       #
-      # STEP-BY-STEP for that migration, and for the two other problems a disk
-      # introduces (a merchant who cannot rotate their payment address; the
-      # tombstone cap), see docs/operator-runbook.md. Read procedure 1 BEFORE
-      # onboarding any merchant on a disk-backed deployment: a bound resource URL
-      # cannot rotate its payTo in band, and the manual procedure is the only
-      # path. That is deliberate — the runbook explains why automating it would
+      # ── TOKEN SCOPE IS A SECURITY DECISION, NOT A CONVENIENCE ────────────────
+      # Mint it with:
+      #
+      #   turso db tokens create <database> --expiration never
+      #
+      # That is scoped to ONE database. Do NOT use a group token
+      # (`turso group tokens create`) or a platform API token
+      # (`turso auth api-tokens mint`): both reach beyond this database, and the
+      # store needs nothing outside it.
+      #
+      # --read-only will NOT work: the store issues CREATE TABLE IF NOT EXISTS on
+      # every boot and writes bindings on the settle path.
+      #
+      # `--expiration never` is deliberate. The catalog FAILS CLOSED on an
+      # unusable store, so an expiring token is a scheduled outage: on expiry
+      # discovery goes empty and /health reports catalogFrozen. Rotate
+      # deliberately (mint the new token, set it, restart, revoke the old one) —
+      # never on a timer nobody is watching.
+      #
+      # WHAT THE TOKEN PERMITS, stated plainly: full read-write over this ONE
+      # database, which means whoever holds it can forge or clear any ownership
+      # binding in it. That is F6 relocated rather than eliminated — see
+      # docs/security-audit.md. It cannot touch any other database in the
+      # account. Treat it like SPONSOR_SECRET_KEY.
+      #
+      # Unset CATALOG_DB_URL is legal and means IN-MEMORY: the service runs and
+      # warns at boot, and every restart empties the catalog.
+      #
+      # BEFORE onboarding any merchant, read docs/operator-runbook.md §1. A bound
+      # resource URL cannot rotate its payTo in band, and now that bindings are
+      # DURABLE a squatted URL no longer clears itself on the next restart — the
+      # manual procedure is the only recovery until the displacement variant
+      # ships. That is deliberate; the runbook explains why automating it would
       # give away the property F11 exists for.
-      - key: CATALOG_FILE
-        value: "/var/data/bazaar-catalog.json"
       # Deliberately NOT set: VERIFICATION_API_URL. Unset, every trust verdict
       # degrades to "unknown", which is the honest default. Configuring it makes
       # that API a trust root, and its response still carries no per-record
