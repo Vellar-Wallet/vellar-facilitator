@@ -85,6 +85,124 @@ the risk still exists in a different place. **Open**: still true.
 | **D-3** | A hardcoded log line imitating a real defect | closed-by-test — `/whoami` makes advertised state queryable |
 | **D-4** | The 26M fee | **RETRACTED.** It never existed; it was a stale RPC reading. Survives as the methodological finding in §3 |
 
+### Cold-start findings — O-1…O-10 (2026-08-11 walkthrough)
+
+From a walkthrough run with no repo knowledge, starting from `using-it.md` and
+the hosted instance. Time to first successful payment was **19m41s**; the same
+path after these changes is **~2m30s**.
+
+| ID | Finding | Status |
+| --- | --- | --- |
+| **O-1** | The payment asset is unobtainable and undocumented — `X402TST`'s issuer secret no longer exists, so no one can hold it, and no doc said to bring your own | closed — `provision-testnet.mjs` + `using-it.md` § First: bring your own payment asset |
+| **O-2** | The only script that could produce an asset was dot-prefixed, named `tmp`, referenced nowhere, and **did not run**: no friendbot→RPC readiness wait, `prepareTransaction` called on classic `changeTrust`, no retry for RPC node lag | closed — shipped as `provision-testnet.mjs`, all three fixed, two clean runs (1m35s, 2m58s) |
+| **O-3** | `seller.mjs` silently ignored `PAYTO`/`ASSET` while **both** docs documented them as flags | closed — env honoured, with a boot preflight that checks the real condition and names the fix |
+| **O-4** | "A plain classic keypair works fine" had no code; the only example was smart-account-only | closed — `buyer-classic.mjs`, proven live (settlement `6cf8091c…`) |
+| **O-5** | A second settle failure code (`settle_exact_stellar_transaction_failed`) was undocumented, and money-safety was asserted only for the other one | closed-by-doc, and **measured**: 6 failures in 13 attempts moved zero value |
+| **O-6** | `/health` omits `unverifiableEntries` entirely when zero; the doc implied it is always present | closed-by-doc — the code is right (`server.ts:126`, test asserts a healthy catalog adds no noise) |
+| **O-7** | **`statsSource` asserts a provenance it does not have** — a restored entry whose stored count is 0 is labelled `"observed"` | **open defect — Low severity, fix recommended below.** *Not* the persistence defect it first looks like |
+| **O-8** | Following the tutorial pollutes a shared catalog irreversibly | **open — product gap, recorded below** |
+| **O-9** | `curl -I` on a paid route returns 200 while `GET` returns 402 | closed-by-doc — debug with GET |
+| **O-10** | Documented gotcha "`pagination.total` ignores `verified_only`" was stale | closed-by-doc — verified fixed live (`items: 0, total: 0`); `list()` computes `total` from the filtered set |
+| **O-11** | **A gitignored `.env.recording` silently outranks the built-in defaults** — found while regression-testing O-3. With no shell vars the seller advertised the *dead* `GBDZH5KZ…`/`CBIN4HTP…` pair from a stale local file, not the in-code defaults. This is the exact hazard the hardcoding existed to prevent, re-entering through the env-file path | closed — boot log now prints the **provenance** of each value (`environment` / `examples/.env.recording` / `built-in default`) and the trustline preflight runs regardless. Deployment is unaffected: the file is gitignored and never shipped |
+
+#### O-7 — `statsSource` asserts a provenance it does not have — **defect, Low**
+
+**The label lies.** An entry can take real, settled payments indefinitely, report
+`settlements: 0`, and stamp that zero `statsSource: "observed"` — a positive
+claim that this process witnessed every settlement counted, made by a process
+that witnessed none of them. It is the same class as G-4, whose whole finding was
+that `statsSource` "continued to read `observed`, asserting a provenance the data
+did not have". That was closed at the write path; this is the same assertion
+surviving at the read path.
+
+Low severity because it misreports trust metadata, not money: no payment is
+affected and no binding moves. It is a defect rather than a note because a
+consumer cannot detect it — `"observed"` is exactly what a healthy fresh entry
+reports, so there is no signal to distrust.
+
+**Checked before recording, because it looks like a persistence bug and is not.**
+
+A round-trip probe against a real libSQL store (`upsert` → 2 settlements →
+`flush` → `reopen` → load) returns:
+
+```
+BEFORE: settlements=2 observed=2 statsSource="observed"
+AFTER : settlements=2 observed=0 statsSource="persisted"   ← correct
+```
+
+Confirmed in production too: after a live restart, the walkthrough's own entry
+restored as `settlements=5, observed=0, statsSource="persisted"`. **The
+persistence path is correct and the documented meaning holds.**
+
+The real defect is narrower. `toItem()` derives the label as
+`settlements === observed ? "observed" : "persisted"`
+([`catalog.ts:1464`](../src/catalog.ts)). For a restored entry whose stored
+count is **0**, both sides are 0, so it reports `"observed"` — asserting "every
+settlement was witnessed by the running process" about an entry this process
+never witnessed. Vacuously true at zero, and misleading in exactly the case you
+meet it.
+
+How an entry reaches a stored count of 0 while plainly having settled: the G-4
+gate refuses to count a settlement whose `payTo` is not bound to the entry. That
+was observed live — two successful on-chain payments (merchant balance
+1.0 → 1.2) against a URL bound to a *different* `payTo` left `settlements`
+unchanged at 5. So an entry can take real, settled payments forever while its
+counter stays 0, and then claim `"observed"` for the zero.
+
+Consequence for the reader: `using-it.md` says "`observedSettlements` is the
+number to trust", and that number is 0 for a resource that has definitely
+settled. The live demo entry shows exactly this today.
+
+**Scope: the label, not the gate.** The G-4 refusal that produces these zeros is
+most likely *correct* — stats may only be moved by the bound owner, and that is
+the control G-4 exists to enforce. Nothing here proposes counting unbound
+settlements. The defect is that the read path describes the resulting zero as
+witnessed rather than unknown.
+
+**Two candidate fixes, and a recommendation.**
+
+| | Fix | Cost | Risk |
+| --- | --- | --- | --- |
+| **A** | Track provenance on the entry: set a `restored` flag when an entry is loaded from storage, and derive `statsSource` from it so a restored entry can never report `"observed"` | One field on `StoredEntry`, one line in `toItem()`, one line in the load path | Low. `"persisted"` already exists in the wire contract and already means "part of this count came from disk"; a restored zero is exactly that case |
+| **B** | Make the label three-valued — `observed` / `persisted` / `restored-unknown` | Same code, plus a new enum member | Higher. Adds a value agents must learn, and the existing two already express it |
+
+**Recommended: A.** It makes the label mean what the docs already say it means,
+without adding vocabulary. The current derivation
+(`settlements === observed`) infers provenance from a coincidence of numbers;
+`restored` records it as a fact, which is the actual difference between the two
+states. B is only worth it if consumers need to distinguish "restored with a
+known non-zero count" from "restored with nothing" — no consumer does today.
+
+Deliberately not applied in this change: it edits a wire field on the read path
+and belongs with its own test (`catalog.statsintegrity.test.ts` is the natural
+home — extend it with a restart case asserting a restored zero never reports
+`"observed"`). Sequencing it separately keeps this diff to onboarding.
+
+#### O-8 — catalog pollution is irreversible and self-service-proof
+
+The documented tutorial runs the seller on `localhost`. The first settlement
+catalogs that URL on whatever facilitator you point at — **including the shared
+hosted instance** — and a loopback URL can never pass ownership verification, so
+the entry is permanently `ownerVerified: false` and permanently counted in
+`/health`'s `unverifiableEntries`.
+
+There is no self-service removal, and no operator one either: the runbook
+explicitly warns against deleting ownership rows to clear entries
+(`operator-runbook.md`, "Do not delete the ownership rows to 'fix' this"). The
+only removal path is eviction past `MAX_ENTRIES`. Nothing in the docs warns that
+the tutorial writes to shared state, or that the write is one-way.
+
+Evidence: this walkthrough added `http://localhost:4031/quote` to the public
+hosted catalog. It is still there, and `unverifiableEntries` is now 1.
+
+The scale question is the real one: every developer who follows the guide
+against the hosted instance leaves one permanent junk entry, and agents calling
+`/discovery/resources` read them as real listings. Two candidate directions,
+neither applied: refuse to catalog structurally-unverifiable URLs (loopback,
+private range, `http`) at ingest rather than only flagging them afterwards; or
+document a supported operator eviction path. The first changes catalog-on-settle
+semantics, so it is a decision, not a cleanup.
+
 ---
 
 ## 2. G-14 — payTo whitespace hijack — **Medium** — closed-by-test, **not yet deployed**
@@ -419,6 +537,60 @@ compared verbatim and never keyed on; `payer` only enters a Set.
 A config comment reasoned about "1 XLM, ~20 settles/minute" long after the value
 was 5 XLM. Numbers that carry an argument are asserted in tests now, so the
 argument fails with the code.
+
+### 3.9 A guard was replaced, and the hazard came back through a file that outranks the code
+
+`PAYTO` and `ASSET` were hardcoded constants in `seller.mjs` that ignored the
+environment. The reason was real and written next to them: a stale value makes
+the seller advertise a merchant with no trustline, and that settle fails on-chain
+in a way indistinguishable from a spend control refusing it. The cost was that
+both docs documented `PAYTO=… ASSET=…` flags the code silently discarded, so
+every newcomer had to edit source (O-3).
+
+The fix replaced the proxy with the real check — honour the environment, and
+refuse to boot unless the pair can actually be paid. **The replacement was
+correct and the hazard still came back**, through a path neither the constants
+nor the preflight covered:
+
+    [seller] payTo GBDZH5KZ… (from examples/.env.recording)
+
+`seller.mjs` calls `process.loadEnvFile(".env.recording")` before reading its
+config. That file is gitignored, so it is invisible in review, absent from CI,
+and present on exactly the machines where someone is working. The moment the
+constants became `process.env.PAYTO || default`, a stale local dotfile started
+outranking the reviewed default — and it advertised the **dead** `GBDZH5KZ…` /
+`CBIN4HTP…` pair that commit `62e6e05` had already retired. Caught only because
+the regression check ran the deployed configuration (no shell vars) rather than
+the developer one.
+
+Three things generalise:
+
+1. **Removing a guard means finding every input it was covering, not just the one
+   it was written for.** The constants were blocking the environment; the env
+   *file* was a second input nobody enumerated, because it does not look like an
+   input — it looks like local convenience.
+2. **A gitignored file that feeds config outranks code while being invisible to
+   review.** Anything with that shape (`.env*`, local overrides, machine state)
+   is unreviewable by construction, so it must be *reported at runtime* — the
+   only place it is visible.
+3. **Setting a value is not enough; say where it came from.** The fix is one
+   line per value:
+
+       [seller] payTo GBFK… (from environment)
+       [seller] asset CBJL… (from examples/.env.recording)
+
+   The preflight already proved the pair was *payable* — it passed, because the
+   dead pair still holds a trustline. Validity was never the question. **Which
+   value is in effect, and who supplied it**, was. A check that answers "is this
+   good?" does not answer "is this the one you meant?", and only the second
+   catches a stale override.
+
+This is D-3's lesson arriving from the other direction. There, a log line
+disagreed with the advertised state and imitated a defect; the fix made
+advertised state queryable via `/whoami`. Here the advertised state was correct
+and *unexplained* — right value, unknown origin. Both are the same requirement:
+a service must be able to say what it is doing **and** why, or the next person
+debugs the wrong layer.
 
 ---
 
