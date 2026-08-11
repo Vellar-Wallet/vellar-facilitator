@@ -321,55 +321,97 @@ argument fails with the code.
 
 ---
 
-## 4b. The keep-alive — arithmetic, and the number I cannot supply
+## 4b. The keep-alive — arithmetic, and why the divisor may be the wrong model
 
 The cold start is the most-hit annoyance. The workflow exists with its schedule
-removed; whether to restore it is arithmetic, and one input is not mine to read.
+removed; restoring it is arithmetic.
 
-**What draws instance hours.** Render's free tier is **750 hours per WORKSPACE
-per month**, shared. **Free web services and private services draw hours.**
-**Static sites and managed Postgres draw none.** So the divisor is the count of
-free *web/private services*, not the count of things in the dashboard — which is
-why it may well be 4–5 rather than 8.
+> **CORRECTION.** An earlier version of this section costed a "4 h/day **weekday**
+> window" at **120 h/month**. That is 4 h × 30 days. Weekdays only, it is
+> **87 h/month** (4 × 21.75). The error made the proposal look 38% more expensive
+> than it is, which would have argued against a window that comfortably fits.
 
-**Count it here:** Dashboard → the service list → count only rows typed **Web
-Service** or **Private Service** whose plan is **Free**. I cannot enumerate your
-account, and guessing the divisor is the one part of this that would be
-invention.
+**What draws hours.** 750 instance-hours per **workspace** per month, shared.
+**Free web and private services draw hours. Static sites and managed Postgres
+draw none** — so `vellar-db` is irrelevant to this arithmetic. **Paid services
+draw from their own plan, not the free pool**, so they are not in the divisor
+either.
 
-**Cost of keeping this one warm:**
+### Windows, costed correctly
 
-| Window | Hours/month | Share of the 750 pool |
+| Window | Weekdays only | Every day |
 | --- | --- | --- |
-| 2 h/day | 60 | 8% |
-| 4 h/day | 120 | 16% |
-| 6 h/day | 180 | 24% |
-| 8 h/day | 240 | 32% |
-| 12 h/day | 360 | 48% |
-| 20 h/day | 600 | **80%** |
+| 2 h/day | 44 h/mo | 60 h/mo |
+| 3 h/day | 65 h/mo | 90 h/mo |
+| **4 h/day** | **87 h/mo** | 120 h/mo |
+| 6 h/day | 130 h/mo | 180 h/mo |
+| 8 h/day | 174 h/mo | 240 h/mo |
 
-**Headroom per service, by divisor:**
+### Share per free running web service
 
-| Free web services | Hours each | If run continuously |
-| --- | --- | --- |
-| 3 | 250 | 8.3 h/day |
-| 4 | 188 | 6.2 h/day |
-| **5** | **150** | **5.0 h/day** |
-| 8 | 94 | 3.1 h/day |
+| Divisor | Hours each | Continuous | A 4 h weekday window (87 h) is… |
+| --- | --- | --- | --- |
+| 5 | 150 | 5.0 h/day | 58% of the share |
+| **6** | **125** | **4.2 h/day** | **70% of the share — comfortable** |
+| 7 | 107 | 3.6 h/day | 81% |
+| 8 | 94 | 3.1 h/day | **93% — technically fits, no margin** |
 
-**Proposal, if the divisor is 4 or 5:** a **4 h/day weekday window** — 120
-h/month, 16% of the pool, comfortably inside a 150–188 h share even if every
-other service ran flat out. Cron `*/10 8-11 * * 1-5` (a ten-minute ping through a
-four-hour window; the idle timeout is 15 minutes, so ten leaves margin).
+So on the divisor model, cleaning up 8 → 6 moves a 4 h weekday window from *"93%
+of your share with nothing spare"* to *"70%, with room"*.
 
-**Do not restore it if the divisor is 8 or more.** At 94 h each, a 120 h window
-is already over budget on its own, and the failure mode is not a slow demo — it
-is **every free service in the workspace suspended**, including unrelated
-production ones.
+### But the divisor is a worst case, and probably wrong for dead services
 
-**Whatever is chosen, record the divisor and the arithmetic next to the cron**,
-because the number that makes it safe is invisible from the workflow file and
-will not be re-derived by whoever next edits it.
+**Hours are consumed by RUNNING time, not by a service existing.** A free web
+service that nobody hits spins down after 15 minutes and stops accruing. A
+service whose **last deploy failed is not running at all and draws zero.**
+
+Which means:
+
+- **`backend` (failed deploy, 8 months old) is almost certainly drawing 0 hours
+  today.** Deleting it improves the *model* and changes actual consumption by
+  nothing.
+- **`capcut-bot` (7 months old)** draws whatever traffic wakes it. If nothing
+  does, that is also near zero.
+
+**So cleanup is worth doing for hygiene, not for the warm window it buys.** If
+those two are dormant, deleting them frees no hours, because they were not
+spending any. `750 ÷ N` assumes every service runs continuously, which is exactly
+what a dormant service does not do.
+
+### The number that settles it
+
+**Billing → usage for the current cycle.** That is actual consumed
+instance-hours, and it beats every divisor above because it already accounts for
+which services really run.
+
+```
+headroom = 750 − (this cycle's usage, projected to the cycle end)
+```
+
+Pick a window under that with margin. If usage is, say, 200 h projected, there is
+~550 h of headroom and even a 6 h/day daily window (180 h) fits with room — no
+divisor needed, and no cleanup needed either.
+
+**Proposal, if Billing shows headroom above ~150 h:** 4 h/day on weekdays,
+`*/10 8-11 * * 1-5` — a ten-minute ping through a four-hour window, against a
+15-minute idle timeout.
+
+**Do not restore it** if projected usage is already near 750, whatever the
+service count says. The failure mode is not a slow demo; it is **every free
+service in the workspace suspended**, including unrelated production ones.
+
+**Record the number you used beside the cron.** Whether it is a divisor or a
+Billing reading, it is invisible from the workflow file and nobody will re-derive
+it.
+
+### Orphan to delete
+
+**`vellar-db`** — a free Postgres, created 24 days ago, used by nothing. The
+facilitator is on Turso and the wallet repo uses a different database. Render
+deletes free Postgres instances at **30 days**, so it will go on its own in about
+six days; deleting it sooner just removes a thing that looks load-bearing and
+is not. **It draws no instance-hours either way**, so it has no effect on the
+keep-alive decision.
 
 ## 5. What is open, and who owns it
 
