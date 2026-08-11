@@ -60,7 +60,7 @@ function distinctiveAdditions(patch) {
 }
 
 function verify(pr) {
-  const meta = gh(["pr", "view", String(pr), "--json", "state,mergedAt,baseRefName,headRefOid,mergeCommit,title"]);
+  const meta = gh(["pr", "view", String(pr), "--json", "state,mergedAt,baseRefName,headRefName,headRefOid,mergeCommit,title"]);
   const problems = [];
   const notes = [];
 
@@ -72,6 +72,43 @@ function verify(pr) {
     problems.push(
       `merged into "${meta.baseRefName}", NOT main — if that branch was squash-merged first, this content is unreachable`,
     );
+  }
+
+  // CHECK 1b — commits pushed to the branch AFTER the merge.
+  //
+  // Added after this script returned LANDED for #45 while two thirds of the work
+  // was missing from main. It was not wrong: `gh pr diff` reports what was
+  // MERGED, so it answered "is what was merged on main?" — truthfully — while
+  // the question actually being asked was "is everything I wrote on main?".
+  //
+  // The cause was pushing two commits to the branch SEVEN MINUTES after the PR
+  // was squash-merged and closed. GitHub does not reopen or re-diff a merged PR,
+  // so those commits belong to no PR at all and land nowhere.
+  if (meta.mergedAt) {
+    const mergedAtMs = Date.parse(meta.mergedAt);
+    // Distinguish "branch deleted" (healthy, nothing to check) from "we could
+    // not work out the branch" (a bug in this script). The first version
+    // swallowed both, so a missing field made the check silently pass — the
+    // exact failure it was written to catch, one level up.
+    let branchTip = "";
+    if (!meta.headRefName) {
+      problems.push("could not determine the head branch — this check did not run, treat as unverified");
+    } else {
+      try {
+        branchTip = sh("git", ["log", "-1", "--format=%cI %h %s", `origin/${meta.headRefName}`]).trim();
+      } catch {
+        /* ref absent: the branch was deleted on merge, which is the healthy case */
+      }
+    }
+    if (branchTip) {
+      const tipMs = Date.parse(branchTip.split(" ")[0]);
+      if (Number.isFinite(tipMs) && tipMs > mergedAtMs + 60_000) {
+        problems.push(
+          `branch "${meta.headRefName}" has commits AFTER the merge (${branchTip.slice(0, 60)}…) — ` +
+            `they belong to no PR and are not on main. Open a new PR for them`,
+        );
+      }
+    }
   }
 
   // CHECK 2 — provenance on main. A squash commit referencing (#N), or a real
@@ -107,8 +144,17 @@ function verify(pr) {
       continue;
     }
     const landed = lines.filter((l) => current.includes(l)).length;
-    if (landed === 0) {
+    // "None present" is only evidence of a missing landing when there were
+    // enough candidate lines for that to mean something. A file whose one
+    // distinctive line was legitimately rewritten by a LATER PR would otherwise
+    // be reported as never landed — which happened to #43's docs/using-it.md,
+    // superseded by #45 changing the keep-alive window.
+    if (landed === 0 && lines.length >= 3) {
       problems.push(`${file}: NONE of its ${lines.length} distinctive added lines are in main`);
+    } else if (landed === 0) {
+      notes.push(
+        `${file}: its ${lines.length} added line(s) are absent — too few to judge; likely superseded by a later PR, worth an eye`,
+      );
     } else if (landed < lines.length * 0.5) {
       notes.push(`${file}: only ${landed}/${lines.length} added lines present — later edits, or a partial landing`);
     }

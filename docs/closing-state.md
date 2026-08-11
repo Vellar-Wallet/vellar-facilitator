@@ -288,6 +288,40 @@ always-on free service still does not fit (731 h is 97% of the pool by itself).
 So the answer moved from *"no keep-alive"* to *"16 h/day with 210 h of margin"* —
 not to *"leave it on"*.
 
+### 3.4f The verifier passed a PR that was two-thirds missing — sixth instance
+
+`verify-merged.mjs` reported **LANDED** for #45 while `src/rpcstatus.ts`, its
+tests and the upstream draft were absent from `main`.
+
+**The tool was not wrong.** `gh pr diff` returns what was *merged*, so it answered
+*"is what was merged on main?"* — truthfully. The question actually being asked
+was *"is everything I wrote on main?"*, and those diverged because **I pushed two
+commits to the branch seven minutes after the PR was squash-merged and closed.**
+GitHub does not reopen or re-diff a merged PR, so those commits belonged to no PR
+and landed nowhere.
+
+Two errors, both mine: pushing to a merged PR's branch without checking it was
+still open (my own commit message said *"pushed onto #45"* — assumed, not
+verified), and then trusting a LANDED result for a question the tool does not
+answer.
+
+**Sixth instance of content not landing**, and the second caused by branch
+hygiene rather than a squash quirk.
+
+**Fixed structurally.** The verifier now fails when the head branch has commits
+newer than the merge. Two things went wrong while adding it, both worth keeping:
+
+- **The new check silently did nothing at first**, because `headRefName` was not
+  in the fields requested from `gh` — so the branch lookup threw, the `catch`
+  swallowed it, and the check passed everything. *A check written to catch silent
+  passes, silently passing.* It now distinguishes "branch deleted" (healthy) from
+  "could not determine the branch" (reported as unverified).
+- **It then produced a false positive on #43**, whose one distinctive line in
+  `docs/using-it.md` had been legitimately rewritten by #45. "None present" is
+  only evidence when there were enough candidate lines to mean something; below
+  three it is now a note, not a failure. **A verifier that cries wolf gets
+  ignored, which returns it to useless.**
+
 ### 3.5 Tests that passed for the wrong reason — three times
 
 1. **RA-12** — eight tests green against deliberately broken code; the control

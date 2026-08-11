@@ -1,0 +1,51 @@
+[
+  {
+    "label": "module-level slot instead of AsyncLocalStorage (context leak)",
+    "file": "src/rpcstatus.ts",
+    "find": "        const slot = store.getStore();\n        if (slot) {",
+    "replace": "        const slot = (globalThis as any).__leak ??= {};\n        if (slot) {",
+    "test": "src/rpcstatus.test.ts"
+  },
+  {
+    "label": "stop recording the status entirely",
+    "file": "src/rpcstatus.ts",
+    "find": "          slot.captured = captured;",
+    "replace": "",
+    "test": "src/rpcstatus.test.ts"
+  },
+  {
+    "label": "record PENDING too (status stops meaning failure)",
+    "file": "src/rpcstatus.ts",
+    "find": "      if (typeof status === \"string\" && status !== \"PENDING\") {",
+    "replace": "      if (typeof status === \"string\") {",
+    "test": "src/rpcstatus.test.ts"
+  },
+  {
+    "label": "drop the error-code decode",
+    "file": "src/rpcstatus.ts",
+    "find": "          const errorCode = decodeErrorCode(result);",
+    "replace": "          const errorCode = undefined;",
+    "test": "src/rpcstatus.test.ts"
+  },
+  {
+    "label": "remove the try/catch (diagnostics can break a settle)",
+    "file": "src/rpcstatus.ts",
+    "find": "    const result = await original.call(this, tx);\n    try {",
+    "replace": "    const result = await original.call(this, tx);\n    if (true) {",
+    "test": "src/rpcstatus.test.ts"
+  },
+  {
+    "label": "return the bare value (the unsafe-read defect this caught)",
+    "file": "src/rpcstatus.ts",
+    "find": "    return { value, rpcStatus: store.getStore()?.captured };",
+    "replace": "    return value as never;",
+    "test": "src/rpcstatus.test.ts"
+  },
+  {
+    "label": "install silently",
+    "file": "src/rpcstatus.ts",
+    "find": "  log(\n    \"[rpcstatus] MONKEY-PATCH INSTALLED:",
+    "replace": "  void (\n    \"[rpcstatus] MONKEY-PATCH INSTALLED:",
+    "test": "src/rpcstatus.test.ts"
+  }
+]
