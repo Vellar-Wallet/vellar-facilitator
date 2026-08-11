@@ -1,16 +1,15 @@
 ## Keep-alive ping for the hosted testnet facilitator.
 ##
-## WHY THIS EXISTS — it is not a latency tweak.
+## WHY THIS EXISTS — and what it is NOT, since that changed.
 ##
-## Render spins a Free web service down after 15 minutes without inbound
-## traffic. Spinning down DESTROYS the container, and with it the ephemeral
-## filesystem holding CATALOG_FILE and its companion ownership store. So every
-## idle period wipes the Bazaar catalog: a seller's listing disappears and the
-## trust-on-first-use URL bindings reset, reopening the claim race.
+## It used to be the *emptiness* fix: the catalog lived on the container's
+## filesystem, and spin-down destroyed it. That is no longer true. The catalog is
+## in libSQL/Turso and survives a container replacement — verified live across a
+## 42-second cold start with the ownership binding intact.
 ##
-## Keeping the instance awake is therefore the *emptiness* fix for what a
-## developer actually experiences, not merely a cold-start fix. Between deploys,
-## the catalog survives.
+## So this is now purely a LATENCY fix, and should be judged as one. The first
+## request after 15 minutes idle takes ~50 seconds (42 s measured). Nothing is
+## lost by sleeping; a developer just waits.
 ##
 ## THE BUDGET, and why this is not 24/7 by default.
 ##
@@ -82,6 +81,43 @@ name: keepalive
 # and re-do the arithmetic against the CURRENT number of free web services.
 on:
   workflow_dispatch: {}
+  # ENABLED 2026-08-11, against MEASURED headroom rather than a divisor.
+  #
+  # Billing showed 19.37 h consumed 11 days into the cycle across NINE services
+  # — projecting to ~53 h/month, 7% of the pool. The 750-hour limit had been
+  # treated as a binding constraint for a day and a half of decisions; actual
+  # usage was 2.6% of it. See docs/closing-state.md §3.4e.
+  #
+  # THE ARITHMETIC (750 h/workspace/month, ~30.44 days):
+  #
+  #    8h/day ->  244 h   total  297 h   40% of pool   margin 453 h
+  #   12h/day ->  365 h   total  418 h   56%           margin 332 h
+  #   16h/day ->  487 h   total  540 h   72%           margin 210 h   <- chosen
+  #   20h/day ->  609 h   total  662 h   88%           margin  88 h
+  #   24h/day ->  731 h   total  784 h  105%           OVER BUDGET
+  #
+  # NOTE THE LAST ROW. Even with ~700 hours spare, a single always-on Free
+  # service does not fit: 24/7 is 731 h by itself, 97% of the pool before
+  # anything else runs. "We have plenty spare" and "we can leave it on" are
+  # different claims.
+  #
+  # 16h/day is chosen over 20h not on cost but on MARGIN. The projection is 11
+  # days of one cycle; 210 h absorbs being wrong about it, 88 h does not. The
+  # failure mode is not a slow demo — it suspends every Free service in the
+  # workspace, including unrelated production ones.
+  #
+  # Window 08:00-23:59 UTC covers European working hours and the whole US
+  # working day (04:00-20:00 ET, 00:00-16:00 PT). It misses the Asia-Pacific
+  # morning; shifting it is a one-line change, and the cost is identical.
+  #
+  # */5 rather than */10 because the ping is FREE: this repo is public, so
+  # GitHub Actions minutes are unmetered, and instance-hours accrue from the
+  # service being awake rather than from how often it is pinged. Scheduled
+  # workflows can be delayed under load, and a 15-minute idle timeout leaves no
+  # room for a 10-minute interval to slip. If this repo ever goes private,
+  # re-check: Actions minutes are then metered at 2,000/month free.
+  schedule:
+    - cron: "*/5 8-23 * * *"
 
 permissions:
   contents: read

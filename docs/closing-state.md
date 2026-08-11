@@ -249,6 +249,45 @@ the "merged" PR that never landed, arriving a third way.
 it — otherwise a stacked PR can reach `main` having only ever been tested against
 its parent branch.
 
+### 3.4e A limit that was never measured, treated as binding for a day and a half
+
+Render grants **750 free instance-hours per workspace per month**, and exhausting
+it suspends every free service in the workspace. That is real, and the
+consequence is severe, so it was treated as the binding constraint on whether the
+facilitator could be kept warm.
+
+**Actual usage: 19.37 hours, eleven days into the cycle. Projected ~53 h/month —
+2.6% of the limit.** Nine services, ~1.8 hours a day between them, because they
+are all asleep almost all of the time.
+
+What that cost:
+
+- The keep-alive was **disabled entirely** rather than reduced, on the strength
+  of the unmeasured figure.
+- A day and a half of decisions were framed as *"which services can we afford to
+  keep warm"* when the answer was *"all of them, easily"*.
+- Real work was proposed on it: counting services to establish a divisor, and
+  deleting two dormant services to improve that divisor — **for headroom that was
+  never scarce**, from services that were drawing approximately zero.
+
+**The tell was available the whole time and nobody read it.** Billing shows
+consumed hours for the current cycle. One page. The divisor arithmetic
+(`750 ÷ N`) was an *estimate of a quantity that is directly displayed*, and it
+was wrong because its core assumption — that services run continuously — is
+false for anything idle.
+
+Same family as the rest of this register, arriving from the direction of a
+*constraint* rather than a test: **a number that looked like a limit, was
+plausible, was never measured, and shaped decisions for as long as it went
+unchecked.** The corrective is identical to the one for fees — a figure that
+drives a decision carries its source, and "the documented maximum" is not a
+measurement of what you are using.
+
+**What survived the measurement:** the failure mode is still severe, and one
+always-on free service still does not fit (731 h is 97% of the pool by itself).
+So the answer moved from *"no keep-alive"* to *"16 h/day with 210 h of margin"* —
+not to *"leave it on"*.
+
 ### 3.5 Tests that passed for the wrong reason — three times
 
 1. **RA-12** — eight tests green against deliberately broken code; the control
@@ -321,55 +360,78 @@ argument fails with the code.
 
 ---
 
-## 4b. The keep-alive — arithmetic, and the number I cannot supply
+## 4b. The keep-alive — ENABLED 2026-08-11, against measured headroom
 
-The cold start is the most-hit annoyance. The workflow exists with its schedule
-removed; whether to restore it is arithmetic, and one input is not mine to read.
+**Billing settled it: 19.37 h consumed 11 days into the cycle across nine
+services, projecting to ~53 h/month — 7% of the 750-hour pool.** The divisor
+arithmetic that preceded this was chasing a constraint that does not exist; see
+§3.4e, which is the more useful half of this story.
 
-**What draws instance hours.** Render's free tier is **750 hours per WORKSPACE
-per month**, shared. **Free web services and private services draw hours.**
-**Static sites and managed Postgres draw none.** So the divisor is the count of
-free *web/private services*, not the count of things in the dashboard — which is
-why it may well be 4–5 rather than 8.
+### What it costs
 
-**Count it here:** Dashboard → the service list → count only rows typed **Web
-Service** or **Private Service** whose plan is **Free**. I cannot enumerate your
-account, and guessing the divisor is the one part of this that would be
-invention.
+| Window (daily) | This service | + others (~53 h) | Share of pool | Margin |
+| --- | --- | --- | --- | --- |
+| 8 h/day | 244 h | 297 h | 40% | 453 h |
+| 12 h/day | 365 h | 418 h | 56% | 332 h |
+| **16 h/day** | **487 h** | **540 h** | **72%** | **210 h** |
+| 20 h/day | 609 h | 662 h | 88% | 88 h |
+| 24/7 | 731 h | 784 h | **105%** | **over budget** |
 
-**Cost of keeping this one warm:**
+**Note the last row.** Even with ~700 hours spare, a single always-on free
+service does not fit — 24/7 is 731 h by itself, 97% of the pool before anything
+else runs. *"We have plenty spare"* and *"we can leave it on"* are different
+claims, and only the first is true.
 
-| Window | Hours/month | Share of the 750 pool |
+### The schedule
+
+```yaml
+schedule:
+  - cron: "*/5 8-23 * * *"     # 16 h/day, 08:00-23:59 UTC
+```
+
+**16 h rather than 20 h is a margin decision, not a cost one.** The projection is
+eleven days of one cycle. 210 h absorbs being wrong about it; 88 h does not. The
+failure mode is not a slow demo — it suspends every free service in the
+workspace, including unrelated production ones. Having just been wrong about this
+number by a factor of forty, leaving room to be wrong again is cheap.
+
+**`*/5` rather than `*/10`** because the ping is free: this repo is public, so
+Actions minutes are unmetered, and instance-hours accrue from the service being
+awake rather than from how often it is pinged. Scheduled workflows can be delayed
+under load, and a 15-minute idle timeout leaves no room for a 10-minute interval
+to slip.
+
+**The window** covers European working hours and the whole US working day
+(04:00–20:00 ET, 00:00–16:00 PT). It misses the Asia-Pacific morning; shifting it
+costs nothing and is a one-line change.
+
+### What a developer experiences
+
+| | Inside the window | Outside it |
 | --- | --- | --- |
-| 2 h/day | 60 | 8% |
-| 4 h/day | 120 | 16% |
-| 6 h/day | 180 | 24% |
-| 8 h/day | 240 | 32% |
-| 12 h/day | 360 | 48% |
-| 20 h/day | 600 | **80%** |
+| First request | **Normal, ~200-300 ms** | **~50 s** (42 s measured) |
+| Subsequent | Normal | Normal, and stays warm 15 min after each request |
+| Catalog | Present | **Present** — it is in Turso and survives regardless |
 
-**Headroom per service, by divisor:**
+Two details worth knowing:
 
-| Free web services | Hours each | If run continuously |
-| --- | --- | --- |
-| 3 | 250 | 8.3 h/day |
-| 4 | 188 | 6.2 h/day |
-| **5** | **150** | **5.0 h/day** |
-| 8 | 94 | 3.1 h/day |
+- **The keep-alive does not make the window's first request fast.** The ping
+  itself pays the cold start at 08:00; developers benefit from then on.
+- **Outside the window you pay it once**, not per request. After waking, the
+  service stays up for 15 minutes past your last call, so an active session runs
+  at normal speed after the first hit.
 
-**Proposal, if the divisor is 4 or 5:** a **4 h/day weekday window** — 120
-h/month, 16% of the pool, comfortably inside a 150–188 h share even if every
-other service ran flat out. Cron `*/10 8-11 * * 1-5` (a ten-minute ping through a
-four-hour window; the idle timeout is 15 minutes, so ten leaves margin).
+### Orphan to delete
 
-**Do not restore it if the divisor is 8 or more.** At 94 h each, a 120 h window
-is already over budget on its own, and the failure mode is not a slow demo — it
-is **every free service in the workspace suspended**, including unrelated
-production ones.
+**`vellar-db`** — a free Postgres, 24 days old, used by nothing: the facilitator
+is on Turso and the wallet repo uses a different database. Render deletes free
+Postgres at 30 days, so it goes on its own in about six days. **It draws no
+instance-hours**, so it never had any bearing on this decision — deleting it
+early just removes something that reads as load-bearing and is not.
 
-**Whatever is chosen, record the divisor and the arithmetic next to the cron**,
-because the number that makes it safe is invisible from the workflow file and
-will not be re-derived by whoever next edits it.
+**The two dormant web services (`backend`, failed deploy, 8 months; `capcut-bot`,
+7 months) do not need deleting for headroom either.** They were drawing
+approximately nothing, which the measurement confirms.
 
 ## 5. What is open, and who owns it
 
