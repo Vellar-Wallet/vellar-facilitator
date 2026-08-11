@@ -7,6 +7,7 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
+import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { BazaarCatalog } from "./catalog.js";
 import { registerBazaar } from "./bazaar.js";
 import {
@@ -253,8 +254,16 @@ export async function buildServer(
     // real settlement. Prevalidation does not cover it: one static valid XDR is
     // reused for every request.
     let result;
+    let rpcStatus;
     try {
-      result = await facilitator.settle(paymentPayload, paymentRequirements);
+      // The capture slot must wrap the settle call itself: the RPC response we
+      // want is produced deep inside @x402/stellar, which discards it before
+      // returning. See src/rpcstatus.ts.
+      const captured = await withRpcStatusCapture(() =>
+        facilitator.settle(paymentPayload, paymentRequirements),
+      );
+      result = captured.value;
+      rpcStatus = captured.rpcStatus;
     } catch (err) {
       policy?.refundUnspent(reservation);
       throw err;
@@ -266,6 +275,15 @@ export async function buildServer(
     // transaction then failed, so that reservation correctly stands.
     if (policy && result.success === false && !result.transaction) {
       policy.refundUnspent(reservation);
+    }
+    // Surface what the RPC actually said. Without this a caller sees
+    // `settle_exact_stellar_transaction_submission_failed` and cannot tell
+    // TRY_AGAIN_LATER (retry — nothing reached a ledger) from ERROR/txBadSeq
+    // (do not retry, the payload is stale). Additive: the x402-required fields
+    // are untouched.
+    if (result.success === false && rpcStatus) {
+      request.log.warn({ rpcStatus }, "[settle] submission refused by the RPC");
+      return { ...result, rpcStatus };
     }
     return result;
   });
@@ -395,6 +413,9 @@ function isParseableTransactionXdr(payload: PaymentPayload): boolean {
     return false;
   }
 }
+
+// Install before anything can settle. Announces itself loudly — see rpcstatus.ts.
+installRpcStatusCapture();
 
 const isDirectRun = process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js");
 if (isDirectRun) {
