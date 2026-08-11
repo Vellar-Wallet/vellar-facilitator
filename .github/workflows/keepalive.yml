@@ -159,8 +159,11 @@ on:
   # workflows can be delayed under load, and a 15-minute idle timeout leaves no
   # room for a 10-minute interval to slip. If this repo ever goes private,
   # re-check: Actions minutes are then metered at 2,000/month free.
+  # OPTION C, chosen 2026-08-11. Not a compromise between A and B — strictly
+  # better than A at identical cost. A spent four hours a day on the European
+  # evening, when nobody is working, and gave Asia-Pacific nothing.
   schedule:
-    - cron: "*/5 8-23 * * *"
+    - cron: "*/5 0-7,12-19 * * *"
 
 permissions:
   contents: read
