@@ -930,6 +930,43 @@ tests](#live-evidence-vs-unit-tests--what-has-actually-been-exercised-in-product
 The common thread is that **a green result is not self-validating**: something
 independent has to be able to contradict it.
 
+### Operational lesson: a secret that reaches a transcript is burned by that fact
+
+Found while inventorying the walkthrough wallet for burn. **Four funded testnet
+secrets are permanently in this engagement's session transcript** — the
+self-contained F11 reproduction environment (issuer, payer, sponsor, merchant B),
+printed before the `argv` lesson below was learned and labelled at the time
+*"testnet only, disposable"*. They were never disposed of. Two remain funded with
+~10,000 XLM each.
+
+**A transcript cannot be scrubbed.** Unlike a file in `/tmp` or a shell history
+entry, there is no `rm` for it. So the exposure is not a cleanup task, it is a
+permanent state:
+
+> **A secret that reaches a transcript is compromised by that fact alone**,
+> regardless of what is done afterwards. Rotation is the only remedy, and
+> prevention is the only real control.
+
+What this changes in practice, and what was done differently for the walkthrough
+key as a result:
+
+- Generate **and store** inside a single process, so the value is never a shell
+  argument, never a command substitution result that gets echoed, and never
+  printed. Only the public key crosses the boundary.
+- **Verify it, do not assume it.** The walkthrough key was checked by hashing
+  every `S[A-Z2-7]{55}` candidate in the transcript against the real secret — it
+  is not present. That check is cheap and is the only way to know.
+- Treat exposed accounts as **permanently compromised** rather than cleaned:
+  never reuse, never re-fund, never give them a role that matters.
+
+Verified alongside: the live facilitator sponsor `GBUCR6H2…` is **not** among the
+exposed keys, and neither is the walkthrough agent key. The blast radius is
+confined to four disposable testnet accounts, which is luck as much as design —
+the same mistake with the sponsor key would have been unrecoverable.
+
+The full inventory, including the wallet side, is in
+[`docs/walkthrough-wallet-spec.md`](./walkthrough-wallet-spec.md) §7.
+
 ### Operational lesson: secrets in `argv`
 
 During the F11 reproduction, throwaway secrets were passed as command-line

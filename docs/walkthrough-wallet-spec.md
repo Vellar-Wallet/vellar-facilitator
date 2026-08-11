@@ -386,6 +386,62 @@ So for this wallet:
 - [ ] **The demo seller can be left running** — it holds no secret and sleeps on
       its own. Only its instance hours matter, and they are pooled per workspace.
 
+### Burn inventory — everywhere the wallet's details exist
+
+Written as an inventory rather than a cleanup list, because **one category cannot
+be cleaned** and should be named as known and accepted rather than discovered
+later.
+
+**Wallet side (reported by the provisioning session):**
+
+- [ ] `vela-wallet/docs/decisions.md` — local-only, gitignored. Public topology.
+- [ ] That session's transcript under `~/.claude/projects/` — **public topology
+      only, no secrets.** Cannot be scrubbed; accepted.
+- [ ] Its scratchpad script contains no identifiers — everything travelled via
+      environment variables.
+
+**Facilitator side (this session), verified rather than assumed:**
+
+- [ ] **`agent.key` in the session scratchpad** — `0600` in a `0700` directory
+      outside the repo. **This is the only copy of the secret.** Deleting it is
+      the burn (see the on-chain section above).
+- [ ] `evidence.md` in the same scratchpad — public identifiers and the agent
+      **public** key only.
+- [ ] Temporary diagnostics (`*-tmp.mjs`) — gitignored, and confirmed to contain
+      **no** S-shaped strings; they read the key from the environment.
+- [ ] **This session's transcript** — checked by hashing every `S[A-Z2-7]{55}`
+      candidate against the real key: **the agent secret is NOT present.** The
+      generate-and-store-in-one-process form held.
+
+### Known and accepted: transcript residue from the earlier F11 reproduction
+
+**Four funded testnet secrets are permanently in this session's transcript**, at
+lines ~2112 and ~2215 — the self-contained F11 test environment built before the
+`argv` lesson was learned, labelled at the time as *"testnet only, disposable"*.
+They were never disposed of.
+
+| Role | Account | State |
+| --- | --- | --- |
+| F11 repro sponsor | `GBOC2UOB…` | **live, 9,999.99 XLM** |
+| Merchant B | `GDS43IM6…` | **live, 10,000.00 XLM** |
+| Issuer | `GD2P22IM…` | live |
+| Payer | `GAOP33R6…` | not funded |
+
+**The live facilitator sponsor `GBUCR6H2…` is NOT among them** — verified against
+`/supported`. Nor is the walkthrough agent key.
+
+**A transcript cannot be scrubbed.** So the correct posture is not cleanup, it is
+containment:
+
+- [ ] Treat all four as **permanently compromised**. Never reuse them, never fund
+      them further, never grant them a role in anything that matters.
+- [ ] Drain them if convenient; testnet XLM has no value, so this is hygiene
+      rather than loss mitigation.
+- [ ] **The transferable rule:** a secret that reaches a transcript is burned by
+      that fact alone, regardless of what else is done to it. This is why the
+      walkthrough key was generated and stored inside a single process and never
+      printed — and why that check was performed rather than assumed.
+
 ### Record
 
 - [ ] **Append the wallet to `docs/decisions.md`** with public values only and a
