@@ -14,10 +14,22 @@ roles, two scripts, both in `examples/`.
 - Node ≥ 20, `npm install` in both the repo root and `examples/`
 - A funded testnet **sponsor** account (facilitator fee payer) — fund any new
   keypair at [friendbot](https://friendbot.stellar.org)
-- A **merchant** account (`payTo`), holding a trustline to the payment asset
-- A **payer**: any x402-capable Stellar signer. The examples use a Vellar
-  smart account with an ed25519 session key (the "agent with a budget"
-  pattern); a plain classic keypair works too.
+- A **payment asset**, a **merchant** account holding a trustline to it, and a
+  funded **payer**. One command produces all three:
+
+  ```sh
+  cd examples && node provision-testnet.mjs
+  ```
+
+  There is no built-in test token and no faucet — the facilitator settles in
+  whatever SEP-41 asset you name, so you bring your own. The demo seller's
+  `X402TST` **cannot be acquired by anyone**: its issuer secret no longer
+  exists. See [`using-it.md` § First: bring your own payment
+  asset](./using-it.md#first-bring-your-own-payment-asset).
+
+- A **payer signer**: a plain classic keypair (`buyer-classic.mjs`) or a Vellar
+  smart account with an ed25519 session key (`buyer.mjs`, the "agent with a
+  budget" pattern). Both are proven against this facilitator.
 
 ## 1. Start the facilitator
 
@@ -68,6 +80,11 @@ cd examples
 FACILITATOR_URL=http://localhost:4100 PAYTO=G... ASSET=C... PRICE_ATOMIC=1000000 node seller.mjs
 ```
 
+`PAYTO` and `ASSET` are the values printed by `provision-testnet.mjs`. The
+seller refuses to boot unless `PAYTO` is funded and holds a trustline to
+`ASSET` — without it, payments verify and then fail at settlement with an error
+that reads like a spend control refusing them.
+
 An unpaid `GET /quote` returns `402` with a `PAYMENT-REQUIRED` header that
 carries both the payment requirements and the (server-enriched) discovery
 extension.
@@ -88,10 +105,26 @@ The buyer flow, condensed:
 
 ```sh
 cd examples
-RESOURCE_URL=http://localhost:4031/quote \
+
+# Classic keypair — the smaller path, no extra dependencies.
+RESOURCE_URL=http://127.0.0.1:4031/quote \
+PAYER_SECRET=S... SIM_SOURCE_ACCOUNT=G... \
+node buyer-classic.mjs
+
+# Or a Vellar smart account, for an on-chain enforced budget.
+RESOURCE_URL=http://127.0.0.1:4031/quote \
 WALLET_CONTRACT_ID=C... AGENT_SECRET=S... SIM_SOURCE_ACCOUNT=G... \
 node buyer.mjs
 ```
+
+`SIM_SOURCE_ACCOUNT` must be a **different** account from the payer. The
+facilitator rebuilds the transaction with itself as the source, so yours is used
+only to simulate — but simulating from the payer yields source-account
+credentials, which the scheme rejects
+(`invalid_exact_stellar_payload_unsupported_credential_type`).
+
+Expect to retry: roughly one settle in three fails on testnet with an empty
+`transaction`. Nothing is spent when that happens.
 
 ## 4. Discover it
 
@@ -137,6 +170,13 @@ as MCP tools — see the README for client config.
 
 - **Catalog-on-settle.** A resource enters the catalog only after a real
   payment settles for it. Verify-only traffic doesn't catalog (spam guard).
+- **Catalog writes are one-way.** The entry is keyed by URL and there is no
+  self-service removal. That is harmless here, because this page runs its own
+  facilitator against a local database you can delete. It is **not** harmless if
+  you point `FACILITATOR_URL` at the shared hosted instance while your seller is
+  still on `localhost`: that leaves a permanently unverifiable public entry. See
+  [`using-it.md` § Your first settlement writes to a shared
+  catalog](./using-it.md#your-first-settlement-writes-to-a-shared-catalog-permanently).
 - **Smart-account fees.** If your payer is policy-governed, the verify-time
   simulation runs the policy and the fee estimate lands well above a plain
   transfer. This facilitator's ceiling accommodates it by default; other

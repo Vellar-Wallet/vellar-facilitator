@@ -19,6 +19,44 @@ point anything real at it.
 
 ---
 
+## First: bring your own payment asset
+
+Both roles need this, and it is the step most likely to stop you before you
+start.
+
+The facilitator settles in a **SEP-41 token, and it does not care which one.**
+There is no canonical asset, no built-in test token, and no faucet. You bring a
+token you control.
+
+**You cannot use the demo seller's token.** The `X402TST` asset (`CDYCX4PE…`)
+advertised by `vellar-seller-demo` was minted by an issuer keypair generated
+in-process by a throwaway script; that secret no longer exists anywhere. Nobody
+can mint more of it — not you, not us. Reading the contract id out of
+`/discovery/resources` will not help, because the problem is not knowing the id,
+it is that no one can obtain a balance. **A payment to that demo resource cannot
+be built by anyone except its original wallet.** Point your buyer at your own
+seller instead.
+
+Making your own takes about two minutes on testnet:
+
+```sh
+cd examples && npm install
+node provision-testnet.mjs
+```
+
+That creates an issuer, deploys a Stellar Asset Contract for a fresh token,
+funds a merchant account **with a trustline** (your `payTo`), funds a classic
+payer **with a balance** (your buyer), and prints a paste-ready env block. Add
+`AGENT_PUBLIC=G…` if you also want a Vellar smart account as the payer.
+
+Doing it by hand needs, in order: an issuer account, a SAC for the asset
+(`createStellarAssetContract`), a `changeTrust` on every classic recipient, and
+a `mint` to the payer. Two traps the script already handles — friendbot
+returning 200 before the RPC can see the account, and `prepareTransaction`
+rejecting classic operations such as `changeTrust`.
+
+---
+
 ## Merchants
 
 ### What you change
@@ -47,6 +85,20 @@ that reports exactly what it is advertising. That last part is worth stealing: i
 exists because a hardcoded `localhost` in a log line once hid a broken deployment
 for weeks.
 
+Run it against your own merchant and asset — both are read from the environment:
+
+```sh
+cd examples
+PAYTO=G... ASSET=C... PRICE_ATOMIC=1000000 node seller.mjs
+```
+
+It refuses to boot if that pair cannot be paid: `PAYTO` must be a funded account
+holding a **trustline to `ASSET`**. Without the trustline every payment verifies
+and then fails at settlement, with an on-chain error that reads exactly like a
+spend control refusing it — so the check happens once, at boot, and names the
+fix. `SKIP_TRUSTLINE_CHECK=1` bypasses it; an unreachable RPC warns rather than
+blocks.
+
 ### What your 402 must declare
 
 Your unpaid response needs payment requirements. For discovery, add the bazaar
@@ -73,8 +125,14 @@ const routes = {
 };
 ```
 
+`SEP41_CONTRACT_ID` is **your** token's contract id — the `ASSET` value printed
+by `provision-testnet.mjs`, or the SAC of any asset you control. There is no
+default to fall back on; see [§ First: bring your own payment
+asset](#first-bring-your-own-payment-asset).
+
 **Your account needs a trustline to the payment asset**, or settlement fails
-on-chain after everything else has succeeded.
+on-chain after everything else has succeeded. `seller.mjs` checks this at boot
+so you find out before a buyer does.
 
 ### Getting ownership verification right
 
@@ -114,6 +172,10 @@ curl -s https://vellar-facilitator.onrender.com/health
 # → "unverifiableEntries": 1   when any entry's URL can never be verified
 #   (http, private address, or a route template — a structural problem, not a
 #    transient one)
+#
+# The field is ABSENT, not 0, when nothing is wrong — a healthy catalog does not
+# carry the key at all. Do not read "no such field" as "the endpoint does not
+# report this"; check for its presence, not its value.
 
 curl -s 'https://vellar-facilitator.onrender.com/discovery/resources' \
   | python3 -c 'import sys,json; [print(i["resource"], i["trust"]["ownerVerified"]) for i in json.load(sys.stdin)["items"]]'
@@ -175,12 +237,28 @@ needs [runbook §1](./operator-runbook.md).
 | The **payment asset**, and a trustline to it | **XLM for fees** — the facilitator's sponsor pays them |
 | A Stellar signer: a plain classic keypair **or** a smart account | An account on this facilitator. No signup, no key, no allowlist |
 
-**A smart account is optional.** The examples use a Vellar smart account with an
-ed25519 session key — the "agent with a budget" pattern, where an on-chain policy
-contract constrains what the key may spend. A classic keypair works fine. The
-reason the examples use one: policy-governed accounts run their policy inside
-`__check_auth`, which pushes the simulated fee to ~130k stroops, and facilitators
-defaulting to a 50k ceiling reject them. This one defaults to 500,000.
+**A smart account is optional, and both paths have working code.**
+
+| Payer | Example | Use it when |
+| --- | --- | --- |
+| **Classic keypair** | `examples/buyer-classic.mjs` | You just want to pay. No extra dependencies. |
+| **Vellar smart account** | `examples/buyer.mjs` | You want an agent whose budget is enforced on-chain by a policy contract. |
+
+The classic example is the smaller one and is proven against this facilitator
+(settlement `6cf8091c…`). The smart-account example exists because of the "agent
+with a budget" pattern: policy-governed accounts run their policy inside
+`__check_auth`, which pushes the simulated fee to ~130k stroops, and
+facilitators defaulting to a 50k ceiling reject them. This one defaults to
+500,000.
+
+**Whichever you use, simulate from a different account than the payer.** Both
+examples take a `SIM_SOURCE_ACCOUNT`: any funded account, never charged, never
+signs. It exists because the facilitator **rebuilds the transaction with itself
+as the source** before submitting, so your source is only ever used to simulate
+— but if the payer *is* that source, Soroban authorizes the transfer with
+source-account credentials, and the scheme accepts only address credentials
+(`invalid_exact_stellar_payload_unsupported_credential_type`). Simulating from a
+separate account is what produces an auth entry you can sign detached.
 
 ### Discovering resources
 
@@ -217,9 +295,22 @@ filter on `verified_only`; it is inert here and returns nothing.
 5. Retry with PAYMENT-SIGNATURE: base64(payload) → 200 + content
 ```
 
-**Copy from `examples/buyer.mjs`** — it is the exact signing code proven against
-this facilitator, including the smart-account auth-entry shape, which is the part
-worth not reinventing.
+**Copy from `examples/buyer-classic.mjs`** (classic keypair) or
+`examples/buyer.mjs` (smart account). Both are the exact signing code proven
+against this facilitator; the auth-entry shape is the part worth not
+reinventing.
+
+```sh
+cd examples
+RESOURCE_URL=https://your-seller/quote \
+PAYER_SECRET=S... SIM_SOURCE_ACCOUNT=G... \
+node buyer-classic.mjs
+```
+
+The two differ only in step 3. A classic account signs its auth entry with a vec
+of `{ public_key, signature }` maps; a smart account signs with its own
+contract-defined `SignerKey`/`Signature` shape. Everything else — the transfer,
+the extension echo, the retry — is identical.
 
 Two things that will cost you time otherwise:
 
@@ -233,15 +324,65 @@ Two things that will cost you time otherwise:
 
 ## What will bite you on the hosted instance
 
-Five things, in the order you will meet them.
+Six things, in the order you will meet them.
 
 | | What | What to do |
 | --- | --- | --- |
 | **1** | **~50s on the first request after 15 min idle — but only OUTSIDE the warm window.** A keep-alive holds it warm **00:00–07:59 and 12:00–19:59 UTC** (covering the working day in Asia-Pacific, Europe and US East). Measured cold start 42s | Inside the window, nothing to do. Outside it, set a generous client timeout or send a warming `GET /health` first (exempt from rate limiting). Either way you pay it once — it stays warm 15 min past your last call |
-| **2** | **Roughly 1 settle in 3 fails** with `settle_exact_stellar_transaction_submission_failed` and an empty `transaction` | **Retry.** It fails before the chain sees anything, so nothing was spent and nothing double-pays. Observed at 3/11 and 3/9 across two sessions; cause not established — a testnet RPC lead, not a facilitator defect |
+| **2** | **Roughly 1 settle in 3 fails**, with an empty `transaction` and one of two reasons: `settle_exact_stellar_transaction_submission_failed` or `settle_exact_stellar_transaction_failed` | **Retry — and no, you did not pay twice.** See below |
 | **3** | **Trust badges are inert.** `verification` and `acceptsVerification` are always `"unknown"` | Read `ownerVerified` instead — that one works. The badge source is deployed nowhere and is not switching on soon (README has the dependency chain) |
 | **4** | **`?verified_only=true` returns an empty list** | Do not use it. It filters on the inert field |
-| **5** | **`pagination.total` ignores `verified_only`** | You will see `items: []` alongside `total: 1`. Trust `items.length` |
+| **5** | **`curl -I` on a paid route returns 200, not 402** | Debug with `GET`, not `HEAD` — a HEAD request does not carry the payment challenge, so the route looks unpaid when it is working correctly |
+| **6** | **Your first settlement writes to a shared catalog, and the write is one-way** | Know this before you settle, not after — see below |
+
+### Your first settlement writes to a shared catalog, permanently
+
+**Read this before you settle against the hosted instance, because it cannot be
+undone afterwards.**
+
+The catalog is global to the facilitator, and a resource is added the first time
+a payment settles for it. Point a buyer at a seller running on
+`http://localhost:4031/quote` — which is exactly what the walkthrough tells you
+to do — and that URL is now a **public entry on a shared instance**, visible to
+every agent calling `/discovery/resources`.
+
+It is permanent in practice:
+
+- A loopback URL can never pass ownership verification (https-only, no
+  loopback), so the entry is `ownerVerified: false` **forever**, and counted in
+  `/health`'s `unverifiableEntries`.
+- There is no self-service removal, and no supported operator one — the runbook
+  explicitly warns against deleting ownership rows to clear entries.
+- The only removal path is eviction once the catalog passes `MAX_ENTRIES`.
+
+Nothing breaks, and your payments are unaffected. The cost is borne by everyone
+reading the catalog: agents see a localhost URL they cannot call, listed
+alongside real resources.
+
+**If you would rather not leave one:** run your own facilitator for the
+walkthrough (`docs/guide.md`, one command and a local database), and point at the
+hosted instance only once your seller has a public https URL. If you do settle
+from localhost, that is accepted and expected here — just do it knowing it is a
+one-way write to shared state.
+
+### About that settle failure
+
+Both reasons above mean the same thing in practice: **the transaction was never
+submitted, so nothing was spent and nothing double-pays.** Retry the whole
+flow — sign a fresh payload, because signatures expire in ledgers.
+
+That is measured, not assumed. Across 13 settlement attempts in one session, 6
+failed; the merchant's on-chain balance afterwards was exactly the number of
+*successes* × the price, with no partial or duplicate transfers from any failed
+attempt. If you want to check it yourself, read the merchant's trustline balance
+on Horizon before and after — an empty `transaction` field means there is no
+on-chain event to reconcile.
+
+The rate is not stable. The doc's "1 in 3" came from earlier sessions (3/11 and
+3/9); the 6/13 above was a worse day. Treat retry as mandatory, not as a rare
+path. Cause not established — it looks like a testnet RPC lead rather than a
+facilitator defect, which is also why the two reason codes are not meaningfully
+different to a caller.
 
 Also worth knowing: **60 requests/min per IP**, **32 KiB request bodies**, and
 spend-control refusals arrive as `503 settlement_refused` with a machine-readable
