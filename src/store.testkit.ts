@@ -66,6 +66,12 @@ export class FailingStore implements CatalogStore {
   saveEntries(rows: StoredEntryRow[]): Promise<void> {
     return this.inner.saveEntries(rows);
   }
+  markVerified(resourceKey: string, payTo: string, at: number): Promise<void> {
+    return this.inner.markVerified(resourceKey, payTo, at);
+  }
+  displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void> {
+    return this.inner.displaceOwnership(resourceKey, newPayTo, at);
+  }
   close(): Promise<void> {
     return this.inner.close();
   }

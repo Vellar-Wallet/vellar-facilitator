@@ -48,6 +48,9 @@ export interface StoredOwnership {
   /** Canonical resource key: origin + pathname, no query (G-3). */
   resourceKey: string;
   boundPayTo: string[];
+  /** True when ANY row for this key carries a verified_at. Gates displacement
+   *  only; never served, and never the source of the `ownerVerified` badge. */
+  everVerified?: boolean;
 }
 
 export interface StoredEntryRow {
@@ -84,6 +87,12 @@ export interface CatalogStore {
   /** Debounced bulk entry write. Entries are reconstructible from settlement
    *  traffic, so coalescing is safe here and is NOT safe for ownership. */
   saveEntries(rows: StoredEntryRow[]): Promise<void>;
+  /** Record that Layer 2 proved this binding. Makes it non-displaceable, for
+   *  good. */
+  markVerified(resourceKey: string, payTo: string, at: number): Promise<void>;
+  /** Replace every binding for a URL with one proven claimant. See the
+   *  implementation for why this is neither an UPDATE nor a plain INSERT. */
+  displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -168,10 +177,35 @@ const SCHEMA = [
   // `bound_at` orders them: the first row is the TOFU winner, later rows are
   // operator-added, and load order must be stable because boundPayTo[0] is
   // treated as the owner.
+  // `verified_at` is NULL until Layer 2 has returned `match` for this binding at
+  // least once. Non-null means "this binding has PROVEN ownership", which makes
+  // it permanently NON-DISPLACEABLE.
+  //
+  // WHY THIS IS DURABLE WHEN RA-9 SAYS VERIFICATION IS NOT. They are two
+  // different facts and only one of them is served:
+  //
+  //   entry.verifiedOwner  the BADGE consumers read. Still ephemeral, still
+  //                        re-derived by G-1 on every boot, still never trusted
+  //                        from storage. RA-9 is unchanged.
+  //   ownership.verified_at  whether this binding may be DISPLACED. Durable,
+  //                        never served, never in an API response.
+  //
+  // It has to be durable because the badge is not. `verifiedOwner` lives on the
+  // ENTRY, and evictToCap() drops entries while ownership survives — so a
+  // re-catalog after eviction rebuilds the entry with `verifiedOwner: false`.
+  // If displaceability read that flag, EVICTION WOULD BE A DOWNGRADE PRIMITIVE:
+  // fill the catalog to MAX_ENTRIES, evict the victim, and their proven binding
+  // becomes displaceable again. Restart has the same effect for the same reason.
+  //
+  // And it grants an attacker nothing new: forging `verified_at` requires write
+  // access to this database, and anyone with that can rewrite `pay_to` directly,
+  // which is strictly less work. The F6 boundary already covers it — see the
+  // relocation note in docs/security-audit.md.
   `CREATE TABLE IF NOT EXISTS ownership (
      resource_key TEXT NOT NULL,
      pay_to       TEXT NOT NULL,
      bound_at     INTEGER NOT NULL,
+     verified_at  INTEGER,
      PRIMARY KEY (resource_key, pay_to)
    )`,
   // Catalog entries. Reconstructible from settlement traffic, hence the weaker
@@ -218,6 +252,17 @@ export class LibsqlCatalogStore implements CatalogStore {
 
   async init(): Promise<void> {
     for (const stmt of SCHEMA) await this.run(() => this.client.execute(stmt));
+    // CREATE TABLE IF NOT EXISTS does NOT add a column to a table that already
+    // exists, so a database created before displacement shipped keeps the old
+    // three-column shape and every query naming verified_at fails. Checked
+    // against sqlite's own catalog rather than attempted-and-caught, because
+    // "duplicate column name" would otherwise be swallowed by the same handler
+    // that swallows real errors.
+    const cols = await this.run(() => this.client.execute("PRAGMA table_info(ownership)"));
+    if (!cols.rows.some((r) => r.name === "verified_at")) {
+      console.warn("[store] migrating: adding ownership.verified_at (pre-displacement database)");
+      await this.run(() => this.client.execute("ALTER TABLE ownership ADD COLUMN verified_at INTEGER"));
+    }
   }
 
   /**
@@ -234,12 +279,15 @@ export class LibsqlCatalogStore implements CatalogStore {
    */
   async loadOwnership(): Promise<StoredOwnership[]> {
     const res = await this.run(() =>
-      this.client.execute("SELECT resource_key, pay_to FROM ownership ORDER BY resource_key, bound_at, rowid"),
+      this.client.execute(
+        "SELECT resource_key, pay_to, verified_at FROM ownership ORDER BY resource_key, bound_at, rowid",
+      ),
     );
     // Grouped, ORDER preserved: boundPayTo[0] is the TOFU winner and is treated
     // as the owner everywhere downstream, so a load that reordered them would
     // silently hand ownership to an operator-added address.
     const byKey = new Map<string, string[]>();
+    const verified = new Set<string>();
     for (const r of res.rows) {
       const key = r.resource_key;
       const payTo = r.pay_to;
@@ -251,8 +299,17 @@ export class LibsqlCatalogStore implements CatalogStore {
       const list = byKey.get(key);
       if (list) list.push(payTo);
       else byKey.set(key, [payTo]);
+      // ANY verified row makes the whole binding non-displaceable. A URL whose
+      // owner was proven and who then had a second address added by the runbook
+      // §1 rotation must not become displaceable because the newer row carries
+      // no proof of its own.
+      if (r.verified_at !== null && r.verified_at !== undefined) verified.add(key);
     }
-    return [...byKey.entries()].map(([resourceKey, boundPayTo]) => ({ resourceKey, boundPayTo }));
+    return [...byKey.entries()].map(([resourceKey, boundPayTo]) => ({
+      resourceKey,
+      boundPayTo,
+      everVerified: verified.has(resourceKey),
+    }));
   }
 
   /** G-6 CLOSES HERE: the cap is enforced on the LOAD path by the query itself. */
@@ -327,6 +384,60 @@ export class LibsqlCatalogStore implements CatalogStore {
                                                         last_updated = excluded.last_updated`,
           args: [r.resourceKey, r.payload, r.lastUpdated] as InArgs,
         })),
+        "write",
+      ),
+    );
+  }
+
+  async markVerified(resourceKey: string, payTo: string, at: number): Promise<void> {
+    await this.run(() =>
+      this.client.execute({
+        // Only if not already set: the FIRST proof is the one that matters, and
+        // rewriting the timestamp on every re-verification would turn a
+        // permanent fact into a moving one.
+        sql: "UPDATE ownership SET verified_at = ? WHERE resource_key = ? AND pay_to = ? AND verified_at IS NULL",
+        args: [at, resourceKey, payTo] as InArgs,
+      }),
+    );
+  }
+
+  /**
+   * Replace every binding for a URL with one proven claimant — DELETE then
+   * INSERT, in a single atomic batch.
+   *
+   * Why not UPDATE. The same reason runbook §1 forbids it, arriving from the
+   * other direction: `pay_to` is half the primary key, and a URL may legally
+   * carry SEVERAL rows (a §1 rotation produces `[OLD, NEW]`). An UPDATE would
+   * rewrite one row and silently leave the others bound, so the displaced
+   * squatter would remain an acceptable payee — the exact thing displacement
+   * exists to end.
+   *
+   * Why not a plain INSERT. Rows load ordered by `bound_at`, and
+   * `boundPayTo[0]` is the owner downstream. Appending would leave the squatter
+   * FIRST, so the proven claimant would be added as a secondary address on a
+   * URL still owned by the party they just displaced. Worse than doing nothing.
+   *
+   * Why one batch. The DELETE must never be observable without the INSERT. This
+   * table IS the tombstone record — "has this URL ever been bound" is "is there
+   * a row" — so a moment with zero rows is a moment when the URL is open to
+   * first-writer claim by anyone. libSQL wraps a batch in an implicit
+   * transaction, so that moment cannot be observed and, on failure, does not
+   * happen at all.
+   *
+   * The new row is born verified: we only get here because Layer 2 just returned
+   * `match` for this payTo. That is what makes displacement ONE-WAY — the
+   * result is immediately non-displaceable by the next claimant.
+   */
+  async displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void> {
+    await this.run(() =>
+      this.client.batch(
+        [
+          { sql: "DELETE FROM ownership WHERE resource_key = ?", args: [resourceKey] as InArgs },
+          {
+            sql: "INSERT INTO ownership (resource_key, pay_to, bound_at, verified_at) VALUES (?, ?, ?, ?)",
+            args: [resourceKey, newPayTo, at, at] as InArgs,
+          },
+        ],
         "write",
       ),
     );

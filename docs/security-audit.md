@@ -883,7 +883,7 @@ change.
 
 | ID | Finding | Why |
 | --- | --- | --- |
-| **G-2** | A bound URL has no `payTo` rotation path | **open** — manual operator procedure documented (runbook §1); the automated fix trades away F11's takeover resistance and is deliberately not built. |
+| **G-2** | A bound URL has no `payTo` rotation path | **half closed.** Displacement (2026-08-11) handles the UNVERIFIED case automatically: a claimant who proves ownership through the resource's own 402 challenge takes a binding that was never proven. The VERIFIED case stays manual (runbook §1) — proof does not displace proof, so a domain that genuinely changed hands is still indistinguishable from a hijack and still an operator decision. |
 | **G-5** | Empty-`accepts` entry loads with no tombstone and is then unclaimable forever | **open** — reachable only by someone who can already write `CATALOG_FILE`. |
 | **G-6** | `MAX_ENTRIES` not enforced on the load path | **open** — a large `CATALOG_FILE` is an unbounded startup memory load. |
 | **G-7** | Bootstrap-derived bindings are seeded in memory but not written | **open** — undercuts the one-boot bootstrap procedure; runbook §2 tells the operator to verify the file before removing the flag. |
@@ -1142,7 +1142,55 @@ being picked here.
 
 </details>
 
-### G-2 — A bound URL has no `payTo` rotation path — **Medium** — **OPEN**
+### G-2 — A bound URL has no `payTo` rotation path — **Medium** — **HALF CLOSED (displacement, 2026-08-11)**
+
+#### What displacement changed, and what it deliberately did not
+
+**The rule.** A settle arrives for a URL whose binding was never verified, and the
+claimant proves ownership by serving a 402 challenge naming their payTo. The URL
+rebinds to them. **Unverified → verified only.**
+
+This is **proof beats no-proof**, not proof beats proof. An unverified binding is
+arrival order — whoever settled first — which is evidence of nothing. A verified
+binding *is* evidence. The takeover case refused as 2C stays refused, and for the
+original reason: a domain changing hands and a domain being hijacked are
+indistinguishable from here.
+
+**Three things it turns out this needed, none of them obvious from the rule:**
+
+1. **A durable `verified_at`, and it is not an RA-9 regression.** `verifiedOwner`
+   lives on the ENTRY and is ephemeral by design. `evictToCap()` drops entries
+   while ownership survives, so a re-catalog after eviction rebuilds the badge as
+   `false` — which would have made **eviction a downgrade primitive**: fill the
+   catalog to `MAX_ENTRIES`, evict the victim, displace their proven binding.
+   Restart had the same effect. Displaceability therefore reads a durable
+   `ownership.verified_at`, while the served badge stays ephemeral and re-derived.
+   Two facts, two lifetimes. Forging the durable one requires database write
+   access, and anyone with that can rewrite `pay_to` directly — strictly less
+   work — so it grants no new capability. **RA-9 is unchanged: the badge is still
+   never trusted from storage.**
+2. **The rows are REPLACED, not updated and not appended.** `pay_to` is half the
+   primary key and a URL may legally carry several rows (a §1 rotation produces
+   `[OLD, NEW]`), so an `UPDATE` would leave the displaced squatter bound as a
+   secondary payee. An append is worse: rows load ordered by `bound_at` and
+   `boundPayTo[0]` is the owner, so the proven claimant would be added *underneath*
+   the party they just displaced. It is `DELETE` + `INSERT` in one batch, and the
+   batch matters — this table is the tombstone record, so a moment with zero rows
+   is a moment when anyone can claim the URL.
+3. **Cooldowns are keyed by (url, payTo), not url.** A per-URL key would let an
+   attacker's failed attempt park the URL and block the real owner's legitimate
+   one — a cheap denial of the recovery path, aimed at the party it exists for.
+
+**Stats are RESET on displacement.** The trust block answers "what is this
+merchant's history", and after displacement the merchant is a different party.
+G-4 established that a bound owner can inflate their own counters, so inheriting
+them would let a squatter manufacture a reputation and hand it to the victim,
+while consumers read someone else's activity as the current merchant's record.
+
+**Still open, and unchanged by this:** rotating a payTo on a **verified** binding.
+That is runbook §1, and the procedure now opens by telling the operator how to
+tell which case they have — because for the unverified half, the right action is
+to do nothing.
 
 Confirmed: once `ownership.set(url, [payTo])` happens, the binding is never
 appended to or replaced except by reading the ownership file from disk. There is

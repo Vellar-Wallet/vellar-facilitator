@@ -12,8 +12,45 @@ identical from the outside and have opposite fixes.
 
 ## 1. "My payments settle, but the catalog still lists my old payment address"
 
-This is **G-2**: a resource URL's `payTo` is bound on first use and there is no
-in-band way to rotate it.
+This is **G-2**: a resource URL's `payTo` is bound on first use.
+
+> ### FIRST: check whether you need to do anything at all
+>
+> Since displacement shipped, **this procedure covers only half the cases it used
+> to.** The other half now resolves itself, and running the manual procedure on
+> it would be wasted work at best.
+>
+> ```
+> curl -sS '<base>/discovery/resources' | python3 -m json.tool | grep -i ownerVerified
+> ```
+>
+> | What you see | What it means | What to do |
+> | --- | --- | --- |
+> | `ownerVerified: false` on the entry | The binding was **never proven**. The rightful owner takes it back **automatically** by settling once, provided their endpoint's own 402 challenge names their address. | **Nothing.** Tell them to settle once and re-check. See below for why it may not have happened yet. |
+> | `ownerVerified: true` | The binding **was proven** by the address currently bound. Displacement will not touch it — deliberately, because proof does not displace proof. | **This procedure.** |
+>
+> **The distinction is proof, not identity.** An unverified binding is arrival
+> order — whoever settled first — which is evidence of nothing, so a claimant who
+> can prove ownership outranks it. A verified binding is evidence, and a domain
+> genuinely changing hands is indistinguishable from a hijack, so that case stays
+> with you.
+>
+> **If it is unverified and displacement has not happened**, the usual reasons, in
+> order of likelihood:
+> - **The merchant has not settled since.** The check fires on their settlement;
+>   nothing runs on a timer.
+> - **Their endpoint does not name the new address in its own 402.** That is the
+>   proof, and without it there is nothing to act on — this is the same condition
+>   that makes the check safe.
+> - **They are inside the cooldown** from a recent failed attempt. Keyed per
+>   claimant, so ask them to wait it out and settle again.
+> - **The URL is not fetchable** — http, a private address, or a route template.
+>   `/health` reports `unverifiableEntries` when this is the case, and procedure 6
+>   covers it.
+>
+> One thing that is NOT a reason: a squatter holding the URL. Displacement exists
+> exactly for that, and the squatter's binding is unverified by construction —
+> they cannot serve a 402 naming themselves from a domain they do not control.
 
 ### Symptom
 
@@ -142,6 +179,12 @@ memory and will overwrite a live hand-edit.
 6. **Start the service.**
 
 ### Verify
+
+0. **Sanity: you should only be here for a VERIFIED binding.** If
+   `ownerVerified` was `false`, stop and re-read the box at the top of this
+   procedure — you have done by hand what the service would have done on the
+   merchant's next settlement, and you have done it on the weaker evidence of an
+   out-of-band conversation rather than a 402 challenge.
 
 1. `/health` must **not** report a frozen catalog:
    ```

@@ -423,6 +423,27 @@ export class BazaarCatalog {
    * and never on the wire (no attacker-forceable signal for consumers). */
   private readonly verifyState = new Map<string, { verdict: OwnershipVerdict; at: number }>();
   private readonly verifyInFlight = new Set<string>();
+  /**
+   * Keys whose binding has EVER been proven by Layer 2. Loaded from the durable
+   * `ownership.verified_at`, not from the entry — see the schema note in
+   * store.ts. This is the one-way latch that makes displacement safe: a binding
+   * in this set can never be displaced, by anyone, ever.
+   *
+   * NOT `entry.verifiedOwner`. That flag is ephemeral by design (RA-9) and is
+   * rebuilt as `false` after an eviction or a restart, so reading it here would
+   * make eviction a downgrade primitive.
+   */
+  private readonly everVerified = new Set<string>();
+  /**
+   * Displacement cooldowns, keyed by (url, payTo) rather than url.
+   *
+   * A per-URL key would let an attacker's failed attempt park the URL and block
+   * the REAL owner's legitimate attempt for the whole cooldown — a cheap denial
+   * of the recovery path, mounted by the same party the recovery exists to undo.
+   * Per-claimant means an attacker can only ever rate-limit themselves.
+   */
+  private readonly displaceState = new Map<string, { verdict: OwnershipVerdict; at: number }>();
+  private readonly displaceInFlight = new Set<string>();
   // G-7's `ownershipSeededDuringLoad` flag is GONE along with the bootstrap
   // hatch. The hatch existed only because an ownership FILE could be absent
   // while a catalog FILE was present — an ambiguity between "first upgrade" and
@@ -474,7 +495,10 @@ export class BazaarCatalog {
       );
       return catalog; // empty + frozen
     }
-    for (const b of bindings) catalog.ownership.set(b.resourceKey, b.boundPayTo);
+    for (const b of bindings) {
+      catalog.ownership.set(b.resourceKey, b.boundPayTo);
+      if (b.everVerified) catalog.everVerified.add(b.resourceKey);
+    }
     await catalog.load(opts.maxEntries ?? MAX_ENTRIES);
     return catalog;
   }
@@ -599,6 +623,10 @@ export class BazaarCatalog {
       this.verifyState.set(key, { verdict, at: now });
       if (verdict === "match") {
         this.setVerifiedOwner(key, true);
+        // Latch it DURABLY too. The badge above is ephemeral by design; this is
+        // what stops the binding being displaced after the next eviction or
+        // restart, when the badge will read false again.
+        await this.latchVerified(key, settlingPayTo);
       } else if (verdict === "mismatch") {
         console.warn(
           `[catalog] ownership MISMATCH on re-verify for ${key}: the resource's 402 challenge no longer ` +
@@ -621,6 +649,150 @@ export class BazaarCatalog {
    * only when this is true. */
   isVerifiedOwner(resourceUrl: string): boolean {
     return this.entries.get(resourceUrl)?.verifiedOwner ?? false;
+  }
+
+  /** TEST ONLY — drop an entry the way evictToCap does, keeping ownership. The
+   *  eviction path is otherwise only reachable by filling the catalog to
+   *  MAX_ENTRIES, which a unit test cannot afford, and the interaction between
+   *  eviction and displaceability is exactly what must be asserted. */
+  evictForTest(resourceUrl: string): void {
+    this.entries.delete(BazaarCatalog.canonicalResourceKey(resourceUrl));
+  }
+
+  /** True when this URL's binding has ever been proven, and is therefore not
+   *  displaceable. Durable; survives eviction and restart. */
+  isEverVerified(resourceUrl: string): boolean {
+    return this.everVerified.has(BazaarCatalog.canonicalResourceKey(resourceUrl));
+  }
+
+  /** Latch a proven binding as permanently non-displaceable. In-memory first so
+   *  the guarantee holds even if the store write fails — the failure mode we
+   *  accept here is a binding that is MORE protected than the row says, never
+   *  less. (bindOwnership takes the opposite trade for the opposite reason: an
+   *  unpersisted binding must not be treated as established.) */
+  private async latchVerified(key: string, payTo: string): Promise<void> {
+    this.everVerified.add(key);
+    if (!this.store) return;
+    try {
+      await this.store.markVerified(key, payTo, Date.now());
+    } catch (err) {
+      console.error(
+        `[catalog] could not persist the verified latch for ${key} — it holds for this process, but a ` +
+          `restart will reopen the binding to displacement until the owner settles again: ${String(
+            (err as Error)?.message ?? err,
+          )}`,
+      );
+    }
+  }
+
+  /**
+   * G-2 displacement — the ONLY path by which a bound URL changes hands without
+   * an operator.
+   *
+   * THE RULE: a claimant who PROVES ownership (their payTo appears in the
+   * resource's own 402 challenge) displaces a binding that was never proven.
+   * Unverified → verified only.
+   *
+   * This is proof-beats-no-proof, NOT proof-beats-proof. An unverified binding
+   * is arrival order — whoever settled first — which is not evidence of
+   * anything. A verified binding IS evidence, and stays put: the takeover case
+   * refused as 2C is still refused, because no amount of proof displaces proof.
+   *
+   * Fires from onAfterSettle, fire-and-forget, for the same reason G-1 does:
+   * settlement must never wait on, nor fail because of, a merchant's endpoint.
+   * So the settle that TRIGGERS a displacement is still refused by
+   * upsertFromPayment (the claimant is not yet bound); the rebinding lands
+   * moments later and their next settlement is accepted normally. Displacement
+   * recovers the URL, it does not retroactively accept the payment that
+   * revealed the problem.
+   */
+  async tryDisplace(
+    rawResourceUrl: string,
+    claimant: string,
+    requirements: PaymentRequirements,
+    discovered: DiscoveredResource,
+    verify: (url: string, payTos: string[]) => Promise<OwnershipVerdict>,
+    now: number = Date.now(),
+  ): Promise<"displaced" | "refused" | "skipped"> {
+    const key = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
+    const entry = this.entries.get(key);
+    // No entry: this is a first catalog, which TOFU handles. Nothing to displace.
+    if (!entry) return "skipped";
+    if (!claimant) return "skipped";
+    // Already bound: an ordinary settlement, not a claim.
+    if (entry.boundPayTo.includes(claimant)) return "skipped";
+    // THE ONE-WAY GATE. Read from the durable latch, never from the badge.
+    if (this.everVerified.has(key)) return "skipped";
+    // An empty binding has no claimant to displace and no proof to weigh; it is
+    // the tampered state bindLoadedEntry warns about, not a live URL.
+    if (entry.boundPayTo.length === 0) return "skipped";
+    // A templated key would GET a literal `:symbol`. Never probe it.
+    if (isTemplatedKey(key)) return "skipped";
+    // A frozen catalog must not rebind anything.
+    if (this.frozen === "ownership-unreachable" || this.frozen === "ownership-invalid") return "skipped";
+
+    const cooldownKey = `${key}\u0000${claimant}`;
+    if (this.displaceInFlight.has(cooldownKey)) return "skipped";
+    const last = this.displaceState.get(cooldownKey);
+    if (last && now - last.at < cooldownFor(last.verdict)) return "skipped";
+
+    this.displaceInFlight.add(cooldownKey);
+    let verdict: OwnershipVerdict;
+    try {
+      // Probe for the CLAIMANT's address alone. Passing the bound set would ask
+      // "does this endpoint name anyone we know", which a squatter's own
+      // endpoint could answer yes to.
+      verdict = await verify(key, [claimant]);
+    } catch {
+      this.displaceState.set(cooldownKey, { verdict: "unverifiable", at: now });
+      return "refused";
+    } finally {
+      this.displaceInFlight.delete(cooldownKey);
+    }
+    this.displaceState.set(cooldownKey, { verdict, at: now });
+    if (verdict !== "match") return "refused";
+
+    // Re-check the latch: the probe was awaited, and a concurrent re-verify may
+    // have proven the incumbent while we were off the CPU. Losing that race
+    // would displace a binding that had become non-displaceable mid-flight.
+    if (this.everVerified.has(key)) return "skipped";
+
+    const displaced = [...entry.boundPayTo];
+    if (this.store) {
+      try {
+        await this.store.displaceOwnership(key, claimant, now);
+      } catch (err) {
+        console.error(
+          `[catalog] displacement write FAILED for ${key} — binding UNCHANGED: ${String(
+            (err as Error)?.message ?? err,
+          )}`,
+        );
+        return "refused";
+      }
+    }
+    this.ownership.set(key, [claimant]);
+    this.everVerified.add(key);
+
+    // STATS ARE RESET, not inherited.
+    //
+    // The trust block answers "what is this merchant's history", and after a
+    // displacement the merchant is a DIFFERENT PARTY. Carrying the squatter's
+    // counters over would hand the real owner a reputation they did not earn
+    // and consumers a number that describes someone else's activity — the exact
+    // dishonesty RA-13 exists to avoid, except self-inflicted rather than
+    // merely unverifiable. Dropping the entry and re-ingesting through the
+    // normal validated path is what performs the reset: stats start at zero,
+    // and `accepts` is rebuilt from the claimant's own requirements instead of
+    // being filtered out of the squatter's.
+    this.entries.delete(key);
+    await this.upsertFromPayment(discovered, requirements);
+    this.setVerifiedOwner(key, true);
+    console.warn(
+      `[catalog] DISPLACED ${key}: ${displaced.join(", ")} -> ${claimant}. The previous binding was never ` +
+        `verified; the new one proved ownership through the resource's own 402 challenge and is now ` +
+        `permanently non-displaceable. Settlement stats were RESET — they described the previous binding.`,
+    );
+    return "displaced";
   }
 
   /** Record the Layer 2 402-challenge verdict for a URL. `match` marks the

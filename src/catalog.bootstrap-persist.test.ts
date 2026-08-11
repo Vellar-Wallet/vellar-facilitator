@@ -123,7 +123,7 @@ describe("the ownership bootstrap hatch no longer exists", () => {
     );
     const rows = await readOwnership(url);
     expect(rows, "the binding must be durable before anything relies on it").toEqual([
-      { resourceKey: "https://api.example.com/weather", boundPayTo: ["GOWNER"] },
+      { resourceKey: "https://api.example.com/weather", boundPayTo: ["GOWNER"], everVerified: false },
     ]);
   });
 });
