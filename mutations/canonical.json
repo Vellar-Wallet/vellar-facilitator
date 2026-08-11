@@ -1,0 +1,95 @@
+[
+  {
+    "label": "revert to the raw pathname (G-11 reopened)",
+    "file": "src/catalog.ts",
+    "find": "      return `${u.origin}${normalizePath(u.pathname)}`;",
+    "replace": "      return `${u.origin}${u.pathname}`;",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "key the entry map on the RAW advertised url",
+    "file": "src/catalog.ts",
+    "find": "    const key = BazaarCatalog.canonicalResourceKey(discovered.resourceUrl);\n    const existing = this.entries.get(key);",
+    "replace": "    const key = discovered.resourceUrl;\n    const existing = this.entries.get(key);",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "drop the trailing-slash strip",
+    "file": "src/catalog.ts",
+    "find": "  if (out.length > 1 && out.endsWith(\"/\")) out = out.slice(0, -1);\n",
+    "replace": "",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "EQUIVALENT: unconditional trailing-slash strip (the empty-string fallback absorbs it)",
+    "file": "src/catalog.ts",
+    "find": "  if (out.length > 1 && out.endsWith(\"/\")) out = out.slice(0, -1);",
+    "replace": "  if (out.endsWith(\"/\")) out = out.slice(0, -1);",
+    "test": "src/catalog.canonicalfamily.test.ts",
+    "expect": "pass",
+    "note": "normalizePath('/') -> '' under this mutation, and the `out === '' ? '/' : out` fallback restores it. The two implementations agree on every input, so this is a true equivalent mutant rather than a gap. Recorded as expect:pass so the equivalence is a written claim rather than a silence."
+  },
+  {
+    "label": "drop the duplicate-slash collapse",
+    "file": "src/catalog.ts",
+    "find": "  out = out.replace(/\\/{2,}/g, \"/\");\n",
+    "replace": "",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "stop decoding unreserved escapes",
+    "file": "src/catalog.ts",
+    "find": "    return UNRESERVED.test(ch) ? ch : `%${hex.toUpperCase()}`;",
+    "replace": "    return `%${hex.toUpperCase()}`;",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "decode ALL escapes, not only unreserved (invents separators)",
+    "file": "src/catalog.ts",
+    "find": "    return UNRESERVED.test(ch) ? ch : `%${hex.toUpperCase()}`;",
+    "replace": "    return ch;",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "over-normalise: lowercase the path",
+    "file": "src/catalog.ts",
+    "find": "  out = out.replace(/\\/{2,}/g, \"/\");",
+    "replace": "  out = out.replace(/\\/{2,}/g, \"/\").toLowerCase();",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "over-normalise: strip /index.html",
+    "file": "src/catalog.ts",
+    "find": "  if (out.length > 1 && out.endsWith(\"/\")) out = out.slice(0, -1);",
+    "replace": "  out = out.replace(/\\/index\\.html$/, \"\");\n  if (out.length > 1 && out.endsWith(\"/\")) out = out.slice(0, -1);",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "remove the unparseable-url guard",
+    "file": "src/catalog.ts",
+    "find": "      return `${u.origin}${normalizePath(u.pathname)}`;\n    } catch {\n      return rawUrl;\n    }",
+    "replace": "      return `${u.origin}${normalizePath(u.pathname)}`;\n    } catch {\n      throw new Error(\"unparseable\");\n    }",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "do not re-canonicalise ownership on load (stale keys survive)",
+    "file": "src/catalog.ts",
+    "find": "      const key = BazaarCatalog.canonicalResourceKey(b.resourceKey);",
+    "replace": "      const key = b.resourceKey;",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "union the payTos when two old keys collapse",
+    "file": "src/catalog.ts",
+    "find": "      if (incomingWins) {\n        catalog.ownership.set(key, b.boundPayTo);",
+    "replace": "      if (true) {\n        catalog.ownership.set(key, [...(existing ?? []), ...b.boundPayTo]);",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  },
+  {
+    "label": "let an unverified binding win the collapse over a proven one",
+    "file": "src/catalog.ts",
+    "find": "        incomingVerified !== existingVerified\n          ? incomingVerified",
+    "replace": "        incomingVerified !== existingVerified\n          ? !incomingVerified",
+    "test": "src/catalog.canonicalfamily.test.ts"
+  }
+]

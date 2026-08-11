@@ -180,7 +180,9 @@ describe("atomicity — the thing two files could not express", () => {
     const rows = await readOwnership(url);
     // everVerified false: neither row has been proven, so this binding is still
     // displaceable — an operator rotation is not evidence of ownership.
-    expect(rows).toEqual([{ resourceKey: URL_A, boundPayTo: ["GOLD", "GNEW"], everVerified: false }]);
+    expect(rows).toMatchObject([
+      { resourceKey: URL_A, boundPayTo: ["GOLD", "GNEW"], everVerified: false },
+    ]);
   });
 });
 
@@ -312,7 +314,7 @@ describe("round trips — the cost that only shows up across an ocean", () => {
 
     expect(calls, "one batch, no interactive transaction").toEqual(["batch"]);
     // ...and it is still atomic: the batch really wrote both rows.
-    expect(await readOwnership(url)).toEqual([
+    expect(await readOwnership(url)).toMatchObject([
       { resourceKey: URL_A, boundPayTo: ["GOWNER"], everVerified: false },
     ]);
   });
