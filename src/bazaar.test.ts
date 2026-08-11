@@ -60,21 +60,21 @@ function payloadWithDiscovery(over: Partial<PaymentPayload> = {}): PaymentPayloa
   } as PaymentPayload;
 }
 
-function build(settleSucceeds = true) {
-  const catalog = new BazaarCatalog();
+async function build(settleSucceeds = true) {
+  const catalog = await BazaarCatalog.create();
   const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme(settleSucceeds));
   registerBazaar(facilitator, catalog);
   return { catalog, facilitator };
 }
 
 describe("registerBazaar", () => {
-  it("advertises the bazaar extension on getSupported()", () => {
-    const { facilitator } = build();
+  it("advertises the bazaar extension on getSupported()", async () => {
+    const { facilitator } = await build();
     expect(facilitator.getSupported().extensions).toContain("bazaar");
   });
 
   it("catalogs a settled payment that carries the discovery extension", async () => {
-    const { catalog, facilitator } = build();
+    const { catalog, facilitator } = await build();
     await facilitator.settle(payloadWithDiscovery(), requirements());
     expect(catalog.size).toBe(1);
     const item = catalog.list().items[0]!;
@@ -86,19 +86,19 @@ describe("registerBazaar", () => {
   });
 
   it("does not catalog when the payload has no discovery extension", async () => {
-    const { catalog, facilitator } = build();
+    const { catalog, facilitator } = await build();
     await facilitator.settle(payloadWithDiscovery({ extensions: {} }), requirements());
     expect(catalog.size).toBe(0);
   });
 
   it("does not catalog a failed settlement", async () => {
-    const { catalog, facilitator } = build(false);
+    const { catalog, facilitator } = await build(false);
     await facilitator.settle(payloadWithDiscovery(), requirements());
     expect(catalog.size).toBe(0);
   });
 
   it("drops a malicious routeTemplate (path traversal) and catalogs under the real path", async () => {
-    const { catalog, facilitator } = build();
+    const { catalog, facilitator } = await build();
     const payload = payloadWithDiscovery();
     const ext = payload.extensions as Record<string, Record<string, unknown>>;
     ext.bazaar!.routeTemplate = "/weather/../admin";
@@ -108,7 +108,7 @@ describe("registerBazaar", () => {
   });
 
   it("drops a URL-injection routeTemplate and catalogs under the real path", async () => {
-    const { catalog, facilitator } = build();
+    const { catalog, facilitator } = await build();
     const payload = payloadWithDiscovery();
     const ext = payload.extensions as Record<string, Record<string, unknown>>;
     ext.bazaar!.routeTemplate = "https://evil.example/steal";
@@ -118,7 +118,7 @@ describe("registerBazaar", () => {
   });
 
   it("honors a VALID routeTemplate as the canonical catalog URL", async () => {
-    const { catalog, facilitator } = build();
+    const { catalog, facilitator } = await build();
     const payload = payloadWithDiscovery();
     const ext = payload.extensions as Record<string, Record<string, unknown>>;
     ext.bazaar!.routeTemplate = "/weather/:city";
@@ -128,7 +128,7 @@ describe("registerBazaar", () => {
   });
 
   it("catalogs an MCP tool resource as type mcp", async () => {
-    const { catalog, facilitator } = build();
+    const { catalog, facilitator } = await build();
     const payload = payloadWithDiscovery({
       resource: { url: "https://mcp.example.com/tools" },
       extensions: declareDiscoveryExtension({
@@ -144,7 +144,7 @@ describe("registerBazaar", () => {
   });
 
   it("never lets cataloging break settlement, even if the catalog throws", async () => {
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     catalog.upsertFromPayment = () => {
       throw new Error("catalog exploded");
     };

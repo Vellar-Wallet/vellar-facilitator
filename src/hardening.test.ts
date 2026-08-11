@@ -17,11 +17,11 @@ const testConfig = {
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
   maxTransactionFeeStroops: 2_000_000,
-  catalogFile: undefined,
+  catalogDbUrl: undefined,
+  catalogDbAuthToken: undefined,
   verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
-  catalogOwnershipBootstrap: false,
 };
 
 function requirements(): PaymentRequirements {
@@ -38,7 +38,7 @@ function requirements(): PaymentRequirements {
 
 let apps: Array<{ close: () => Promise<void> }> = [];
 async function server(overrides?: { rateMax?: number; bodyLimit?: number }) {
-  const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog(), undefined, undefined, {
+  const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, undefined, {
     rateMaxPerMinute: overrides?.rateMax ?? 1000,
     bodyLimitBytes: overrides?.bodyLimit ?? 32 * 1024,
   });
@@ -56,7 +56,7 @@ afterEach(async () => {
 // These exercise buildServer with NO hardening options — the production path.
 describe("Fix 2 — production defaults are actually applied", () => {
   it("applies the default 32 KiB body limit when no options are passed", async () => {
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     await app.ready();
     try {
       const res = await app.inject({
@@ -72,7 +72,7 @@ describe("Fix 2 — production defaults are actually applied", () => {
   });
 
   it("applies a bounded default per-IP rate limit when no options are passed", async () => {
-    const app = await buildServer(buildFacilitator(testConfig), new BazaarCatalog());
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     await app.ready();
     try {
       let limited = false;

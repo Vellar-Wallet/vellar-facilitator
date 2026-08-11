@@ -24,50 +24,50 @@ function disc(url: string): DiscoveredResource {
 }
 
 describe("structurally unverifiable entries are counted, not hidden", () => {
-  it("counts an http:// resource — the seller.mjs failure", () => {
-    const c = new BazaarCatalog();
-    c.upsertFromPayment(disc("http://localhost:10000/quote"), reqs());
+  it("counts an http:// resource — the seller.mjs failure", async () => {
+    const c = await BazaarCatalog.create();
+    await c.upsertFromPayment(disc("http://localhost:10000/quote"), reqs());
     expect(c.unverifiableCount, "an http url can never pass the https-only guard").toBe(1);
   });
 
-  it("does NOT count a healthy public https resource", () => {
-    const c = new BazaarCatalog();
-    c.upsertFromPayment(disc("https://vellar-seller-demo.onrender.com/quote"), reqs());
+  it("does NOT count a healthy public https resource", async () => {
+    const c = await BazaarCatalog.create();
+    await c.upsertFromPayment(disc("https://vellar-seller-demo.onrender.com/quote"), reqs());
     expect(c.unverifiableCount).toBe(0);
   });
 
-  it("counts loopback and private literals even over https", () => {
-    const c = new BazaarCatalog();
-    c.upsertFromPayment(disc("https://localhost/x"), reqs());
-    c.upsertFromPayment(disc("https://127.0.0.1/y"), reqs());
-    c.upsertFromPayment(disc("https://10.0.0.5/z"), reqs());
+  it("counts loopback and private literals even over https", async () => {
+    const c = await BazaarCatalog.create();
+    await c.upsertFromPayment(disc("https://localhost/x"), reqs());
+    await c.upsertFromPayment(disc("https://127.0.0.1/y"), reqs());
+    await c.upsertFromPayment(disc("https://10.0.0.5/z"), reqs());
     expect(c.unverifiableCount).toBe(3);
   });
 
-  it("counts a routeTemplate key, which is not a fetchable URL", () => {
-    const c = new BazaarCatalog();
-    c.upsertFromPayment(disc("https://api.example/quote/:symbol"), reqs());
+  it("counts a routeTemplate key, which is not a fetchable URL", async () => {
+    const c = await BazaarCatalog.create();
+    await c.upsertFromPayment(disc("https://api.example/quote/:symbol"), reqs());
     expect(c.unverifiableCount).toBe(1);
   });
 
-  it("warns ONCE when such an entry is cataloged, so it is not purely passive", () => {
+  it("warns ONCE when such an entry is cataloged, so it is not purely passive", async () => {
     // /health is a standing signal, but nothing polls it now that the keep-alive
     // is off. The log line is the active half.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const c = new BazaarCatalog();
-    c.upsertFromPayment(disc("http://localhost:10000/quote"), reqs());
-    c.upsertFromPayment(disc("http://localhost:10000/quote"), reqs());
+    const c = await BazaarCatalog.create();
+    await c.upsertFromPayment(disc("http://localhost:10000/quote"), reqs());
+    await c.upsertFromPayment(disc("http://localhost:10000/quote"), reqs());
     const hits = warn.mock.calls.filter((x) => /never be ownership-verified/i.test(String(x[0])));
     expect(hits.length, "once per URL, not once per settlement").toBe(1);
     expect(String(hits[0]?.[0])).toMatch(/PUBLIC_BASE_URL|advertis/i);
     warn.mockRestore();
   });
 
-  it("mixes correctly: only the unverifiable ones are counted", () => {
-    const c = new BazaarCatalog();
-    c.upsertFromPayment(disc("https://good.example/a"), reqs());
-    c.upsertFromPayment(disc("http://bad.example/b"), reqs());
-    c.upsertFromPayment(disc("https://also-good.example/c"), reqs());
+  it("mixes correctly: only the unverifiable ones are counted", async () => {
+    const c = await BazaarCatalog.create();
+    await c.upsertFromPayment(disc("https://good.example/a"), reqs());
+    await c.upsertFromPayment(disc("http://bad.example/b"), reqs());
+    await c.upsertFromPayment(disc("https://also-good.example/c"), reqs());
     expect(c.size).toBe(3);
     expect(c.unverifiableCount).toBe(1);
   });

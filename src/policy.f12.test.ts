@@ -24,7 +24,7 @@ const bound = (url: string, payTo = "GMERCHANT"): SettleIdentity => ({ resourceU
 const unbound = (url: string, payTo = "GSPRAY"): SettleIdentity => ({ resourceUrl: url, payTo, bound: false });
 
 describe("F12 — per-bound-URL budget", () => {
-  it("allows one merchant 10 settles/min on its own URL", () => {
+  it("allows one merchant 10 settles/min on its own URL", async () => {
     const c = clock();
     const p = new SpendPolicy(base, c.now);
     for (let i = 0; i < 10; i++) expect(p.checkSettle(bound("https://a/x")).allowed).toBe(true);
@@ -33,7 +33,7 @@ describe("F12 — per-bound-URL budget", () => {
     expect(over.reason).toBe("rate_limited_url");
   });
 
-  it("one merchant's URL budget does not touch another's", () => {
+  it("one merchant's URL budget does not touch another's", async () => {
     const c = clock();
     const p = new SpendPolicy(base, c.now);
     for (let i = 0; i < 10; i++) p.checkSettle(bound("https://a/x", "GA"));
@@ -42,7 +42,7 @@ describe("F12 — per-bound-URL budget", () => {
     expect(p.checkSettle(bound("https://b/y", "GB")).allowed).toBe(true);
   });
 
-  it("does NOT halve an honest merchant: 3 URLs under one payTo each get their full 10", () => {
+  it("does NOT halve an honest merchant: 3 URLs under one payTo each get their full 10", async () => {
     const c = clock();
     const p = new SpendPolicy(base, c.now);
     for (const u of ["https://m/1", "https://m/2", "https://m/3"]) {
@@ -55,7 +55,7 @@ describe("F12 — per-bound-URL budget", () => {
 });
 
 describe("F12 — the per-payTo budget is the ONLY one on that key", () => {
-  it("admits exactly perPayToMax settles for one payTo — no tighter budget may shadow it", () => {
+  it("admits exactly perPayToMax settles for one payTo — no tighter budget may shadow it", async () => {
     // This is the test that did not exist while the defect did. `SETTLE_RATE_MAX`
     // (30) and `SETTLE_PER_PAYTO_MAX` (100) were two budgets over the same key
     // and window; the tighter silently won, so the per-payTo dimension never ran
@@ -73,7 +73,7 @@ describe("F12 — the per-payTo budget is the ONLY one on that key", () => {
 });
 
 describe("F12 — unbound pool is the economic signal", () => {
-  it("all unbound URLs share ONE budget, so spraying competes with itself", () => {
+  it("all unbound URLs share ONE budget, so spraying competes with itself", async () => {
     const c = clock();
     const p = new SpendPolicy(base, c.now);
     // Spray 10 distinct unverified URLs: together they get one bound URL's worth.
@@ -86,7 +86,7 @@ describe("F12 — unbound pool is the economic signal", () => {
     expect(over.reason).toBe("unbound_pool_exhausted");
   });
 
-  it("an exhausted unbound pool does not affect bound merchants", () => {
+  it("an exhausted unbound pool does not affect bound merchants", async () => {
     const c = clock();
     const p = new SpendPolicy(base, c.now);
     for (let i = 0; i < 10; i++) p.checkSettle(unbound(`https://spray/${i}`));
@@ -97,7 +97,7 @@ describe("F12 — unbound pool is the economic signal", () => {
 });
 
 describe("F12 — all-or-none reservation", () => {
-  it("a REFUSED settle consumes no budget in any window", () => {
+  it("a REFUSED settle consumes no budget in any window", async () => {
     const c = clock();
     // perPayToMax is deliberately TIGHT (15) so a leak is observable: 10 real
     // settles + 20 refusals would put a reserve-as-you-go implementation at 30,
@@ -131,7 +131,7 @@ describe("F12 — all-or-none reservation", () => {
     expect(results.filter(Boolean).length).toBe(10);
   });
 
-  it("a settle refused by the GLOBAL ceiling leaves the url and payTo budgets untouched", () => {
+  it("a settle refused by the GLOBAL ceiling leaves the url and payTo budgets untouched", async () => {
     const c = clock();
     const p = new SpendPolicy(
       { ...base, spendCeilingStroops: 1_000_000, perSettleEstimateStroops: 500_000 }, // 2 settles globally

@@ -67,7 +67,7 @@ describe("Layer 2 populates the ownership binding for real (no mocks)", () => {
     const url = `http://owner.test:${port}/quote`;
 
     try {
-      const catalog = new BazaarCatalog();
+      const catalog = await BazaarCatalog.create();
       const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
       // Real verifier — only the transport relaxations and DNS are injected.
       registerBazaar(facilitator, catalog, {
@@ -105,7 +105,7 @@ describe("Layer 2 populates the ownership binding for real (no mocks)", () => {
     const url = `http://owner.test:${port}/quote`;
 
     try {
-      const catalog = new BazaarCatalog();
+      const catalog = await BazaarCatalog.create();
       const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
       registerBazaar(facilitator, catalog, {
         verifyOwnership: (resourceUrl, settledPayTo) =>
@@ -127,7 +127,7 @@ describe("Layer 2 populates the ownership binding for real (no mocks)", () => {
 
 describe("registerBazaar — Layer 2 async ownership verification", () => {
   it("does not delay or fail settlement when the verifier hangs", async () => {
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     // A verifier that never resolves — models a hostile/slow endpoint.
     const hangingVerify = vi.fn(() => new Promise<never>(() => {}));
     const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
@@ -145,7 +145,7 @@ describe("registerBazaar — Layer 2 async ownership verification", () => {
   });
 
   it("marks the owner verified when the async 402 check returns match", async () => {
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     const verify = vi.fn(async () => "match" as const);
     const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
     registerBazaar(facilitator, catalog, { verifyOwnership: verify });
@@ -162,7 +162,7 @@ describe("registerBazaar — Layer 2 async ownership verification", () => {
   });
 
   it("leaves the owner unverified on a mismatch verdict", async () => {
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     const verify = vi.fn(async () => "mismatch" as const);
     const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme());
     registerBazaar(facilitator, catalog, { verifyOwnership: verify });
@@ -174,7 +174,7 @@ describe("registerBazaar — Layer 2 async ownership verification", () => {
   });
 
   it("never throws into settlement if the verifier rejects", async () => {
-    const catalog = new BazaarCatalog();
+    const catalog = await BazaarCatalog.create();
     const verify = vi.fn(async () => {
       throw new Error("boom");
     });

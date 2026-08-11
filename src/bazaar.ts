@@ -45,7 +45,12 @@ export function registerBazaar(
       if (!result.success) return;
       const discovered = extractDiscoveryInfo(paymentPayload, requirements);
       if (!discovered) return;
-      catalog.upsertFromPayment(discovered, requirements);
+      // AWAITED, and this is load-bearing. The ownership write must commit before
+      // anything treats the URL as bound (see catalog.bindOwnership). We are
+      // already past settlement here — @x402/core calls this hook AFTER the
+      // payment is on-chain — so the wait costs one round trip on the settle
+      // RESPONSE and cannot delay or fail the payment itself.
+      await catalog.upsertFromPayment(discovered, requirements);
       // Settlement ground truth (trust layer): count the settlement and the
       // distinct payer against the cataloged resource.
       //

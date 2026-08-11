@@ -57,7 +57,7 @@ describe("BalanceGuard", () => {
     expect(g.status()).toBe("unknown");
   });
 
-  it("starts in an allow/unknown state before the first check (does not block startup)", () => {
+  it("starts in an allow/unknown state before the first check (does not block startup)", async () => {
     const { g, fetchBalance } = guard({ balances: [String(1 * XLM)] });
     // No refresh() called yet.
     expect(g.settleAllowed()).toBe(true);

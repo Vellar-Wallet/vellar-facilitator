@@ -5,6 +5,8 @@ import type { DiscoveredResource } from "@x402/extensions/bazaar";
 import type { PaymentRequirements } from "@x402/core/types";
 import { afterEach, describe, expect, it } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
+import type { CatalogStore } from "./store.js";
+import { seedRows, tmpStore } from "./store.testkit.js";
 import type { TrustedDiscoveryResource } from "./trust.js";
 
 /** list() adds a `trust` stats block at runtime; the upstream wire type omits
@@ -47,32 +49,60 @@ function disc(over: Partial<DiscoveredResource> = {}): DiscoveredResource {
 }
 
 const tmpFiles: string[] = [];
-function tmpFile(contents: unknown): string {
-  const dir = mkdtempSync(join(tmpdir(), "vellar-cat-"));
-  const path = join(dir, "catalog.json");
-  writeFileSync(path, JSON.stringify(contents, null, 2));
-  tmpFiles.push(dir);
-  return path;
+/**
+ * The crafted-CATALOG_FILE fixture, MOVED TO ROWS.
+ *
+ * F6's trust boundary did not disappear when storage moved — it relocated.
+ * Whoever can write the database can forge or clear a binding exactly as whoever
+ * could write the file could; what changed is that it now takes credentials
+ * rather than filesystem access. So these fixtures still plant hostile data
+ * DIRECTLY, bypassing every ingestion check, and the assertions are unchanged.
+ *
+ * Ownership rows are derived from each entry's first `accepts` payTo, which is
+ * what the old bootstrap hatch did implicitly. Stated explicitly here so these
+ * tests keep measuring SANITIZATION rather than accidentally measuring the
+ * ownership loader.
+ */
+async function tmpFile(contents: unknown): Promise<CatalogStore> {
+  const { store, url } = tmpStore();
+  const rows = Array.isArray(contents) ? contents : [];
+  await seedRows(url, {
+    ownership: rows
+      .map((r: any) => {
+        const res = r?.resource ?? r;
+        const key = res?.resource;
+        const payTo = res?.accepts?.[0]?.payTo;
+        return key && payTo ? { key, payTo } : undefined;
+      })
+      .filter(Boolean) as { key: string; payTo: string }[],
+    entries: rows
+      .map((r: any) => {
+        const res = r?.resource ?? r;
+        return res?.resource ? { key: res.resource, payload: r } : undefined;
+      })
+      .filter(Boolean) as { key: string; payload: unknown }[],
+  });
+  return store;
 }
-afterEach(() => {
+afterEach(async () => {
   while (tmpFiles.length) rmSync(tmpFiles.pop()!, { recursive: true, force: true });
 });
 
 describe("Fix 0 Layer 1 — TOFU ownership binding (upsertFromPayment)", () => {
-  it("binds the canonical URL to the first settlement's payTo", () => {
-    const cat = new BazaarCatalog();
-    cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
+  it("binds the canonical URL to the first settlement's payTo", async () => {
+    const cat = await BazaarCatalog.create();
+    await cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
     expect(cat.isBound(URL_X, "GLEGIT_A")).toBe(true);
     expect(cat.isBound(URL_X, "GATTACKER_B")).toBe(false);
   });
 
-  it("rejects an appended accepts entry from an UNBOUND payTo (hijack blocked)", () => {
-    const cat = new BazaarCatalog();
-    cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
+  it("rejects an appended accepts entry from an UNBOUND payTo (hijack blocked)", async () => {
+    const cat = await BazaarCatalog.create();
+    await cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
     cat.recordSettlement(URL_X, "GPAYER1", "GLEGIT_A");
 
     // Attacker settles the same URL with a different payTo.
-    cat.upsertFromPayment(
+    await cat.upsertFromPayment(
       disc({ description: "PAY HERE — cheapest" }),
       reqs("GATTACKER_B", "CASSET_ATTACKER", "1"),
     );
@@ -87,21 +117,21 @@ describe("Fix 0 Layer 1 — TOFU ownership binding (upsertFromPayment)", () => {
     expect(settlements(item)).toBe(1);
   });
 
-  it("allows an appended accepts entry from a BOUND payTo (legit multi-option)", () => {
-    const cat = new BazaarCatalog();
-    cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
+  it("allows an appended accepts entry from a BOUND payTo (legit multi-option)", async () => {
+    const cat = await BazaarCatalog.create();
+    await cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
     // Same owner adds a second payment option (different asset, same payTo).
-    cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_USDC"));
+    await cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_USDC"));
 
     const item = cat.list().items[0]!;
     expect(item.accepts).toHaveLength(2);
     expect(item.accepts.map((a) => a.asset).sort()).toEqual(["CASSET_LEGIT", "CASSET_USDC"]);
   });
 
-  it("allows metadata overwrite only from a BOUND payTo", () => {
-    const cat = new BazaarCatalog();
-    cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
-    cat.upsertFromPayment(
+  it("allows metadata overwrite only from a BOUND payTo", async () => {
+    const cat = await BazaarCatalog.create();
+    await cat.upsertFromPayment(disc(), reqs("GLEGIT_A", "CASSET_LEGIT"));
+    await cat.upsertFromPayment(
       disc({ description: "Updated by the real owner", serviceName: "WeatherSvc v2" }),
       reqs("GLEGIT_A", "CASSET_LEGIT"),
     );
@@ -112,10 +142,10 @@ describe("Fix 0 Layer 1 — TOFU ownership binding (upsertFromPayment)", () => {
 });
 
 describe("Fix 0 Layer 1 — TOFU enforcement at load() (CATALOG_FILE cannot bypass)", () => {
-  it("quarantines a stored entry whose accepts contains conflicting payTos", () => {
+  it("quarantines a stored entry whose accepts contains conflicting payTos", async () => {
     // Crafted file: one entry, accepts array mixing the legit owner and an
     // attacker payTo. load() must not serve the attacker option as authoritative.
-    const path = tmpFile([
+    const store = await tmpFile([
       {
         resource: {
           resource: URL_X,
@@ -131,7 +161,7 @@ describe("Fix 0 Layer 1 — TOFU enforcement at load() (CATALOG_FILE cannot bypa
         stats: { settlements: 999, payers: ["GPAYER1"] },
       },
     ]);
-    const cat = new BazaarCatalog(path, { bootstrapOwnership: true });
+    const cat = await BazaarCatalog.create(store);
     const item = cat.list().items[0];
     // The entry binds to the FIRST accepts payTo; the conflicting attacker
     // option is dropped, not served.
