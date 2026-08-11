@@ -36,12 +36,34 @@ misconfiguration:
 "trust": { "verification": "unknown", "acceptsVerification": ["unknown"], … }
 ```
 
-The verdicts come from a **verification API that is deployed nowhere**. It is a
-worker-service in the Vellar wallet repository, blocked on that repo's M5
-multisig attestor: no attestor key, no worker deployment, no verdict source. So
-`VERIFICATION_API_URL` is deliberately unset, and every verdict degrades to
+The verdicts come from a **verification API that is deployed nowhere**, and this
+is a **deliberate deferral with a known dependency chain**, not an oversight or a
+missing config value:
+
+```
+  trust badges  ←  a verdict source
+                     ←  worker-service deployed        (needs a Docker host)
+                          ←  ATTESTOR_SECRET_KEY       (needs an attestor)
+                               ←  M5 multisig design   (unresolved)
+```
+
+Each link is blocked by the one below it, and the bottom one is a design decision
+in the wallet repository, not a deployment task here. **Nothing about this is
+switching on soon**, and it will not be switched on to produce testnet badges —
+turning it on for a demo would mean standing up a Docker host and minting an
+attestor key ahead of the multisig design that is supposed to govern it, which
+inverts the thing the attestor exists for.
+
+So `VERIFICATION_API_URL` is deliberately unset, and every verdict degrades to
 `"unknown"` — the honest default, since the alternative is asserting a trust
 level nothing backs. Tracked as **F4-ts**.
+
+Two prerequisites are being done in the wallet repo regardless, because they are
+defects in the API's design rather than in its deployment: **per-record
+timestamps** (the current response has none, so "newest verdict" falls back to
+array order) and **endpoint authentication** (it is unauthenticated, which would
+make it a trust root anyone could impersonate). Neither produces a badge here;
+both must be true before one would be worth trusting.
 
 **What this does NOT mean.** Two different things in that block are called
 "verified", and only one of them is inert:

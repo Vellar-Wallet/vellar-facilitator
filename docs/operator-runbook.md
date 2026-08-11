@@ -110,17 +110,19 @@ that agents are directed to pay an attacker.
 
 ### Steps
 
-You need shell access to the instance and its persistent disk. The catalog is a
-single-instance file store, so there is no coordination to do — but the service
-**must be stopped**, because `saveOwnership()` rewrites the whole file from
-memory and will overwrite a live hand-edit.
+You need the Turso database, not shell access to the instance — the catalog has
+lived in libSQL since 2026-08-11. **The service does not need to be stopped.**
+Ownership writes are per-binding rows now rather than a whole-file rewrite, so
+there is nothing that will clobber your edit wholesale.
 
-1. **Stop the service.** Not a restart — it must not be running during the edit.
+One race is worth knowing about: a **displacement** can rewrite the same rows if
+the URL is unverified and someone proves ownership while you are editing. If you
+are here for a verified binding (which is the only case this procedure covers —
+see the box above), displacement cannot touch it and there is no race at all.
 
-2. **Locate the ownership file.** It is always the catalog path plus
-   `.ownership`. With the shipped `CATALOG_FILE`:
+1. **Open the database.**
    ```
-   /var/data/bazaar-catalog.json.ownership
+   turso db shell <database>
    ```
 
 3. **Back the ownership rows up.** There are no files any more — the catalog
@@ -269,76 +271,39 @@ The service starts, `/health` returns 200, settlements work — and the catalog
 serves nothing. On boot the logs contain:
 
 ```
-[catalog] ownership store at <path>.ownership is missing or unreadable — ...
+[catalog] ownership could not be loaded (ownership-unreachable|ownership-invalid) — ...
 ```
 
-and `/health` reports `catalogFrozen: "ownership-unreadable"`.
+and `/health` reports `catalogFrozen: "ownership-unreachable"` or
+`"ownership-invalid"`.
 
 ### Confirm
 
-This is the deliberate fail-closed behaviour. A catalog file **without** its
-companion ownership file is ambiguous: it is what a first upgrade to a persistent
-disk looks like, and it is also what an attacker deleting the ownership file
-looks like. The service refuses to guess.
+> **UPDATED 2026-08-11. The migration case this procedure was written for no
+> longer exists.** It handled "a catalog file with no companion ownership file",
+> which was ambiguous between a first upgrade and an attacker deleting the file.
+> One database cannot be half-present, so that state is unreachable and
+> `CATALOG_OWNERSHIP_BOOTSTRAP` is gone. If you have set it, the service warns and
+> ignores it.
+>
+> **The two states you can actually be in are named in the freeze reason**, and
+> they want opposite responses:
+>
+> | `catalogFrozen` | Meaning | Do |
+> | --- | --- | --- |
+> | `"ownership-unreachable"` | The store did not answer, after retries | **Wait.** Usually transient. Restart once it answers. Do not restart in a loop |
+> | `"ownership-invalid"` | The store ANSWERED with something unusable | **Investigate the data.** A restart will produce the same result — a row is malformed, or the schema is not what the code expects |
+>
+> Fail-closed itself is unchanged and deliberate: serving entries whose ownership
+> did not load would mean serving entries with no enforceable ownership, which is
+> F11 disabled at the moment nobody is watching.
 
-Determine which one you are in:
-
-- **Did someone just attach a disk, or restore only the catalog file from a
-  backup?** Then it is a migration.
-- **Did the ownership file exist and then stop existing, with no deploy?** Treat
-  it as tampering and investigate before continuing.
-
-### Steps — first boot on a NEW disk (nothing to migrate)
-
-If the disk is brand new and there was never a catalog file, there is nothing to
-do: with **neither** file present the loader treats it as a genuinely fresh start
-and the catalog comes up empty and unfrozen. You will not see the symptom above.
-
-### Steps — migration case (a catalog file exists, no ownership file)
-
-This is the state the **first boot after attaching a disk** produces if a catalog
-file was restored alongside it.
-
-1. **Confirm where the catalog file came from.** Bootstrap trusts it to name each
-   resource's owner. It grants **no more trust than that file already had** — but
-   if it was tampered with, this makes the tampering durable. If you cannot
-   account for the file, delete it and start empty instead; the catalog rebuilds
-   from settlements.
-
-2. Set `CATALOG_OWNERSHIP_BOOTSTRAP=1` **in the Render dashboard**, not in
-   `render.yaml` — it is deliberately not declared there so it cannot be left on
-   by a merge.
-
-3. **Start the service once.** It warns on every boot while the flag is set, and
-   now also logs how many bindings it wrote:
-
-   ```
-   [catalog] wrote N ownership binding(s) derived during load to <path>.ownership
-   ```
-
-4. **Verify the file exists and is complete before going further:**
-
-   ```sh
-   cat /var/data/bazaar-catalog.json.ownership | python3 -m json.tool | head
-   ```
-
-   It must contain one `{resource, boundPayTo}` row per catalog entry. Spot-check
-   that a `boundPayTo` matches the address that resource actually bills to — this
-   is your only chance to catch a wrong owner before it becomes durable.
-
-5. **Remove `CATALOG_OWNERSHIP_BOOTSTRAP` and restart.** Do not skip this. While
-   it is set, the fail-closed protection against a missing or deleted ownership
-   store is DISABLED, so a later deletion would silently re-derive bindings from
-   whatever the catalog file says at that moment.
-
-6. **Confirm the removal took**: `/health` must report no `catalogFrozen`, and
-   the boot logs must no longer contain `CATALOG_OWNERSHIP_BOOTSTRAP`.
-
-> **G-7 (fixed).** Bindings derived during load used to be seeded in memory and
-> never written, so the migration silently persisted nothing and the *next* boot
-> failed closed again. They are now flushed once after load, and step 3's log
-> line is the confirmation. If you are running a build from before that fix, keep
-> the flag set for one more boot rather than restarting without it.
+**The migration steps that used to live here have been DELETED, not banner-ed.**
+They described attaching a disk, restoring a catalog file, and running a one-boot
+`CATALOG_OWNERSHIP_BOOTSTRAP` flag — none of which exists any more. A procedure
+nobody can follow is worse than no procedure: under pressure an operator reads the
+steps, not the disclaimer above them. If you need the history it is in
+`docs/brief-turso-migration.md` and the git log.
 
 ### Verify
 
@@ -349,9 +314,8 @@ expected entries.
 
 ### Sibling trap: `SPONSOR_HARD_FLOOR_STROOPS`, set by hand and never reverted
 
-Filed here deliberately, beside `CATALOG_OWNERSHIP_BOOTSTRAP`, because it is the
-**same shape of hazard** and will be encountered by someone who has forgotten
-both.
+Filed here deliberately, because it is the **same shape of hazard** as the
+retired flags above: a dashboard variable that outlives the reason it was set.
 
 Testing the balance guard (F3) means raising `SPONSOR_HARD_FLOOR_STROOPS` above
 the sponsor's actual balance so `/settle` refuses, then reverting. The trap:
@@ -362,9 +326,9 @@ the sponsor's actual balance so `/settle` refuses, then reverting. The trap:
 > the facilitator refuses **every settlement, permanently**, with a perfectly
 > healthy `/health`.
 
-`CATALOG_OWNERSHIP_BOOTSTRAP` at least warns loudly on every boot while set. This
-one does not warn at all — it is strictly worse, and the only defence is the
-revert step.
+The retired variables (`CATALOG_FILE`, `CATALOG_OWNERSHIP_BOOTSTRAP`) at least
+warn loudly on every boot if they are still set. This one does not warn at all —
+it is strictly worse, and the only defence is the revert step.
 
 **Procedure:**
 
@@ -459,15 +423,15 @@ cataloged.
 ### Steps
 
 There is currently **no reset path** (**G-8**). Ownership tombstones are never
-removed, and deleting the ownership file to clear them trips procedure 2 —
+removed, and deleting the ownership rows to clear them trips procedure 2 —
 turning a partial outage into a full catalog freeze, and discarding every
 ownership binding you have.
 
-Do not delete the ownership file to "fix" this.
+Do not delete the ownership rows to "fix" this.
 
 Escalate. Reaching 100,000 tombstones requires 100,000 distinct settled URLs, so
 if you see this without that volume of legitimate traffic, treat it as an attack
-on catalog availability and preserve the ownership file for analysis.
+on catalog availability and preserve the ownership rows for analysis.
 
 ---
 
@@ -561,12 +525,24 @@ The output names the stage. Read it literally:
 
 ## 5. "The catalog is empty after the service was idle"
 
-**This is designed behaviour on the free tier.** Render spins a free web service
-down after 15 minutes without traffic, and spin-down destroys the container's
-filesystem — which is where `CATALOG_FILE` and its ownership store live. Entries
-and bindings go with it.
+> **UPDATED 2026-08-11 — THIS IS NO LONGER EXPECTED.** It used to be: the catalog
+> lived on the container's filesystem, and spin-down destroys the container. It
+> now lives in libSQL/Turso, verified live across a **42-second cold start** with
+> the binding intact.
+>
+> **So an empty catalog after an idle period now means something is wrong.**
+> Check, in order:
+>
+> 1. `/health` for `catalogFrozen` — if set, you are in procedure 2, not here.
+> 2. `CATALOG_DB_URL` is actually set. Unset means in-memory, and the service says
+>    so loudly at boot: *"running IN-MEMORY … lost on every restart"*.
+> 3. The boot log for `[catalog] entries could not be loaded, starting empty`,
+>    which is entries failing while ownership succeeded.
+>
+> Only the **cold-start latency** below is still expected behaviour.
 
-**Do not treat it as a fault, and do not fix it with a keep-alive.**
+**The latency is designed behaviour on the free tier**, and is not fixed with a
+keep-alive.
 
 `.github/workflows/keepalive.yml` exists and is deliberately left with no
 `schedule:` trigger. Free instance hours are pooled per **workspace** (750/month,
