@@ -232,6 +232,23 @@ the *flag*, the *disk* — and treat every hit in an instructional document as a
 defect. Hits in dated records (briefs, walkthroughs, decision logs) are correct
 and should stay; they describe what was true when written.
 
+### 3.4d A status that reads as a pass because nothing ran
+
+Retargeting PR #40 from a squashed-away base to `main` left it showing
+**`MERGEABLE / CLEAN` with no checks at all**. `ci.yml` triggers on
+`pull_request` against `main`, and *changing a PR's base does not re-emit that
+event* — so the PR looked green at a glance while having never been tested
+against the branch it was about to merge into.
+
+Same family as the rest of this section: **an artifact that reads as a pass
+because the check did not run.** It is the mutation harness's absent anchor and
+the "merged" PR that never landed, arriving a third way.
+
+**The fix is a nudge, not a tool:** close and reopen the PR, which emits a fresh
+`pull_request` event and runs CI. Worth doing on any retargeted PR before merging
+it — otherwise a stacked PR can reach `main` having only ever been tested against
+its parent branch.
+
 ### 3.5 Tests that passed for the wrong reason — three times
 
 1. **RA-12** — eight tests green against deliberately broken code; the control
@@ -304,6 +321,56 @@ argument fails with the code.
 
 ---
 
+## 4b. The keep-alive — arithmetic, and the number I cannot supply
+
+The cold start is the most-hit annoyance. The workflow exists with its schedule
+removed; whether to restore it is arithmetic, and one input is not mine to read.
+
+**What draws instance hours.** Render's free tier is **750 hours per WORKSPACE
+per month**, shared. **Free web services and private services draw hours.**
+**Static sites and managed Postgres draw none.** So the divisor is the count of
+free *web/private services*, not the count of things in the dashboard — which is
+why it may well be 4–5 rather than 8.
+
+**Count it here:** Dashboard → the service list → count only rows typed **Web
+Service** or **Private Service** whose plan is **Free**. I cannot enumerate your
+account, and guessing the divisor is the one part of this that would be
+invention.
+
+**Cost of keeping this one warm:**
+
+| Window | Hours/month | Share of the 750 pool |
+| --- | --- | --- |
+| 2 h/day | 60 | 8% |
+| 4 h/day | 120 | 16% |
+| 6 h/day | 180 | 24% |
+| 8 h/day | 240 | 32% |
+| 12 h/day | 360 | 48% |
+| 20 h/day | 600 | **80%** |
+
+**Headroom per service, by divisor:**
+
+| Free web services | Hours each | If run continuously |
+| --- | --- | --- |
+| 3 | 250 | 8.3 h/day |
+| 4 | 188 | 6.2 h/day |
+| **5** | **150** | **5.0 h/day** |
+| 8 | 94 | 3.1 h/day |
+
+**Proposal, if the divisor is 4 or 5:** a **4 h/day weekday window** — 120
+h/month, 16% of the pool, comfortably inside a 150–188 h share even if every
+other service ran flat out. Cron `*/10 8-11 * * 1-5` (a ten-minute ping through a
+four-hour window; the idle timeout is 15 minutes, so ten leaves margin).
+
+**Do not restore it if the divisor is 8 or more.** At 94 h each, a 120 h window
+is already over budget on its own, and the failure mode is not a slow demo — it
+is **every free service in the workspace suspended**, including unrelated
+production ones.
+
+**Whatever is chosen, record the divisor and the arithmetic next to the cron**,
+because the number that makes it safe is invisible from the workflow file and
+will not be re-derived by whoever next edits it.
+
 ## 5. What is open, and who owns it
 
 ### Mine to finish
@@ -312,7 +379,7 @@ argument fails with the code.
 | --- | --- |
 | **Deploy `main`** | G-13 + G-14 are merged and *not running*. `scripts/verify-merged.mjs` confirms they are on `main`; only a redeploy puts them in front of traffic |
 | **F12 live demonstration** | Half a day, needs N funded source accounts. The last control with no live evidence |
-| **The 1-in-3 submission failures** | `settle_exact_stellar_transaction_submission_failed`, `transaction: ""`. Reproduced twice at the same rate (3/11, 3/9). Not the cutover — it fails before the chain sees anything. Costs nothing. Next step: capture the RPC's own error beneath that reason string and re-run against a second provider. **A lead, not a cause** |
+| **The 1-in-3 submission failures** | **DIAGNOSED 2026-08-11**, see [`diagnosis-settle-failures.md`](./diagnosis-settle-failures.md). 9 of 10 failures are the RPC returning **`TRY_AGAIN_LATER`** to `sendTransaction`; 1 is `txBadSeq`. Ruled out: the facilitator, the scheme library's logic, sponsor contention, and — by testing five never-used accounts, one of which still failed — shared-source contention, which had been the leading hypothesis. **The finding underneath: a status named "try again later" is converted into a terminal failure.** Not fixed; options and a recommendation are in the doc |
 
 ### Yours
 

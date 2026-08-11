@@ -283,7 +283,21 @@ export async function buildServer(
     });
     if (!trust) return response;
     let items = await annotateTrust(response.items, trust, (url) => catalog.isVerifiedOwner(url));
-    if (q.verified_only === "true") items = filterVerifiedOnly(items);
+    if (q.verified_only === "true") {
+      const before = items.length;
+      items = filterVerifiedOnly(items);
+      // `total` must describe what the caller can actually page through. The
+      // catalog computes it before the trust layer exists, so a verified_only
+      // filter applied afterwards used to leave `items: []` sitting next to
+      // `total: 1` — a response that contradicts itself, which invites a client
+      // to distrust every other number in it. Reduced by what this page dropped.
+      const dropped = before - items.length;
+      return {
+        ...response,
+        items,
+        pagination: { ...response.pagination, total: Math.max(0, response.pagination.total - dropped) },
+      };
+    }
     return { ...response, items };
   });
 
