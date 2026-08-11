@@ -80,6 +80,17 @@ export function registerBazaar(
       // binding internally. The binding is deliberately NOT passed in or handed
       // out — entry.boundPayTo aliases the ownership tombstone, so exposing it
       // would put a durable rebinding primitive one `.push()` away.
+      // G-2 displacement: a claimant who can PROVE ownership takes an unverified
+      // binding. Same fire-and-forget contract as reverify, and for the same
+      // reason — this probes a merchant's endpoint, and settlement must never
+      // wait on it. The two are mutually exclusive in practice: reverify only
+      // acts when the settler IS bound, tryDisplace only when they are NOT.
+      void catalog
+        .tryDisplace(discovered.resourceUrl, requirements.payTo, requirements, discovered, verifyOwnership)
+        .catch((err) => {
+          console.warn(`[bazaar] displacement check failed for ${discovered.resourceUrl}:`, err);
+        });
+
       void catalog
         .reverify(discovered.resourceUrl, requirements.payTo, verifyOwnership)
         .catch((err) => {
