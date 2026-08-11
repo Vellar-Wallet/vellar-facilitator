@@ -227,14 +227,60 @@ app.get("/whoami", (_req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// DIAGNOSTICS — why every facilitator error used to read as a bare 402 `{}`.
+//
+// Found during the 2026-08-10/11 walkthrough. Three settles failed with an
+// empty-body 402 and could not be explained; the same shape then hid a
+// facilitator 503 whose reason we already knew (`sponsor_balance_low`). The
+// cause is two small things compounding:
+//
+//   1. `body ?? {}` and `body ?? {…}` only substitute for null/undefined. The
+//      failure responses @x402/core builds carry an EMPTY OBJECT, so the
+//      fallback that was supposed to add `detail: settle.errorReason` never
+//      fired — for the exact inputs it existed to handle.
+//
+//   2. Our facilitator's error bodies have no `success` key, so
+//      HTTPFacilitatorClient cannot build a structured SettleError
+//      (`http/index.js:1120` requires `"success" in data`). It throws a generic
+//      Error instead — whose MESSAGE still contains the facilitator's status and
+//      body verbatim, and lands in `settle.errorReason`. The reason was
+//      available the whole time; nothing printed it.
+//
+// So: treat an empty object as absent, and always log server-side. A resource
+// server that hides its dependency's errors makes every failure look identical
+// to every other failure, which is what cost the earlier investigation.
+// ---------------------------------------------------------------------------
+
+/** Empty object counts as "no body" — this is the bug `??` could not see. */
+const emptyish = (b) => b == null || (typeof b === "object" && Object.keys(b).length === 0);
+
+/**
+ * Relay an x402 failure without losing the reason. A real body is passed through
+ * UNTOUCHED so protocol responses (402 challenges) stay spec-shaped; only an
+ * empty one is replaced with what we actually know.
+ */
+function relayFailure(res, stage, status, headers, body, extra = {}) {
+  for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
+  const payload = emptyish(body)
+    ? { error: "x402_failed", stage, ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v != null)) }
+    : body;
+  // Always log, even when the body was fine — during a walkthrough the server
+  // log is the only place the upstream reason is guaranteed to appear.
+  console.error(`[seller] ${stage} failed: HTTP ${status} ${JSON.stringify(payload)}`);
+  return res.status(status).json(payload);
+}
+
 app.get("/quote", async (req, res) => {
+  const paymentHeader = req.get("PAYMENT-SIGNATURE") || req.get("X-PAYMENT") || undefined;
+  const presentedPayment = Boolean(paymentHeader);
   let result;
   try {
     result = await httpServer.processHTTPRequest({
       adapter: adapter(req),
       path: req.path,
       method: req.method,
-      paymentHeader: req.get("PAYMENT-SIGNATURE") || req.get("X-PAYMENT") || undefined,
+      paymentHeader,
       routePattern: "GET /quote",
     });
   } catch (err) {
@@ -243,8 +289,19 @@ app.get("/quote", async (req, res) => {
 
   if (result.type === "payment-error") {
     const { status, headers, body } = result.response;
-    for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
-    return res.status(status).json(body ?? {});
+    // NOT every payment-error is a failure. A request that presented NO payment
+    // gets the 402 CHALLENGE, and that is the protocol working — its body is
+    // empty by design because the requirements travel in the `payment-required`
+    // HEADER. Logging it as a failure (and filling the empty body) would make
+    // every unpaid first request look broken, which is the same class of
+    // misleading diagnostic this block exists to remove.
+    if (!presentedPayment) {
+      for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
+      return res.status(status).json(body ?? {});
+    }
+    return relayFailure(res, "verify", status, headers, body, {
+      detail: result.errorReason ?? result.error ?? undefined,
+    });
   }
   if (result.type === "no-payment-required") {
     return res.json({ ok: true, note: "no payment required for this route" });
@@ -260,8 +317,14 @@ app.get("/quote", async (req, res) => {
     for (const [k, v] of Object.entries(settle.headers || {})) res.setHeader(k, v);
     if (settle.success === false) {
       const { status, headers, body } = settle.response || {};
-      for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
-      return res.status(status || 502).json(body ?? { error: "settlement failed", detail: settle.errorReason });
+      // `settle.errorReason` carries the facilitator's status and body verbatim
+      // when the client library could not parse a structured error — which is
+      // exactly the case for our own 503s. It is the most informative field
+      // available, and it was being dropped.
+      return relayFailure(res, "settle", status || 502, headers, body, {
+        detail: settle.errorReason,
+        errorMessage: settle.errorMessage,
+      });
     }
     res.json({
       quote: "Ships are safe in harbor, but that's not what ships are for.",
@@ -269,7 +332,12 @@ app.get("/quote", async (req, res) => {
       settlement: { transaction: settle.transaction, payer: settle.payer, network: settle.network },
     });
   } catch (err) {
-    res.status(502).json({ error: "settle error", detail: String(err?.message || err) });
+    // A throw from processSettlement never had a body to lose, but it was also
+    // never logged — so a crash-shaped failure and a refusal looked the same
+    // from outside.
+    return relayFailure(res, "settle-threw", 502, {}, undefined, {
+      detail: String(err?.message || err),
+    });
   }
 });
 
