@@ -590,6 +590,65 @@ reintroducing a hardcoded 30 fails it. Note the first version of that test did
 **not** catch the shadow, because no existing case drove one payTo past 30
 settles while its budget was higher.
 
+### Pattern: `String.replace()` silently no-ops — and it has now cost us twice
+
+**Twice is not an accident, it is a tool that needed changing.** Recording both,
+because "once" reads as carelessness and "twice" reads as a defect in the method.
+
+`String.prototype.replace()` returns the **original string** when the pattern
+does not match. No throw, no warning. Every hand-written script in this
+engagement had the same shape:
+
+```js
+src = src.replace(anchor, mutated);   // anchor wrong -> silent no-op
+runTests();                            // they pass, because nothing changed
+report("the mutation did not break anything");
+```
+
+That output is **identical** for "the code is unprotected" and "the test caught
+it" — opposite conclusions, same evidence.
+
+| | When | What it produced | How it was caught |
+| --- | --- | --- | --- |
+| **1** | 2026-08-10 | A doc script anchored on text from a then-unmerged PR. Sections vanished from three merges. **GitHub's squash was blamed for days.** | Reading the script, after the third recurrence |
+| **2** | 2026-08-11 | The displacement run reported **two mutations as surviving that had never executed** | Suspicion — the results looked wrong — not process |
+
+Both were caught by luck. So the check is now **structural**, in
+`scripts/mutate.mjs`: a mutation whose anchor is **absent or ambiguous ABORTS**
+and can never be reported as surviving, and an aborted run exits non-zero.
+Ambiguity aborts too — replacing the first of several matches mutates something
+other than what the label claims. `mutations/harness-selftest.json` is a
+deliberately wrong anchor that must always abort; if it ever reports a result,
+the harness itself has regressed.
+
+The general lesson, beyond this one function: **a verification step that cannot
+fail loudly is not a verification step.** The mutation run existed to check the
+tests, and for two entries it was checking nothing while printing the same output
+as success.
+
+### Lesson: a control's value can live in the work it prevents, not the outcome
+
+Found underneath the second incident, and it is the more interesting half.
+
+Gating displacement on the **ephemeral** `entry.verifiedOwner` instead of the
+durable latch left **all thirteen tests green**. The binding was never
+displaced — a second `everVerified` check after the probe caught it. So by
+outcome, the mutant was equivalent.
+
+It was not. Before that second check, the facilitator had already **fetched a
+claimant-chosen URL** on behalf of an attempt that could never succeed. Bounding
+that traffic is the entire reason the gates sit *before* the fetch: without it, a
+settler repeating a claim turns the facilitator into a request amplifier pointed
+at a victim's origin.
+
+**A test that asserts only the outcome cannot see a control whose purpose is
+preventing the work.** The fix was one line — assert the probe count is zero, not
+just that the binding held — and the same shape applies to every gate in
+`reverify` and `tryDisplace`: each exists to *avoid* an outbound request, so each
+needs an assertion about requests, not only about state. This is the same family
+as RA-12's decorative tests, arriving from a different direction: there the tests
+never armed the control; here they armed it and measured the wrong thing.
+
 ### Pattern: rationale in comments rots because nothing tests it
 
 Three comments in this repo have now asserted something untrue:
@@ -891,6 +950,8 @@ change.
 | **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
 | **F4-ts** | Verification API is not deployed at all; the worker-service has never run hosted | **external, blocked on wallet-repo M5** — not a missing field. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 multisig attestor. |
 | **G-10** | The spend ceiling throttles honest throughput **22× earlier than sponsor exposure requires** | **open — pubnet tuning, deliberately NOT changed.** Spend is accounted at the ESTIMATE (500,000) while the measured CHARGED fee is 22,579, so the ceiling refuses the 101st settle in a window having actually spent **~0.23 XLM of the 5 XLM it names — 4.5%**. It **fails safe**, and the over-count is deliberate (`server.ts:344`: the real simulated fee is not exposed on the verify response). But the dial does not mean what its name implies. Fixing it means either exposing the bid to the policy or setting the estimate from measurement — both are pubnet decisions with real downside if the estimate ever *under*-counts, which is why nothing is being changed on the strength of one wallet's measurement. |
+| **G-11** | The canonical key does not normalise a **trailing slash**, so `…/quote` and `…/quote/` are separately bindable | **open, found 2026-08-11.** One resource, two catalog identities. A squatter can hold the variant its owner never settled against, and the owner's own binding does not protect it. Same family as G-3 (which stripped the query string but not this). Low severity while displacement can recover it, but it doubles every URL's attack surface for free. |
+| **G-12** | Bindings proven BEFORE displacement shipped load as displaceable | **open, one-time.** `ownership.verified_at` was added by the displacement migration and back-fills as NULL, so a pre-existing verified binding is displaceable until its owner settles once more and re-proves. Safe in practice — displacement requires proof, so only whoever controls the endpoint can act — but it silently reopens the 2C takeover case for exactly one window per binding. Closes itself as owners settle. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
 | **F5** | Settle/confirm reconciliation | deferred; integration-level. |
 | **F8** | Unvalidated operator-supplied URLs | deferred; operator-supplied, not attacker-supplied. |

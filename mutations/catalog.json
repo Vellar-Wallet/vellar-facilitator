@@ -1,0 +1,86 @@
+[
+  {
+    "label": "one-way gate removed (proof no longer protects proof)",
+    "file": "src/catalog.ts",
+    "find": "    // THE ONE-WAY GATE. Read from the durable latch, never from the badge.\n    if (this.everVerified.has(key)) return \"skipped\";",
+    "replace": "",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "gate on the ephemeral badge instead of the durable latch",
+    "file": "src/catalog.ts",
+    "find": "    // THE ONE-WAY GATE. Read from the durable latch, never from the badge.\n    if (this.everVerified.has(key)) return \"skipped\";",
+    "replace": "    if (entry.verifiedOwner) return \"skipped\";",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "probe the bound set as well as the claimant",
+    "file": "src/catalog.ts",
+    "find": "verdict = await verify(key, [claimant]);",
+    "replace": "verdict = await verify(key, [...entry.boundPayTo, claimant]);",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "stop latching verification durably",
+    "file": "src/catalog.ts",
+    "find": "        await this.latchVerified(key, settlingPayTo);",
+    "replace": "",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "inherit the displaced owner's stats",
+    "file": "src/catalog.ts",
+    "find": "    this.entries.delete(key);\n    await this.upsertFromPayment(discovered, requirements);",
+    "replace": "    await this.upsertFromPayment(discovered, requirements);",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "cooldown keyed on url alone",
+    "file": "src/catalog.ts",
+    "find": "const cooldownKey = `${key}\\u0000${claimant}`;",
+    "replace": "const cooldownKey = key;",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "drop the displacement cooldown entirely",
+    "file": "src/catalog.ts",
+    "find": "    if (last && now - last.at < cooldownFor(last.verdict)) return \"skipped\";\n\n    this.displaceInFlight.add(cooldownKey);",
+    "replace": "    this.displaceInFlight.add(cooldownKey);",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "displacement appends instead of replacing",
+    "file": "src/store.ts",
+    "find": "          { sql: \"DELETE FROM ownership WHERE resource_key = ?\", args: [resourceKey] as InArgs },\n",
+    "replace": "",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "rebind while the catalog is frozen",
+    "file": "src/catalog.ts",
+    "find": "    if (this.frozen === \"ownership-unreachable\" || this.frozen === \"ownership-invalid\") return \"skipped\";\n",
+    "replace": "",
+    "test": "src/catalog.displacement.test.ts"
+  },
+  {
+    "label": "bindOwnership fire-and-forget (G-7 reintroduced)",
+    "file": "src/catalog.ts",
+    "find": "await this.store.bindAndUpsertEntry(",
+    "replace": "void this.store.bindAndUpsertEntry(",
+    "test": "src/store.durability.test.ts"
+  },
+  {
+    "label": "drop LIMIT from loadEntries (G-6 reopened)",
+    "file": "src/store.ts",
+    "find": "ORDER BY last_updated DESC LIMIT ?",
+    "replace": "ORDER BY last_updated DESC",
+    "test": "src/store.durability.test.ts"
+  },
+  {
+    "label": "retry a deterministic store failure",
+    "file": "src/store.ts",
+    "find": "      if (err instanceof StoreInvalidError) throw err; // deterministic \u2014 do not retry\n",
+    "replace": "",
+    "test": "src/store.durability.test.ts"
+  }
+]

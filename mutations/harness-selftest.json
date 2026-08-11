@@ -1,0 +1,9 @@
+[
+  {
+    "label": "SELF-TEST: a wrong anchor must ABORT, never be reported as surviving",
+    "file": "src/catalog.ts",
+    "find": "this.anchorThatDoesNotExist();",
+    "replace": "",
+    "test": "src/catalog.displacement.test.ts"
+  }
+]
