@@ -195,6 +195,43 @@ script checks the base branch, provenance on main, and whether the PR's
 distinctive added lines are actually present. `--selftest` runs it against #34,
 which must always fail; if it ever reports LANDED, the check has regressed.
 
+### 3.4c Documentation describing behaviour a shipped change removed
+
+Same shape as the seller's hardcoded `localhost` boot log and the
+`bindLoadedEntry` comment that described a path which did not exist — **but in
+the highest-traffic location in the repository**, the README a developer reads
+first.
+
+It said: *"an empty catalog after an idle period is expected — not a fault"*,
+because spin-down destroyed the container's filesystem. True when written. False
+the moment durable storage shipped — the catalog now survives, verified across a
+42-second cold start. So the README was **telling a developer that a symptom is
+normal when it had become a signal that something is wrong**, which is worse than
+saying nothing: it actively stops the investigation that would find the fault.
+
+**The sweep after the change was partial, and one stale claim was the tell.**
+Checking the rest found more, all of it in documents read as current instruction
+rather than as history:
+
+- **runbook §1** — I rewrote its SQL steps and left the preamble telling the
+  operator to get "shell access to the instance and its persistent disk" and stop
+  the service before editing "the ownership file". My own partial sweep, three
+  days after writing the fix.
+- **runbook §2** — an entire migration procedure for `CATALOG_OWNERSHIP_BOOTSTRAP`,
+  a flag that no longer exists, describing files that no longer exist. **Deleted
+  rather than banner-ed**: under pressure an operator reads the steps, not the
+  disclaimer above them.
+- **runbook §3, §5** — instructions to delete "the ownership file", and the same
+  false "empty catalog is expected" claim.
+- **guide.md** — a startup command setting `CATALOG_FILE`, which is now ignored
+  with a warning.
+
+**The rule:** a change that removes a behaviour is not finished when the code
+lands. Grep the docs for the vocabulary of the thing you removed — the *file*,
+the *flag*, the *disk* — and treat every hit in an instructional document as a
+defect. Hits in dated records (briefs, walkthroughs, decision logs) are correct
+and should stay; they describe what was true when written.
+
 ### 3.5 Tests that passed for the wrong reason — three times
 
 1. **RA-12** — eight tests green against deliberately broken code; the control
@@ -290,7 +327,7 @@ argument fails with the code.
 
 | Item | Note |
 | --- | --- |
-| **F4-ts** | Blocked on the wallet repo's M5 multisig attestor. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 |
+| **F4-ts** | **Deferred deliberately, not pending.** Chain: trust badge ← a verdict source ← worker-service deployed (needs a Docker host) ← `ATTESTOR_SECRET_KEY` (needs an attestor) ← M5 multisig design (unresolved). Each link is blocked by the one below, and the bottom is a wallet-repo design decision. **It will not be switched on to produce testnet badges** — that would mean minting an attestor key ahead of the multisig design meant to govern it. Two prerequisites proceed regardless because they are design defects rather than deployment ones: per-record timestamps, and endpoint authentication |
 
 ### Deferred, with reasons
 

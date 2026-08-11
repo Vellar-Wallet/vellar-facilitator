@@ -17,7 +17,7 @@ roles, two scripts, both in `examples/`.
 ## 1. Start the facilitator
 
 ```sh
-SPONSOR_SECRET_KEY=S... PORT=4100 CATALOG_FILE=./data/catalog.json npm start
+SPONSOR_SECRET_KEY=S... PORT=4100 CATALOG_DB_URL=file:./data/catalog.db npm start
 ```
 
 Sanity: `curl localhost:4100/health`, then `curl localhost:4100/supported` —
