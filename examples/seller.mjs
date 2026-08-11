@@ -17,29 +17,67 @@ import { HTTPFacilitatorClient } from "@x402/core/http";
 import { x402ResourceServer, x402HTTPResourceServer } from "@x402/core/server";
 import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import {
+  Networks,
+  Operation,
+  StrKey,
+  TransactionBuilder,
+  nativeToScVal,
+  scValToNative,
+  rpc,
+} from "@stellar/stellar-sdk";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 // Auto-load examples/.env.recording so you never have to `source` it. Existing
 // shell env vars still win (loadEnvFile does not override). No-op if absent.
+// Captured BEFORE the env file loads, so the boot log can say where PAYTO and
+// ASSET actually came from. `.env.recording` is a gitignored dotfile that
+// silently outranks the built-in defaults, and a stale one advertising a dead
+// merchant is precisely the failure these constants were once hardcoded to
+// prevent. It cannot be silent now: provenance is printed, and the trustline is
+// checked, on every boot.
+const shellPayTo = process.env.PAYTO;
+const shellAsset = process.env.ASSET;
+
 try {
   process.loadEnvFile(join(dirname(fileURLToPath(import.meta.url)), ".env.recording"));
 } catch {}
 
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://vellar-facilitator.onrender.com";
-// Demo merchant. Hard-defaulted so a stale shell `PAYTO` cannot make the seller
-// serve a merchant with no trustline — the failure that motivated hardcoding.
+// Demo merchant + asset. These are DEFAULTS, overridable by `PAYTO` / `ASSET`
+// so you can run this seller against your own merchant without editing source
+// (`node provision-testnet.mjs` creates a matched set).
+//
+// They used to be hardcoded constants that silently ignored the environment.
+// The reason was real: a stale shell `PAYTO` makes the seller advertise a
+// merchant with no trustline, and that settle fails on-chain in a way that is
+// indistinguishable from a spend control refusing unless you go and read
+// Horizon. Ignoring the environment defended against that by making the seller
+// unusable for anyone else — while both docs still documented the flags. The
+// guard now lives in `preflightMerchant()` below, which checks the actual
+// condition (does this payTo hold a trustline to this asset?) instead of
+// proxying it, and refuses to boot with a message that names the fix.
 //
 // UPDATED 2026-08-10: the previous pair (CBIN4HTP… / GBDZH5KZ…) are DEAD — the
-// old issuer was burned during provisioning. A settle against them fails
-// on-chain, which is indistinguishable from a control refusing unless you check
-// Horizon. If you change these, redeploy vellar-seller-demo and re-run the live
-// ownership gate (docs/operator-runbook.md §4): the gate verifies the payTo the
-// challenge NAMES, so a stale 402 reads as a mismatch that looks like a
-// control failure.
-const PAYTO = "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH";
-const ASSET = "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR"; // X402TST bound token
+// old issuer was burned during provisioning. If you change these defaults,
+// redeploy vellar-seller-demo and re-run the live ownership gate
+// (docs/operator-runbook.md §4): the gate verifies the payTo the challenge
+// NAMES, so a stale 402 reads as a mismatch that looks like a control failure.
+const PAYTO = process.env.PAYTO || "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH";
+const ASSET = process.env.ASSET || "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR";
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
+
+// Used only by the boot-time merchant preflight below — never on the payment
+// path, which goes through the facilitator.
+const RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
+const PASSPHRASE = Networks.TESTNET;
+
+/** Where a value came from — shell, the env file, or the built-in default. */
+const sourceOf = (shellValue, name) =>
+  shellValue ? "environment" : process.env[name] ? "examples/.env.recording" : "built-in default";
+const PAYTO_SOURCE = sourceOf(shellPayTo, "PAYTO");
+const ASSET_SOURCE = sourceOf(shellAsset, "ASSET");
 
 /**
  * The address this merchant advertises as its own — the single source of truth
@@ -168,6 +206,115 @@ async function initializeWithRetry() {
   );
   throw lastError;
 }
+
+/**
+ * Refuse to boot a seller that cannot possibly be paid.
+ *
+ * A merchant with no trustline to the payment asset fails at SETTLEMENT — after
+ * verification has already passed — with an on-chain error that reads exactly
+ * like a spend control refusing the payment. You cannot tell the two apart
+ * without going and reading Horizon, which is why this used to be "defended"
+ * by ignoring `PAYTO`/`ASSET` entirely.
+ *
+ * Checked here instead, once, at boot:
+ *   1. both values are well-formed strkeys (a typo is caught before any I/O);
+ *   2. `PAYTO` is a real, funded account;
+ *   3. `PAYTO` holds a trustline to `ASSET` — a SAC `balance()` on an account
+ *      without one fails with Error(Contract, #13) rather than returning 0.
+ *
+ * A DEFINITIVE negative is fatal. An INCONCLUSIVE result (RPC unreachable) is a
+ * warning: a testnet RPC blip must not take a working seller offline, and the
+ * failure it guards against is loud on the settle path anyway.
+ *
+ * `SKIP_TRUSTLINE_CHECK=1` bypasses it for offline or fixture-driven runs.
+ */
+async function preflightMerchant() {
+  console.error(`[seller] payTo ${PAYTO} (from ${PAYTO_SOURCE})`);
+  console.error(`[seller] asset ${ASSET} (from ${ASSET_SOURCE})`);
+  if (!StrKey.isValidEd25519PublicKey(PAYTO)) {
+    console.error(
+      `\n[seller] FATAL: PAYTO is not a valid Stellar account address.\n` +
+        `  got: ${PAYTO}\n` +
+        `  PAYTO must be a G… ed25519 public key — the merchant that receives payment.\n`,
+    );
+    process.exit(1);
+  }
+  if (!StrKey.isValidContract(ASSET)) {
+    console.error(
+      `\n[seller] FATAL: ASSET is not a valid contract address.\n` +
+        `  got: ${ASSET}\n` +
+        `  ASSET must be a C… SEP-41 contract id (for a classic asset, its SAC).\n`,
+    );
+    process.exit(1);
+  }
+  if (process.env.SKIP_TRUSTLINE_CHECK === "1") {
+    console.error("[seller] preflight SKIPPED (SKIP_TRUSTLINE_CHECK=1) — settlement may fail on-chain");
+    return;
+  }
+
+  const server = new rpc.Server(RPC_URL);
+  const inconclusive = (why) =>
+    console.error(
+      `[seller] preflight INCONCLUSIVE (${String(why).slice(0, 120)}) — ` +
+        `could not confirm ${PAYTO.slice(0, 8)}… holds a trustline to ${ASSET.slice(0, 8)}…; starting anyway`,
+    );
+
+  let account;
+  try {
+    account = await server.getAccount(PAYTO);
+  } catch (err) {
+    const msg = String(err?.message ?? err);
+    if (!/not found/i.test(msg)) return inconclusive(msg);
+    console.error(
+      `\n[seller] FATAL: PAYTO ${PAYTO} does not exist on this network.\n\n` +
+        `  Fund it, then start again:\n` +
+        `    curl "https://friendbot.stellar.org?addr=${PAYTO}"\n\n` +
+        `  Or provision a complete matched set (asset, merchant, trustline, payer):\n` +
+        `    node provision-testnet.mjs\n`,
+    );
+    process.exit(1);
+  }
+
+  let sim;
+  try {
+    const probe = new TransactionBuilder(account, { fee: "1000000", networkPassphrase: PASSPHRASE })
+      .addOperation(
+        Operation.invokeContractFunction({
+          contract: ASSET,
+          function: "balance",
+          args: [nativeToScVal(PAYTO, { type: "address" })],
+        }),
+      )
+      .setTimeout(60)
+      .build();
+    sim = await server.simulateTransaction(probe);
+  } catch (err) {
+    return inconclusive(err?.message ?? err);
+  }
+
+  if (!rpc.Api.isSimulationSuccess(sim)) {
+    console.error(
+      `\n[seller] FATAL: PAYTO ${PAYTO}\n` +
+        `        has no trustline to ASSET ${ASSET}.\n\n` +
+        `  Every payment would verify and then FAIL at settlement, with an on-chain\n` +
+        `  error that looks like a spend control refusing it. Add the trustline first.\n\n` +
+        `  With the Stellar CLI (you need the merchant's secret key):\n` +
+        `    stellar tx new change-trust --source <MERCHANT_SECRET> \\\n` +
+        `      --line <CODE>:<ISSUER> --network testnet\n\n` +
+        `  Or provision a complete matched set (asset, merchant, trustline, payer):\n` +
+        `    node provision-testnet.mjs\n\n` +
+        `  If you believe this is wrong, SKIP_TRUSTLINE_CHECK=1 bypasses this check.\n`,
+    );
+    process.exit(1);
+  }
+
+  console.error(
+    `[seller] preflight ok — ${PAYTO.slice(0, 8)}… holds a trustline to ${ASSET.slice(0, 8)}…` +
+      ` (balance ${scValToNative(sim.result.retval)} atomic)`,
+  );
+}
+
+await preflightMerchant();
 await initializeWithRetry();
 
 function adapter(req) {
