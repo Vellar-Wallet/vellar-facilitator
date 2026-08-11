@@ -201,6 +201,21 @@ official `withBazaar` client. Point any MCP client at it:
 }
 ```
 
+## Using it
+
+**[`docs/using-it.md`](./docs/using-it.md)** — how to point at a running
+facilitator, split by role:
+
+- **Merchants** — what to change in your resource server, what your 402 must
+  declare, the five requirements for ownership verification, and what the silent
+  unverified case looks like.
+- **Buyers/agents** — what you need on your side (and what the sponsor covers, so
+  you know what you do *not* need to hold), discovery, and paying.
+
+Plus what will bite you on the hosted instance, and who this is ready for.
+[`docs/guide.md`](./docs/guide.md) is the different thing: running a facilitator
+locally and walking the loop with both example scripts.
+
 ## End-to-end examples
 
 `examples/` contains the full loop, live-verified on testnet:
