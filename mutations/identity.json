@@ -1,0 +1,44 @@
+[
+  {
+    "label": "policyBucketKey reimplements the rule (drops trim)",
+    "file": "src/server.ts",
+    "find": "  return BazaarCatalog.canonicalPayTo(payTo) ?? \"<no-payto>\";",
+    "replace": "  return typeof payTo === \"string\" && payTo.length ? payTo : \"<no-payto>\";",
+    "test": "src/identity.agreement.test.ts"
+  },
+  {
+    "label": "upsert stops canonicalising payTo (padded copy hijack)",
+    "file": "src/catalog.ts",
+    "find": "    const payTo = BazaarCatalog.canonicalPayTo(requirements.payTo);\n    if (payTo === undefined) {",
+    "replace": "    const payTo = requirements.payTo as string | undefined;\n    if (payTo === undefined) {",
+    "test": "src/identity.agreement.test.ts"
+  },
+  {
+    "label": "junk payTo is bound instead of refused",
+    "file": "src/catalog.ts",
+    "find": "    if (typeof payTo !== \"string\") return undefined;\n    const trimmed = payTo.trim();\n    if (trimmed.length === 0 || trimmed.length > MAX_PAYTO_LEN) return undefined;\n    return trimmed;",
+    "replace": "    return String(payTo);",
+    "test": "src/identity.agreement.test.ts"
+  },
+  {
+    "label": "isBound reverts to the raw url",
+    "file": "src/catalog.ts",
+    "find": "    return this.entries.get(BazaarCatalog.canonicalResourceKey(resourceUrl))?.boundPayTo.includes(payTo) ?? false;",
+    "replace": "    return this.entries.get(resourceUrl)?.boundPayTo.includes(payTo) ?? false;",
+    "test": "src/identity.agreement.test.ts"
+  },
+  {
+    "label": "isVerifiedOwner reverts to the raw url",
+    "file": "src/catalog.ts",
+    "find": "    return this.entries.get(BazaarCatalog.canonicalResourceKey(resourceUrl))?.verifiedOwner ?? false;",
+    "replace": "    return this.entries.get(resourceUrl)?.verifiedOwner ?? false;",
+    "test": "src/identity.agreement.test.ts"
+  },
+  {
+    "label": "setVerifiedOwner reverts to the raw url",
+    "file": "src/catalog.ts",
+    "find": "    const entry = this.entries.get(BazaarCatalog.canonicalResourceKey(resourceUrl));",
+    "replace": "    const entry = this.entries.get(resourceUrl);",
+    "test": "src/identity.agreement.test.ts"
+  }
+]

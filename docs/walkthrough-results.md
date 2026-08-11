@@ -92,7 +92,28 @@ settlements   3 -> 3      uniquePayers 1 -> 1      observed 3 -> 3
 
 A rejected upsert credited the victim with nothing.
 
-### G-3 — canonical resource key
+### G-3 — canonical resource key — **DOWNGRADED 2026-08-11: this did not test what it claimed**
+
+> **The evidence below is real, and it does not demonstrate catalog
+> canonicalisation.** Two settles with different query strings produced one
+> entry — but `upsertFromPayment` keyed the entry map on the merchant's RAW
+> advertised URL, and the seller reports one stable URL in its own 402 regardless
+> of the query. So the query string never reached the catalog, and one entry was
+> the only possible outcome whether or not the catalog canonicalised anything.
+>
+> **What it actually demonstrated:** the seller advertises a stable resource URL.
+> Worth knowing, not what was claimed.
+>
+> **What was genuinely proven, and where:** G-3's fix was to the SPEND POLICY key
+> (`server.ts`), and that is covered by unit tests which do exercise the
+> canonicaliser. The catalog half was fixed on 2026-08-11 under G-11 — it had
+> been keying on the raw URL the entire time.
+>
+> Downgraded under the same standard applied to everything else here. A test that
+> passes for a reason other than the one claimed is the RA-12 failure mode, and
+> it does not get an exemption for being ours.
+
+### G-3 — canonical resource key (as originally recorded)
 
 Two settles with different query strings
 (`867632de…`, `0fb01358…`, both `successful: true`, 22,579 each):

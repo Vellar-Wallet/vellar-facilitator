@@ -626,6 +626,50 @@ fail loudly is not a verification step.** The mutation run existed to check the
 tests, and for two entries it was checking nothing while printing the same output
 as success.
 
+### Class: one identity, several derivations, no test that they agree
+
+**This is the finding. The trailing slash was an instance of it**, and so was
+G-3, and they were eighteen days apart without anyone noticing they were the same
+thing.
+
+The shape: a value that IS an identity — it decides who owns what, or which
+bucket a limit counts against — gets derived independently at more than one call
+site. Each site is tested against its own definition, both pass, and they agree
+only while the inputs happen to be ones where the definitions coincide.
+
+Two confirmed instances:
+
+| Identity | Derivation A | Derivation B | Why nobody noticed |
+| --- | --- | --- | --- |
+| **resource URL** | `upsertFromPayment` keyed on the **raw advertised URL** | `recordSettlement`, `isBoundResource`, `isBound`, `isVerifiedOwner`, `setVerifiedOwner` and the spend policy keyed on the **canonical** form | The demo seller reports one stable URL in its 402, so raw and canonical were the same string in every test and every live run |
+| **payTo** | `policyBucketKey` **trimmed** and length-capped it | the catalog compared the **raw string** | No input with surrounding whitespace was ever tried |
+
+Both were exploitable, and neither was a corner case:
+
+- The URL split meant a second spelling was a second catalog identity — a
+  stranger could hold `…/quote/` while the owner held `…/quote` (**found live**).
+- The payTo split meant `"G… "` and `"G…"` were ONE rate-limit bucket and TWO
+  catalog identities. A padded copy of a victim's address binds their URL to
+  something that **renders identically** in `/discovery/resources` while their
+  own clean address reads as "not bound" — locked out by whitespace.
+
+**G-3 is the tell.** It was reported and fixed as "the spend policy keys on the
+raw URL while the catalog keys on the canonical one". The fix corrected the
+policy. Nobody asked the next question — *is the catalog actually doing what we
+just assumed it does?* — and the answer was no, for another eighteen days.
+
+**The rule, now enforced by test:** an identity has ONE derivation, exported, and
+every consumer calls it. Where two consumers genuinely cannot share code, there
+is a test that runs both over the same corpus and asserts they agree
+(`src/identity.agreement.test.ts`). Testing each side against its own definition
+is what produced this twice.
+
+**Where else this was checked, and found clean:** `asset` and `network` are
+compared verbatim and never used as a map key or a rate-limit bucket; `payer` is
+only ever counted into a Set for `uniquePayers`, never used for authorisation.
+`network` has a single derivation (`config.network`) with one consumer each in
+the policy and the error bodies.
+
 ### Lesson: a control's value can live in the work it prevents, not the outcome
 
 Found underneath the second incident, and it is the more interesting half.
@@ -950,7 +994,7 @@ change.
 | **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
 | **F4-ts** | Verification API is not deployed at all; the worker-service has never run hosted | **external, blocked on wallet-repo M5** — not a missing field. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 multisig attestor. |
 | **G-10** | The spend ceiling throttles honest throughput **22× earlier than sponsor exposure requires** | **open — pubnet tuning, deliberately NOT changed.** Spend is accounted at the ESTIMATE (500,000) while the measured CHARGED fee is 22,579, so the ceiling refuses the 101st settle in a window having actually spent **~0.23 XLM of the 5 XLM it names — 4.5%**. It **fails safe**, and the over-count is deliberate (`server.ts:344`: the real simulated fee is not exposed on the verify response). But the dial does not mean what its name implies. Fixing it means either exposing the bid to the policy or setting the estimate from measurement — both are pubnet decisions with real downside if the estimate ever *under*-counts, which is why nothing is being changed on the strength of one wallet's measurement. |
-| **G-13** | Facilitator error bodies do not conform to the x402 `SettleResponse` schema | **open — decision pending, not a defect of convenience.** The spec (`specs/x402-specification-v2.md` §5.3) marks `success`, `transaction` and `network` **Required**, with `errorReason` optional. Our refusals return `{error, reason}` and omit all three. That is why `HTTPFacilitatorClient` cannot build a structured `SettleError` and degrades to a generic throw — the seller-side symptom fixed in #28 was this, seen from the other end. **Conformance is the argument, not error ergonomics.** Deliberately NOT changed: it alters what every x402 client receives, so it is an owner decision rather than a maintenance one. |
+| **G-13** | Facilitator error bodies did not conform to the x402 `SettleResponse` / `VerifyResponse` schemas | **CLOSED-BY-TEST 2026-08-11.** All six error paths now carry the required fields — `success`/`transaction`/`network` on `/settle` (§5.3), `isValid` on `/verify` (§5.4) — with the legacy `error`/`reason` kept alongside so the change is strictly additive. This is what makes `HTTPFacilitatorClient` build a structured `SettleError` instead of a generic throw, so **#28's seller-side workaround becomes partly redundant**: the seller no longer has to dig a reason out of an error string, though its empty-body guard stays as defence for other facilitators. *(was: open — conformance, not convenience)* The spec (`specs/x402-specification-v2.md` §5.3) marks `success`, `transaction` and `network` **Required**, with `errorReason` optional. Our refusals return `{error, reason}` and omit all three. That is why `HTTPFacilitatorClient` cannot build a structured `SettleError` and degrades to a generic throw — the seller-side symptom fixed in #28 was this, seen from the other end. **Conformance is the argument, not error ergonomics.** Deliberately NOT changed: it alters what every x402 client receives, so it is an owner decision rather than a maintenance one. |
 | **G-11** | The canonical key did not normalise a **trailing slash**, so `…/quote` and `…/quote/` were separately bindable | **CLOSED-BY-TEST 2026-08-11.** Fixed as a family, not an instance — and the fix surfaced a larger one underneath: `upsertFromPayment` keyed the entry map on the merchant's RAW advertised URL while `recordSettlement`, `isBoundResource` and the spend policy all keyed on the canonical form. They agreed only because the demo seller reports one stable URL. G-3 fixed the policy side of that split; this side had been left behind. Old rows re-canonicalise on load, so no migration step. *(was: open, found 2026-08-11)* One resource, two catalog identities. A squatter can hold the variant its owner never settled against, and the owner's own binding does not protect it. Same family as G-3 (which stripped the query string but not this). Low severity while displacement can recover it, but it doubles every URL's attack surface for free. |
 | **G-12** | Bindings proven BEFORE displacement shipped load as displaceable | **open, one-time.** `ownership.verified_at` was added by the displacement migration and back-fills as NULL, so a pre-existing verified binding is displaceable until its owner settles once more and re-proves. Safe in practice — displacement requires proof, so only whoever controls the endpoint can act — but it silently reopens the 2C takeover case for exactly one window per binding. Closes itself as owners settle. |
 | **RA-14r** | RFC 6052 non-`/96` NAT64 offsets | deferred; not reachable in the current deployment. |
