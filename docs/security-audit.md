@@ -1229,6 +1229,25 @@ closed-by-test in CI; this table is about something narrower and more important:
 | **F11 Layer 2** — 402-challenge ownership verification | `match` against `https://vellar-seller-demo.onrender.com/quote` with the SSRF guard fully armed: real DNS (`216.24.57.7`), the pin taken from the guard's own resolution, TLS validated against the hostname (Google Trust Services), and a **control** proving an unrelated `payTo` returns `mismatch`. Repeatable via `src/ownership.live.test.ts` (manual gate, runbook §4). |
 | **F7 baseline hardening** | Probed against the deployed service: helmet headers present, `x-ratelimit-limit: 60`, and junk XDR returning a clean `400 invalid_payload` rather than the pre-audit `500` that leaked an internal `TypeError`. |
 
+### UPDATED 2026-08-10 — four of the six now have live evidence
+
+The walkthrough ran. Full record with transaction hashes in
+[`walkthrough-results.md`](./walkthrough-results.md).
+
+| Control | Status |
+| --- | --- |
+| **F11 Layer 2** | **PROVEN** — `ownerVerified: true` through a real settlement for the first time (`8c0d9682…`) |
+| **F11 Layer 1** | **PROVEN** — squat settled on-chain (`9726d45e…`, `successful: true`) and the catalog refused it; accepts unchanged |
+| **G-4** | **PROVEN** — the rejected upsert moved no stats (3→3, 1→1, 3→3) |
+| **G-3** | **PROVEN** — two query strings, one entry, key carries no query |
+| **F12** | **NOT REACHABLE** — needs 11 settles/60s; harness achieves 6 (~8s per settle) |
+| **G-1** | **NOT DISTINGUISHABLE** — without persistence every post-restart settle is a first catalog |
+| **F3** | **PENDING** — needs the hard-floor flip |
+
+Also settled by the run: every settlement charged **22,579 stroops**, 4.5% of the
+ceiling — the on-chain refutation of the retracted D-4, carrying a hash where the
+26M figure never did.
+
 ### Unit tests ONLY — never executed live
 
 **Everything on the settle path.** These are the controls built during this
