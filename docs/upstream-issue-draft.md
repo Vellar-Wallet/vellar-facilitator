@@ -1,4 +1,16 @@
-# Upstream issue — DRAFT, not filed
+# Upstream issue — FILED
+
+**Open: https://github.com/x402-foundation/x402/issues/3125** (2026-08-11)
+
+Filed with the workaround linked as a commit-pinned permalink rather than
+described, and the PR offered unconditionally in the body — four lines with a
+test is less work for a maintainer than a discussion.
+
+The text below is what was submitted.
+
+---
+
+## Original draft notes
 
 **Target:** `x402-foundation/x402` (the repo `@x402/stellar` points at).
 **Confirmed against:** `@x402/stellar@2.21.0` — the latest release, not just our
