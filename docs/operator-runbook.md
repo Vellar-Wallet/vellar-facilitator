@@ -76,38 +76,68 @@ memory and will overwrite a live hand-edit.
    /var/data/bazaar-catalog.json.ownership
    ```
 
-3. **Back both files up**, together, to the same timestamped directory:
+3. **Back the ownership rows up.** There are no files any more — the catalog
+   lives in libSQL/Turso.
    ```
-   cp /var/data/bazaar-catalog.json          /var/data/backup-$(date +%s)/
-   cp /var/data/bazaar-catalog.json.ownership /var/data/backup-$(date +%s)/
+   turso db shell <db> "SELECT resource_key, pay_to, bound_at FROM ownership \
+     WHERE resource_key = 'https://api.merchant.example/quote'"
    ```
-   Back up **both**. A catalog file without its companion ownership file makes
-   the service come up frozen — see procedure 2.
+   Keep that output. It is what you restore if step 4 goes wrong.
 
-4. **Edit the ownership file.** It is a JSON array of
-   `{ "resource": <canonical-url>, "boundPayTo": [<address>, ...] }`. Find the
-   row whose `resource` matches, and **append** the new address:
+4. **INSERT the new address. Never UPDATE.**
 
-   ```json
-   { "resource": "https://api.merchant.example/quote",
-     "boundPayTo": ["GOLD...ADDRESS", "GNEW...ADDRESS"] }
+   > ### Why UPDATE is the wrong statement, and what it actually does
+   >
+   > Read this before you type anything. The two statements look
+   > interchangeable and are not.
+   >
+   > Ownership is **one row per bound payTo**. Rows load ordered by `bound_at`,
+   > and **`boundPayTo[0]` is treated as the owner everywhere downstream** — it
+   > is the address the entry's `accepts` is filtered against, and the address
+   > ownership verification is run for.
+   >
+   > - `INSERT` **adds** a second acceptable address. The original stays first,
+   >   so it stays the owner. The merchant can be paid at the new address, and
+   >   nothing about who owns the URL has changed. **This is a rotation.**
+   > - `UPDATE` **overwrites** the original row. The new address becomes
+   >   `boundPayTo[0]` — the owner — and the old one ceases to exist. **This is
+   >   a transfer of ownership**, executed by you, on the strength of whatever
+   >   evidence you accepted in step 1.
+   >
+   > If the request turns out to have been a hijack, `INSERT` is undone by
+   > deleting the row you added. `UPDATE` has destroyed the record of who owned
+   > the URL, and nothing in the system can tell you what it was. Adding is
+   > reversible; overwriting is not.
+   >
+   > Under pressure the instinct is "the address changed, so change the
+   > address." Resist it. You are adding an address, not editing one.
+
+   A rotation is therefore an insert alongside the existing row:
+
+   ```sql
+   INSERT INTO ownership (resource_key, pay_to, bound_at)
+   VALUES ('https://api.merchant.example/quote', 'GNEW...ADDRESS', unixepoch()*1000);
    ```
 
-   **Append, do not replace.** Removing the old address is a separate decision:
-   any accepts entry still carrying it will be quarantined on the next load, and
-   if it was the *first* entry the whole binding re-derives from it. Adding is
-   reversible; removing is not.
+   **The schema exists for this procedure.** A one-row-per-URL table cannot
+   represent `[OLD, NEW]`, and an early draft of the migration had exactly that —
+   it would have silently removed the only recovery route a squatted URL has,
+   discovered by whoever was reading this page at the moment they needed it.
+   Caught by `catalog.reverify.test.ts`, and pinned by a test that fails if the
+   composite key is reverted.
 
    The `resource` value must be the **canonical** URL — `origin + pathname`, with
    no query string or fragment. If the merchant gave you a URL with `?...`, strip
    it. A row whose key has a query string will simply never match.
 
-5. **Check the JSON parses** before restarting. This matters more than it looks:
-   an unparseable ownership file does not fail loudly, it makes the catalog come
-   up **frozen and empty** (procedure 2).
+5. **Read the rows back** before restarting, and confirm BOTH addresses are
+   present with the original first:
    ```
-   python3 -m json.tool /var/data/bazaar-catalog.json.ownership > /dev/null && echo OK
+   turso db shell <db> "SELECT pay_to FROM ownership \
+     WHERE resource_key = 'https://api.merchant.example/quote' ORDER BY bound_at, rowid"
    ```
+   A row whose `pay_to` is not text (a blob, say) makes the catalog come up
+   **frozen as `ownership-invalid`** rather than failing loudly at insert time.
 
 6. **Start the service.**
 
@@ -117,8 +147,12 @@ memory and will overwrite a live hand-edit.
    ```
    curl -sS <base>/health
    ```
-   `catalogFrozen` must be `false`. If it reads `"ownership-unreadable"`, your
-   edit did not parse — restore from the backup in step 3 and try again.
+   `catalogFrozen` must be `false`. The two values you might see instead now say
+   different things:
+   - `"ownership-invalid"` — the store ANSWERED and a row is unusable. Your edit
+     is the likely cause; restore from step 3. **Do not restart in a loop.**
+   - `"ownership-unreachable"` — the database could not be reached after retries.
+     Nothing to do with your edit; wait and restart once it answers.
 
 2. Have the merchant settle once at the new address, then confirm the entry
    picked it up:
@@ -312,6 +346,13 @@ that is refused, and only the 503 body names the reason.
 has forgotten all three. A dashboard variable is **not** reconciled by a
 blueprint sync, `render.yaml` declares `MAX_TX_FEE_STROOPS` with the safe value
 so a sync will not remove a dashboard override, and nothing warns.
+
+**Which number to compare it against.** The error names it for you:
+`simulation-derived fee N stroops exceeds ceiling M`. That `N` is the **bid**
+(`minResourceFee + BASE_FEE`, computed before submission) — *not* the fee the
+network charged. The charged fee runs roughly a third lower, so sizing this
+ceiling from a Horizon `fee_charged` figure tightens it by that much against a
+number the ceiling never sees. Full note in `src/config.ts` above the definition.
 
 Raising it is occasionally necessary — a smart account whose `__check_auth` is
 expensive can legitimately exceed the ceiling, and refusing it is the exact bug
