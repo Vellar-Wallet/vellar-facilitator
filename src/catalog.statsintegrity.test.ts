@@ -169,3 +169,125 @@ describe("G-4 — recordSettlement is gated at the catalog, not at the caller", 
     expect(stats(catalog)?.settlements).toBe(1);
   });
 });
+
+// ============================================================================
+// O-7 — `statsSource` asserted a provenance it did not have.
+//
+// G-4 above fixed the WRITE path: stats can no longer be moved by a payTo that
+// is not bound. The same assertion survived on the READ path. `statsSource` was
+// derived as `settlements === observed`, which answers "was the inherited
+// portion zero?" — not "did this process witness these numbers?". A restored
+// entry whose stored count is 0 satisfies `0 === 0` and was therefore labelled
+// "observed", claiming witness for an entry the process had never seen.
+//
+// That is the live case rather than a corner one, because G-4's own gate is what
+// produces the zeros: a resource can take real, settled payments indefinitely
+// and keep a stored count of 0 whenever the paying `payTo` is not bound to it.
+// Observed in production — two successful on-chain payments against a URL bound
+// to a different payTo left the counter unmoved, and the entry then reported
+// that 0 as "observed".
+// ============================================================================
+
+describe("O-7 — statsSource reports provenance, not arithmetic", () => {
+  it("a restored entry NEVER reports observed — including when its stored count is 0", async () => {
+    const { reopen } = await import("./store.testkit.js");
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = `file:${join(mkdtempSync(join(tmpdir(), "o7-")), "catalog.db")}`;
+
+    // Run 1: the entry is cataloged, but NO settlement is ever attributed to it
+    // — exactly what the G-4 gate leaves behind when the payer is unbound.
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(
+      { resourceUrl: VICTIM_URL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      reqs(OWNER),
+    );
+    expect(stats(before)?.settlements, "precondition: nothing counted").toBe(0);
+    expect(stats(before)?.statsSource, "in-process, so genuinely observed").toBe("observed");
+    await before.flush();
+
+    // Run 2: same database, fresh process. The numbers are identical and their
+    // provenance is not — this process witnessed none of it.
+    const after = await BazaarCatalog.create(reopen(file));
+    const t = stats(after);
+    expect(t?.settlements, "the stored zero survives").toBe(0);
+    expect(t?.observedSettlements, "this process saw nothing").toBe(0);
+    expect(t?.statsSource, "O-7: a restored zero must not claim to be observed").toBe("persisted");
+  });
+
+  it("stays persisted after a restored entry witnesses new settlements", async () => {
+    const { reopen } = await import("./store.testkit.js");
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = `file:${join(mkdtempSync(join(tmpdir(), "o7b-")), "catalog.db")}`;
+
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(
+      { resourceUrl: VICTIM_URL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      reqs(OWNER),
+    );
+    await before.flush();
+
+    const after = await BazaarCatalog.create(reopen(file));
+    expect(after.recordSettlement(VICTIM_URL, "CPAYER", OWNER)).toBe(true);
+    // Re-upserting must not launder the provenance either.
+    await after.upsertFromPayment(
+      { resourceUrl: VICTIM_URL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      reqs(OWNER),
+    );
+
+    const t = stats(after);
+    expect(t?.settlements).toBe(1);
+    expect(t?.observedSettlements, "the new one WAS witnessed").toBe(1);
+    // Deliberately conservative: the arithmetic (1 === 1) would say "observed",
+    // but the baseline came from disk. Under-claiming is the safe direction, and
+    // observedSettlements still carries the exact witnessed count.
+    expect(t?.statsSource, "restored entries do not become observed").toBe("persisted");
+  });
+
+  it("an entry created in this process reports observed", async () => {
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(
+      { resourceUrl: VICTIM_URL, x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      reqs(OWNER),
+    );
+    expect(catalog.recordSettlement(VICTIM_URL, "CPAYER", OWNER)).toBe(true);
+    expect(stats(catalog)?.statsSource).toBe("observed");
+  });
+
+  it("a crafted file cannot forge observed provenance", async () => {
+    const { reopen, seedRows } = await import("./store.testkit.js");
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = `file:${join(mkdtempSync(join(tmpdir(), "o7c-")), "catalog.db")}`;
+
+    // A payload asserting its own provenance, the way a tampered file would.
+    await seedRows(file, {
+      ownership: [{ key: VICTIM_URL, payTo: OWNER }],
+      entries: [
+        {
+          key: VICTIM_URL,
+          payload: {
+            resource: {
+              resource: VICTIM_URL,
+              type: "http",
+              x402Version: 2,
+              accepts: [reqs(OWNER)],
+              lastUpdated: new Date().toISOString(),
+            },
+            stats: { settlements: 999, payers: ["CPAYER"] },
+            restored: false,
+          },
+        },
+      ],
+    });
+
+    const catalog = await BazaarCatalog.create(reopen(file));
+    const t = stats(catalog);
+    expect(t?.observedSettlements, "never read from the file").toBe(0);
+    expect(t?.statsSource, "the load path decides provenance, not the payload").toBe("persisted");
+  });
+});
