@@ -11,11 +11,53 @@ without hardcoded integrations.
 > searchable automatically.
 >
 > **The pre-mainnet security review is complete** — see
-> [`docs/security-audit.md`](./docs/security-audit.md) for every finding, its
-> status, and the go/no-go. Mainnet is now gated on two *deployment* facts rather
-> than on code: a persistent disk (the free tier has none, so catalog ownership
-> bindings do not survive a restart) and a funded pubnet sponsor account. Running
-> it is documented in [`docs/operator-runbook.md`](./docs/operator-runbook.md).
+> [`docs/closing-state.md`](./docs/closing-state.md) for every finding with its
+> final status, and [`docs/security-audit.md`](./docs/security-audit.md) for the
+> detail. Running it is documented in
+> [`docs/operator-runbook.md`](./docs/operator-runbook.md).
+
+## Two things to know before you evaluate the hosted instance
+
+Both are properties of *this deployment*, not of the code, and both are more
+surprising to find by experiment than to be told.
+
+**1. First request after idle takes ~50 seconds.** Render spins a free service
+down after 15 minutes without traffic; the container is replaced, not paused.
+Measured cold start: **42 seconds**. The catalog itself now survives this — it
+lives in libSQL/Turso rather than on the container — so your listings and
+ownership bindings are still there when it wakes. Only the latency is yours to
+absorb.
+
+**2. THE TRUST LAYER IS INERT HERE. Every verification badge reads `"unknown"`,
+and `?verified_only=true` returns an empty list.** Not a bug and not
+misconfiguration:
+
+```json
+"trust": { "verification": "unknown", "acceptsVerification": ["unknown"], … }
+```
+
+The verdicts come from a **verification API that is deployed nowhere**. It is a
+worker-service in the Vellar wallet repository, blocked on that repo's M5
+multisig attestor: no attestor key, no worker deployment, no verdict source. So
+`VERIFICATION_API_URL` is deliberately unset, and every verdict degrades to
+`"unknown"` — the honest default, since the alternative is asserting a trust
+level nothing backs. Tracked as **F4-ts**.
+
+**What this does NOT mean.** Two different things in that block are called
+"verified", and only one of them is inert:
+
+| Field | State here | What it is |
+| --- | --- | --- |
+| `verification`, `acceptsVerification` | **inert — always `"unknown"`** | Third-party attestation of the *payee*, from the absent API |
+| `ownerVerified` | **working, proven live** | Whether the resource's own 402 challenge names its bound `payTo` — fetched by this facilitator, no external service involved |
+
+So ownership verification works and is enforced; *reputation* verification is
+switched off. If you filter on `verified_only`, you are filtering on the inert
+one and will get nothing.
+
+**A rough edge, so it does not surprise you twice:** `verified_only=true` filters
+`items` but `pagination.total` still reports the unfiltered count, so you will
+see `items: []` alongside `total: 1`.
 
 ## What it does
 
@@ -24,9 +66,13 @@ without hardcoded integrations.
 | `POST /verify` | Verify a payment by re-simulation on Soroban RPC (runs the payer's `__check_auth`, including any on-chain spending policy) |
 | `POST /settle` | Submit the payment on-chain, sponsoring the network fee — buyers hold only the payment asset, no XLM |
 | `GET /supported` | Advertise scheme/network/extensions/signers to sellers |
-| `GET /discovery/resources` | List cataloged x402 resources (filters: `type`, `payTo`, `scheme`, `network`, `extensions`, `verified_only`; `limit`/`offset`) |
+| `GET /discovery/resources` | List cataloged x402 resources (filters: `type`, `payTo`, `scheme`, `network`, `extensions`, `verified_only`†; `limit`/`offset`) |
 | `GET /discovery/search` | Keyword search over the catalog — tokenized and relevance-scored, not semantic (`query`, same filters, cursor-paginated) |
 | `GET /health` | Liveness, plus the deployed `commit`, `uptimeSeconds`, `catalogSize`, `catalogFrozen` when bindings are frozen, and `unverifiableEntries` when any seller advertises an address the facilitator cannot fetch |
+
+† `verified_only` returns an **empty list** on this deployment. The verdicts it
+filters on come from a service that is deployed nowhere — see *Two things to
+know* above. `ownerVerified` is the field that works.
 
 **Smart accounts welcome.** Policy-governed smart-account payments cost ~130k
 stroops of simulation fee (the policy contract runs inside `__check_auth`);
@@ -50,19 +96,20 @@ fields, each entry reports `settlements`, `uniquePayers` and `lastSettled`, plus
 before you build on it:
 
 - **`observedSettlements` and `statsSource` disclose provenance.** `settlements`
-  may include a base loaded from `CATALOG_FILE`, which has no independent source
-  of truth; `observedSettlements` counts only what this process witnessed. If you
-  need a number you can rely on, use that one.
+  may include a base loaded from durable storage, which has no independent source
+  of truth — a settlement count cannot be re-derived from the chain. `statsSource`
+  reads `"persisted"` when any part of it was inherited rather than witnessed, and
+  `observedSettlements` counts only what this process saw. **If you need a number
+  you can rely on, use that one.**
 - **If you are a seller, advertise your PUBLIC address.** The `resource.url` in
   your 402 is what gets cataloged and what ownership verification re-fetches. A
   `http://localhost:…` value (the default in `examples/seller.mjs`) can never be
   verified — it is not https and not reachable — so your entry is served
   permanently unverified. `PUBLIC_BASE_URL` is how the example declares its real
   address; `/health` reports `unverifiableEntries` when any entry is in this state.
-- **Verification verdicts read `"unknown"` unless `VERIFICATION_API_URL` is set**,
-  and `?verified_only=true` then returns an empty list. That is the honest
-  default, not a fault — see F4-ts in the audit for why it is deliberately
-  unconfigured.
+- **Verification verdicts read `"unknown"` on this deployment and
+  `?verified_only=true` returns nothing** — see *Two things to know* at the top.
+  `ownerVerified` is the field that does work here.
 
 ## Integration limits
 
@@ -78,19 +125,17 @@ Refusals are deliberately loud and carry a reason. Spend controls are **log-only
 on testnet and enforced on pubnet**, so a testnet client will see them in logs
 before it ever sees a 503.
 
-**On the hosted instance, an empty catalog after an idle period is expected —
-not a fault.** Render spins a free service down after 15 minutes without
-traffic, and spin-down destroys the container's filesystem, so the catalog and
-its URL ownership bindings go with it. Your listing returns automatically on your
-next settled payment; nothing is lost that a payment does not restore.
+**The catalog survives a restart.** It used to not: the container's filesystem
+went with every spin-down, taking listings and ownership bindings. Since
+2026-08-11 the catalog is in libSQL/Turso, verified live across a 42-second cold
+start with the binding intact. An empty catalog now means an empty catalog, not a
+restart — if yours is missing, something else is wrong.
 
-There is a keep-alive workflow that would prevent this, and it is **deliberately
-disabled**. Free instance hours are pooled per Render *workspace*, and running
-this one warm would consume most of that pool — exhausting it suspends **every**
-free service in the workspace, including unrelated production ones. A warm demo
-catalog is not worth that blast radius. Durable storage, which fixes this
-properly, is scoped in
-[`docs/milestone-durable-catalog.md`](./docs/milestone-durable-catalog.md).
+The keep-alive workflow that used to paper over this is **deliberately disabled**
+and stays that way. Free instance hours are pooled per Render *workspace*, and
+running this one warm would consume most of that pool — exhausting it suspends
+**every** free service in the workspace, including unrelated production ones.
+That was never worth it, and durable storage removed the reason to want it.
 
 **Resource-URL ownership is trust-on-first-use.** The first settlement for a
 canonical URL (`origin + pathname`) binds it to that payment's `payTo`; later
