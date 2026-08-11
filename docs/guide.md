@@ -115,6 +115,19 @@ const { resources } = await bazaar.search({ query: "weather data" });
 For AI agents, the MCP server (`src/mcp.ts`) exposes the same two operations
 as MCP tools — see the README for client config.
 
+> **Do not filter on `verified_only` here.** It returns an empty list on the
+> hosted instance, and will on yours too unless you run your own verification
+> API. The `verification` / `acceptsVerification` badges it filters on come from
+> an external attestation service that is **deployed nowhere** (the wallet repo's
+> worker-service, blocked on its M5 attestor), so every verdict degrades to
+> `"unknown"` — the honest default rather than an asserted trust level nothing
+> backs.
+>
+> **`ownerVerified` is the different field, and it does work.** It says whether
+> the resource's own 402 challenge names the `payTo` the catalog has bound for it
+> — checked by the facilitator itself, no external service involved. If you want
+> a signal that a listing is not a squat, that is the one to read.
+
 ## Notes and sharp edges
 
 - **Catalog-on-settle.** A resource enters the catalog only after a real
