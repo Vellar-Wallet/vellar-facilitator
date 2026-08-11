@@ -99,15 +99,15 @@ path after these changes is **~2m30s**.
 | **O-4** | "A plain classic keypair works fine" had no code; the only example was smart-account-only | closed — `buyer-classic.mjs`, proven live (settlement `6cf8091c…`) |
 | **O-5** | A second settle failure code (`settle_exact_stellar_transaction_failed`) was undocumented, and money-safety was asserted only for the other one | closed-by-doc, and **measured**: 6 failures in 13 attempts moved zero value |
 | **O-6** | `/health` omits `unverifiableEntries` entirely when zero; the doc implied it is always present | closed-by-doc — the code is right (`server.ts:126`, test asserts a healthy catalog adds no noise) |
-| **O-7** | **`statsSource` asserts a provenance it does not have** — a restored entry whose stored count is 0 is labelled `"observed"` | **open defect — Low severity, fix recommended below.** *Not* the persistence defect it first looks like |
+| **O-7** | **`statsSource` asserted a provenance it did not have** — a restored entry whose stored count is 0 was labelled `"observed"` | **closed-by-test.** Fixed with the `restored` flag (option A below); 4 tests in `catalog.statsintegrity.test.ts` |
 | **O-8** | Following the tutorial pollutes a shared catalog irreversibly | **open — product gap, recorded below** |
 | **O-9** | `curl -I` on a paid route returns 200 while `GET` returns 402 | closed-by-doc — debug with GET |
 | **O-10** | Documented gotcha "`pagination.total` ignores `verified_only`" was stale | closed-by-doc — verified fixed live (`items: 0, total: 0`); `list()` computes `total` from the filtered set |
 | **O-11** | **A gitignored `.env.recording` silently outranks the built-in defaults** — found while regression-testing O-3. With no shell vars the seller advertised the *dead* `GBDZH5KZ…`/`CBIN4HTP…` pair from a stale local file, not the in-code defaults. This is the exact hazard the hardcoding existed to prevent, re-entering through the env-file path | closed — boot log now prints the **provenance** of each value (`environment` / `examples/.env.recording` / `built-in default`) and the trustline preflight runs regardless. Deployment is unaffected: the file is gitignored and never shipped |
 
-#### O-7 — `statsSource` asserts a provenance it does not have — **defect, Low**
+#### O-7 — `statsSource` asserted a provenance it did not have — **closed-by-test**
 
-**The label lies.** An entry can take real, settled payments indefinitely, report
+**The label lied.** An entry could take real, settled payments indefinitely, report
 `settlements: 0`, and stamp that zero `statsSource: "observed"` — a positive
 claim that this process witnessed every settlement counted, made by a process
 that witnessed none of them. It is the same class as G-4, whose whole finding was
@@ -166,17 +166,36 @@ witnessed rather than unknown.
 | **A** | Track provenance on the entry: set a `restored` flag when an entry is loaded from storage, and derive `statsSource` from it so a restored entry can never report `"observed"` | One field on `StoredEntry`, one line in `toItem()`, one line in the load path | Low. `"persisted"` already exists in the wire contract and already means "part of this count came from disk"; a restored zero is exactly that case |
 | **B** | Make the label three-valued — `observed` / `persisted` / `restored-unknown` | Same code, plus a new enum member | Higher. Adds a value agents must learn, and the existing two already express it |
 
-**Recommended: A.** It makes the label mean what the docs already say it means,
-without adding vocabulary. The current derivation
-(`settlements === observed`) infers provenance from a coincidence of numbers;
+**A was chosen and applied.** It makes the label mean what the docs already say
+it means, without adding vocabulary. The old derivation
+(`settlements === observed`) inferred provenance from a coincidence of numbers;
 `restored` records it as a fact, which is the actual difference between the two
-states. B is only worth it if consumers need to distinguish "restored with a
-known non-zero count" from "restored with nothing" — no consumer does today.
+states. B was rejected as only worth it if consumers need to distinguish
+"restored with a known non-zero count" from "restored with nothing" — no consumer
+does today.
 
-Deliberately not applied in this change: it edits a wire field on the read path
-and belongs with its own test (`catalog.statsintegrity.test.ts` is the natural
-home — extend it with a restart case asserting a restored zero never reports
-`"observed"`). Sequencing it separately keeps this diff to onboarding.
+**What shipped.** `StoredEntry.restored` is set on every load and carried through
+updates, and `toItem()` reads it instead of comparing counts. The field is
+**required, not optional**, for a reason found while writing the tests:
+`bindLoadedEntry` rebuilds the entry field by field rather than spreading it, so
+an optional flag was silently dropped there and loaded entries went straight back
+to reporting `"observed"`. The first implementation passed its own unit test and
+was still wrong at the seam. Required makes that omission a type error — and
+`exactOptionalPropertyTypes` is what surfaced it.
+
+**One deliberate imprecision, in the safe direction.** A restored entry that
+inherited 0 and then witnesses new settlements keeps reporting `"persisted"`,
+even though every settlement in that count really was observed. Under-claiming
+provenance is the correct error to make here, and `observedSettlements` still
+carries the exact witnessed number. Asserted directly in the tests so it reads as
+a decision rather than a bug.
+
+**Tests** — `catalog.statsintegrity.test.ts`, alongside G-4's, since this is the
+same assertion on the other path: a restored zero never reports `"observed"`; a
+restored entry stays `"persisted"` after new settlements and after re-upsert; an
+in-process entry still reports `"observed"`; and a crafted row claiming
+`restored: false` cannot forge observed provenance, because the load path decides
+it and not the payload.
 
 #### O-8 — catalog pollution is irreversible and self-service-proof
 

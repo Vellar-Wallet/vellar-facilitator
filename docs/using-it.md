@@ -217,10 +217,13 @@ needs [runbook §1](./operator-runbook.md).
 ```
 
 - **`ownerVerified`** — yours to control, per above.
-- **`statsSource`** — `"observed"` means every settlement was witnessed by the
-  running process; `"persisted"` means part of the count was loaded from storage
-  and cannot be re-derived from the chain. `observedSettlements` is the number to
-  trust.
+- **`statsSource`** — where these numbers came from. `"observed"` means the entry
+  was created by the running process, so it witnessed the whole history.
+  `"persisted"` means the entry was loaded from storage: its baseline was
+  recorded by a previous process and cannot be re-derived from the chain.
+  A restored entry always reports `"persisted"`, **including when its stored
+  count is 0** — a zero it inherited is still a zero it did not witness.
+  `observedSettlements` is the number to trust either way.
 - **`verification` / `acceptsVerification`** — always `"unknown"` here. Not about
   you; see [§ What will bite you](#what-will-bite-you-on-the-hosted-instance).
 - Your entry appears **only after a real payment settles.** Verify-only traffic

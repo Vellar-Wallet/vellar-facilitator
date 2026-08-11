@@ -437,6 +437,37 @@ interface StoredEntry {
   resource: DiscoveryResource;
   stats: SettlementStats;
   /**
+   * O-7 — did these stats come from a previous process?
+   *
+   * Set on every load and never cleared, because a restored entry's baseline was
+   * witnessed by nobody currently running, and no later settlement makes that
+   * untrue. `statsSource` is derived from THIS rather than from
+   * `settlements === observed`, which is the arithmetic it used to use.
+   *
+   * That arithmetic answered "was the inherited portion zero?", which is a
+   * different question and gives the wrong answer in the case you actually meet:
+   * a restored entry whose stored count is 0 satisfies `0 === 0` and was
+   * therefore labelled "observed" — asserting this process witnessed every
+   * settlement in the count, about an entry it had never seen. An entry reaches
+   * a stored 0 while plainly having settled whenever the G-4 gate refuses stats
+   * for an unbound payTo, so this is the live case, not a corner one.
+   *
+   * Deliberately conservative in one direction: a restored entry that inherited
+   * 0 and then witnesses new settlements keeps reporting "persisted", even
+   * though every settlement in that count was in fact observed. Under-claiming
+   * provenance is the safe error; `observedSettlements` still carries the exact
+   * number this process saw.
+   *
+   * It survives `flush()` as a field but is meaningless on disk: the load path
+   * sets it unconditionally, so a crafted CATALOG_FILE cannot forge "observed".
+   *
+   * REQUIRED, not optional, on purpose. `bindLoadedEntry` rebuilds the entry
+   * field by field rather than spreading it, and an optional flag there was
+   * silently dropped — a loaded entry went straight back to reporting
+   * "observed". Making it required turns that omission into a type error.
+   */
+  restored: boolean;
+  /**
    * Fix 0 Layer 1 (TOFU ownership binding). The set of payTo addresses bound to
    * this canonical resourceUrl. The first settlement to catalog a URL binds its
    * payTo here; only a settlement whose payTo is already in this set may append
@@ -1068,6 +1099,9 @@ export class BazaarCatalog {
       stats: existing?.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo: existing ? existing.boundPayTo : [requirements.payTo],
       verifiedOwner: existing?.verifiedOwner ?? false,
+      // Carried, not recomputed: updating a restored entry does not make this
+      // process the witness of the baseline it inherited.
+      restored: existing?.restored ?? false,
     };
     if (isFirstCatalog) {
       // Ownership is recorded when the binding is ESTABLISHED (not at eviction),
@@ -1268,6 +1302,9 @@ export class BazaarCatalog {
         stats,
         boundPayTo: [],
         verifiedOwner: false,
+        // Set here and nowhere else on this path: anything reaching this loop
+        // came off disk, including a stored count of 0.
+        restored: true,
       };
       // Keyed by the CANONICAL form, for the same reason as ownership above: the
       // stored `resource.resource` is the merchant's advertised spelling, and
@@ -1325,6 +1362,9 @@ export class BazaarCatalog {
       resource: { ...stored.resource, accepts: kept },
       stats: stored.stats ?? { settlements: 0, payers: [], observed: 0 },
       boundPayTo: authoritative,
+      // Rebuilt field by field rather than spread, so provenance must be carried
+      // explicitly or a loaded entry silently reports itself as observed (O-7).
+      restored: stored.restored,
       // Never trust a stored verified flag — a crafted file could forge it (RA-9).
       // Layer 2 re-verifies from the resource on the bound owner's next
       // settlement, via `reverify` (G-1).
@@ -1458,11 +1498,15 @@ function toItem(entry: StoredEntry): TrustedDiscoveryResource {
       uniquePayers: entry.stats.payers.length,
       // Forged stats cannot be *rejected* — settlement history has no
       // independent source — so they are DISCLOSED instead. observedSettlements
-      // counts only what this process saw; statsSource says whether any part of
-      // `settlements` was inherited from disk and is therefore unverifiable.
+      // counts only what this process saw; statsSource says whether these
+      // numbers were inherited from a previous process and are therefore
+      // unverifiable.
+      //
+      // O-7: this was `settlements === observed`, which claimed "observed" for a
+      // restored entry whose stored count was 0 — a provenance assertion about
+      // an entry this process had never seen. Read the flag, not the arithmetic.
       observedSettlements: entry.stats.observed,
-      statsSource:
-        entry.stats.settlements === entry.stats.observed ? ("observed" as const) : ("persisted" as const),
+      statsSource: entry.restored ? ("persisted" as const) : ("observed" as const),
       ...(entry.stats.lastSettled ? { lastSettled: entry.stats.lastSettled } : {}),
     },
   };
