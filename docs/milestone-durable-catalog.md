@@ -152,18 +152,44 @@ A tombstone is created per distinct canonical URL that binds. A brand-new URL is
 by definition unbound at settle time, so it is gated by the **unbound pool**
 (`SETTLE_UNBOUND_POOL_MAX`, 10 per 60 s shared across all unbound URLs):
 
-| Quantity | Value |
-| --- | --- |
-| New-URL settlements per day at the cap | **14,400** |
-| Days of *sustained maximum* to reach `MAX_TOMBSTONES` (100,000) | **6.9** |
-| Sponsor XLM burned to get there (at the 127,808-stroop measured fee) | **~1,278 XLM** |
-| …per day at that rate | **~184 XLM/day** |
+> **CORRECTED 2026-08-10.** This table was first computed on a **127,808-stroop**
+> fee that carries no transaction hash and cannot be re-verified (the same class
+> of number as the retracted D-4). The walkthrough measured the real fee **four
+> times, each confirmed on Horizon: 22,579 stroops** (`8c0d9682…`, `9726d45e…`,
+> `867632de…`, `c4ee7bdd…`). Recomputed below on the hash-carrying figure. **The
+> attack is 5.7× cheaper than this document claimed.** The verdict survives; the
+> margin does not survive intact, and the numbers below are the ones to argue
+> with.
 
-Seven days looks alarming until you price it. **The binding constraint is the
-sponsor balance, not the tombstone cap.** `/settle` refuses below the 10 XLM hard
-floor, so at maximum rate the attack self-terminates in **~78 minutes** from a
-10 XLM surplus. Reaching the cap needs someone to keep refunding ~184 XLM/day for
-a week — which only the operator can do, and would notice.
+| Quantity | Value | Was (unverifiable fee) |
+| --- | --- | --- |
+| New-URL settlements per day at the cap | **14,400** | 14,400 — rate-limited, unaffected |
+| Days of *sustained maximum* to reach `MAX_TOMBSTONES` (100,000) | **6.9** | 6.9 — unaffected |
+| Sponsor XLM burned to get there (at **22,579** stroops/settle) | **~226 XLM** | ~1,278 XLM |
+| …per day at that rate | **~32.5 XLM/day** | ~184 XLM/day |
+| Time for a 10 XLM surplus above the hard floor to burn out | **~7.4 hours** | ~78 minutes |
+
+**"Nobody would bother" is no longer the argument.** At ~226 XLM total and
+~32.5 XLM/day it is an affordable nuisance, not a prohibitive one — and 7.4 hours
+of unattended burn from a 10 XLM surplus **spans a night**, so "the operator would
+notice" now means "the operator would notice in the morning". The argument that
+remains is narrower and should be stated as the only one it is: **the sponsor
+balance guard binds ~2 orders of magnitude tighter than the tombstone cap, and it
+is now the whole defence rather than one of two.** If the guard is disabled,
+mis-sized, or fails open on a stale read, nothing else is holding this.
+
+**The binding constraint is still the sponsor balance, not the tombstone cap** —
+`/settle` refuses below the 10 XLM hard floor, so the attack still self-terminates
+without operator action. But it now runs for **7.4 hours** rather than 78 minutes
+on the same surplus, which is long enough to span a night. And reaching the cap
+needs ~32.5 XLM/day of operator refunding for a week — cheap enough that
+"nobody would bother" is no longer the argument; "the operator would have to
+actively fund it for seven days" is.
+
+**What this correction really shows:** a number without a hash was carrying a
+security verdict, and it was wrong by 5.7× in the *unsafe* direction. It had
+already been flagged as unverifiable in `security-audit.md`, and the flag did not
+stop it being used here. That is the failure mode, not the arithmetic.
 
 Organically, 100,000 distinct URLs is roughly 10,000 merchants at 10 endpoints
 each: a very large service, not a near-term state.
