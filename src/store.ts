@@ -103,9 +103,19 @@ export interface StoreTimings {
 }
 
 export const PROPOSED_TIMINGS: StoreTimings = {
+  // Holds at transpacific distance BECAUSE every store operation is now a single
+  // round trip. At ~250ms Oregon<->Tokyo that is ~8x headroom. It did NOT hold
+  // against the interactive transaction this replaced (~1s of protocol inside a
+  // 2s budget), which is why the shape changed rather than the number.
   timeoutMs: 2_000,
   retryAttempts: 3,
-  retryBackoffMs: [200, 600, 1_800],
+  // First step raised 200 -> 500 so it is at least ONE round trip. At a ~250ms
+  // baseline, a 200ms backoff retried before a merely-slow network could have
+  // answered — it was a second attempt at the same instant rather than a wait
+  // for the condition to pass. These fire only at BOOT (loadOwnership /
+  // loadEntries); nothing on the settle path retries, so this cannot lengthen a
+  // payment. Worst case to freeze: 4 attempts x 2s + 3.5s of backoff = ~11.5s.
+  retryBackoffMs: [500, 1_000, 2_000],
 };
 
 /** Anything that is not clearly a bad answer is treated as unreachable, because
@@ -263,26 +273,48 @@ export class LibsqlCatalogStore implements CatalogStore {
     });
   }
 
+  /**
+   * ONE ROUND TRIP, and that is the whole point of using batch() here.
+   *
+   * This was an INTERACTIVE transaction — `transaction("write")`, two
+   * `execute()`s, `commit()` — which is a "chat" with the database: up to four
+   * round trips. Fine across a datacenter, wrong across an ocean. With the
+   * database in Tokyo and the service in Oregon (~250ms round trip) that is
+   * ~1s of the 2s timeout spent on protocol alone, before the query runs.
+   *
+   * batch(..., "write") gives the SAME atomicity — libSQL wraps a batch in an
+   * implicit transaction, committing all statements or rolling back all of them
+   * — in a single request. Nothing is traded away for the latency.
+   *
+   * Two further problems the interactive version had, independent of distance:
+   *
+   *   - An interactive transaction holds a WRITE LOCK on the database until it
+   *     commits (libSQL times it out after 5s). Concurrent first-settles for
+   *     DIFFERENT URLs therefore serialise on that lock, and across a
+   *     transpacific hop each one holds it for ~1s.
+   *   - Our own timeout raced the whole block, so a timeout abandoned an OPEN
+   *     transaction: the rollback in the catch never ran, and the lock was held
+   *     until the server timed it out. A batch is one request with nothing to
+   *     leave open.
+   */
   async bindAndUpsertEntry(binding: StoredOwnership, entry: StoredEntryRow): Promise<void> {
-    await this.run(async () => {
-      const tx = await this.client.transaction("write");
-      try {
-        await tx.execute({
-          sql: "INSERT INTO ownership (resource_key, pay_to, bound_at) VALUES (?, ?, ?)",
-          args: [binding.resourceKey, binding.boundPayTo[0] ?? "", Date.now()] as InArgs,
-        });
-        await tx.execute({
-          sql: `INSERT INTO entry (resource_key, payload, last_updated) VALUES (?, ?, ?)
-                ON CONFLICT(resource_key) DO UPDATE SET payload = excluded.payload,
-                                                        last_updated = excluded.last_updated`,
-          args: [entry.resourceKey, entry.payload, entry.lastUpdated] as InArgs,
-        });
-        await tx.commit();
-      } catch (err) {
-        await tx.rollback().catch(() => {});
-        throw err;
-      }
-    });
+    await this.run(() =>
+      this.client.batch(
+        [
+          {
+            sql: "INSERT INTO ownership (resource_key, pay_to, bound_at) VALUES (?, ?, ?)",
+            args: [binding.resourceKey, binding.boundPayTo[0] ?? "", Date.now()] as InArgs,
+          },
+          {
+            sql: `INSERT INTO entry (resource_key, payload, last_updated) VALUES (?, ?, ?)
+                  ON CONFLICT(resource_key) DO UPDATE SET payload = excluded.payload,
+                                                          last_updated = excluded.last_updated`,
+            args: [entry.resourceKey, entry.payload, entry.lastUpdated] as InArgs,
+          },
+        ],
+        "write",
+      ),
+    );
   }
 
   async saveEntries(rows: StoredEntryRow[]): Promise<void> {
