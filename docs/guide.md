@@ -4,6 +4,11 @@ This walks the full x402 + Bazaar loop on Stellar testnet, exactly as
 live-verified (settlement tx `a08dc6bf…`, see `docs/decisions.md`). Two
 roles, two scripts, both in `examples/`.
 
+> **This page assumes you are running the facilitator yourself, locally.** If you
+> want to point an existing endpoint or client at one that is already running,
+> read [`using-it.md`](./using-it.md) — organised by role (merchant / buyer),
+> covering ownership verification and the hosted instance's rough edges.
+
 ## Prerequisites
 
 - Node ≥ 20, `npm install` in both the repo root and `examples/`
