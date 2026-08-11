@@ -341,6 +341,45 @@ newer than the merge. Two things went wrong while adding it, both worth keeping:
   three it is now a note, not a failure. **A verifier that cries wolf gets
   ignored, which returns it to useless.**
 
+### 3.4g The same mistake three times, with the lesson written down in front of me
+
+Content failed to land **seven** times in this engagement. Three of them were the
+identical act: **pushing commits to a branch whose PR had already been
+squash-merged and closed.**
+
+The third occurrence is the one worth recording. By then:
+
+- the tool to detect it existed (`verify-merged.mjs`, with the post-merge-commit
+  check added an hour earlier),
+- §3.4f described the exact failure, written by me that afternoon,
+- and the push happened anyway — **with a message announcing that the PR state
+  had been verified first.** It was checked *after* the push. The claim was in
+  the output before the fact was true.
+
+**Twice is a mistake. Three times, holding the lesson, is a process that does not
+work.** Knowing about a failure mode is not a defence against it; the two
+occasions I caught it, I caught it by accident afterwards, not by remembering.
+
+So it stopped being something to remember. `.githooks/pre-push` refuses to push
+to a branch whose PR is `MERGED` or `CLOSED`, prints the recovery steps, and is
+bypassable with `--no-verify` for the case where you mean it. Install with
+`git config core.hooksPath .githooks`.
+
+Two deliberate choices in it, both from this register:
+
+- **It allows the push when `gh` is missing or unauthenticated**, warning
+  instead. A hook that blocks work when a helper is unavailable gets disabled,
+  and a disabled hook protects nothing.
+- **It self-tests**: exit 1 on a merged branch, 0 on an unmerged one, 0 on
+  `main`. Verified rather than assumed, because the last three things written to
+  catch silent failures each failed silently first.
+
+The through-line for the whole register: **every failure here was caught by
+accident, and every fix that held was the one that made the mistake impossible
+rather than memorable.** The mutation harness aborts on a bad anchor. The API
+returns the status so it cannot be read out of scope. The hook refuses the push.
+Notes did not work, three times.
+
 ### 3.5 Tests that passed for the wrong reason — three times
 
 1. **RA-12** — eight tests green against deliberately broken code; the control

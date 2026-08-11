@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Refuse to push to a branch whose PR is already merged or closed.
+#
+# WHY THIS IS A HOOK AND NOT A RULE. Content failed to land seven times in this
+# engagement. Three of those were the same act: pushing commits to a branch whose
+# PR had already been squash-merged and closed, so the commits belonged to no PR
+# and reached main never.
+#
+# The third time, the tooling to detect it existed, the lesson was written down
+# in docs/closing-state.md, and the push happened anyway — with a message
+# claiming the check had been done. Twice is a mistake; three times with the
+# lesson in front of you is a process that does not work. So this stops being
+# something to remember and becomes something the tool refuses.
+#
+# Install (once per clone — git does not track hooks by default):
+#
+#     git config core.hooksPath .githooks
+#
+# Bypass, when you genuinely mean it (e.g. reopening the PR yourself):
+#
+#     git push --no-verify
+#
+# Requires `gh`. If gh is missing or unauthenticated the hook WARNS and allows
+# the push: a hook that blocks work when a helper is unavailable gets disabled,
+# and a disabled hook protects nothing.
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+
+case "$branch" in
+  main|master|HEAD) exit 0 ;;
+esac
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "pre-push: gh not found — cannot check PR state, allowing push." >&2
+  exit 0
+fi
+
+state="$(gh pr view "$branch" --json state --jq .state 2>/dev/null)"
+
+case "$state" in
+  "")
+    # No PR for this branch yet. Normal for a first push.
+    exit 0
+    ;;
+  OPEN)
+    exit 0
+    ;;
+  MERGED|CLOSED)
+    cat >&2 <<EOF
+
+  ✗ pre-push REFUSED
+
+    Branch : $branch
+    Its PR : $state
+
+    Commits pushed to a $state PR's branch belong to no PR. GitHub does not
+    reopen or re-diff one, so they will never reach main — and nothing in the
+    PR UI or in verify-merged.mjs will tell you, because the merged diff is
+    genuinely on main. This has already happened three times here.
+
+    Do this instead:
+
+        git checkout -b <new-branch> origin/main
+        git cherry-pick $(git rev-parse --short HEAD)
+        git push -u origin <new-branch>
+        gh pr create --base main
+
+    Then confirm by CONTENT, not by status:
+
+        node scripts/verify-merged.mjs <pr>
+
+    If you really mean it:  git push --no-verify
+
+EOF
+    exit 1
+    ;;
+  *)
+    echo "pre-push: unexpected PR state '$state' for $branch — allowing push." >&2
+    exit 0
+    ;;
+esac
