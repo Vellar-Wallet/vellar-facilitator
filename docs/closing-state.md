@@ -3,10 +3,12 @@
 **As of 2026-08-11, against merged `main` (`d6404e4`).** 323 tests passing, 3
 skipped (the opt-in live gate), typecheck clean, CI gating every PR.
 
-One change is **not** on `main` yet: [#35](https://github.com/Vellar-Wallet/vellar-facilitator/pull/35),
-which re-lands G-13 and G-14 after #34 merged into a branch that had already been
-squashed away. Everything below marked *pending #35* is written, tested and
-mutation-verified, and is not deployed.
+**Everything is on `main`, verified by content rather than by status**
+(`node scripts/verify-merged.mjs 35 36 21 22` → 4 landed). 327 tests passing.
+
+One thing is still outstanding: a **deploy**. G-14 is a live hijack path, `main`
+has the fix, and the running instance does not until the facilitator is
+redeployed.
 
 ---
 
@@ -71,8 +73,8 @@ the risk still exists in a different place. **Open**: still true.
 | **G-10** | Spend ceiling throttles honest throughput **22× earlier than sponsor exposure requires** | **open — pubnet tuning.** Accounting uses the 500,000 estimate against a measured 22,579 charge, so the ceiling refuses the 101st settle having spent ~0.23 of the 5 XLM it names. Fails safe; deliberately unchanged |
 | **G-11** | One resource, several canonical keys | closed-by-test — fixed as a family, and it surfaced the class in §3 |
 | **G-12** | Bindings proven before displacement load as displaceable | **open, self-closing.** One window per binding; recorded in runbook §1 |
-| **G-13** | Error bodies non-conformant with the x402 schemas | closed-by-test — *pending #35* |
-| **G-14** | **payTo identity split — whitespace hijack** | closed-by-test — *pending #35*. **See §2** |
+| **G-13** | Error bodies non-conformant with the x402 schemas | closed-by-test |
+| **G-14** | **payTo identity split — whitespace hijack** | closed-by-test. **See §2** |
 
 ### Deployment findings — D-1…D-4
 
@@ -85,7 +87,7 @@ the risk still exists in a different place. **Open**: still true.
 
 ---
 
-## 2. G-14 — payTo whitespace hijack — **Medium** — closed-by-test *(pending #35)*
+## 2. G-14 — payTo whitespace hijack — **Medium** — closed-by-test, **not yet deployed**
 
 Given its own entry because it is exploitable, it is invisible in the output, and
 nobody scanning for real vulnerabilities should have to read a methodology
@@ -173,6 +175,26 @@ exits non-zero, and `mutations/harness-selftest.json` is a deliberately wrong
 anchor that must always abort. **A verification step that cannot fail loudly is
 not a verification step.**
 
+### 3.4b Content was reported merged and was not there — five times
+
+| | PR | What was lost |
+| --- | --- | --- |
+| 1–3 | #6, #9, #13 | Doc sections; a silent `replace()` no-op, blamed on GitHub's squash for days |
+| 4 | #23 | The D-1…D-3 bodies, which had never landed |
+| 5 | #34 | G-13 and G-14 — **merged into a branch that had been squash-merged 17 minutes earlier** |
+
+**Every catch was incidental**: a test count that looked wrong, a PR title in a
+list, a grep run for another reason. Five incidental catches is not a process.
+
+`scripts/verify-merged.mjs <pr>...` now asserts a merged PR's **content** is on
+main, and is run after every merge. Note what it deliberately does *not* do:
+`git merge-base --is-ancestor <head> main` is useless here, because a squash
+rewrites the branch and the head SHA is never an ancestor — that check fails
+identically for a healthy merge and for #34, so it distinguishes nothing. The
+script checks the base branch, provenance on main, and whether the PR's
+distinctive added lines are actually present. `--selftest` runs it against #34,
+which must always fail; if it ever reports LANDED, the check has regressed.
+
 ### 3.5 Tests that passed for the wrong reason — three times
 
 1. **RA-12** — eight tests green against deliberately broken code; the control
@@ -241,7 +263,7 @@ argument fails with the code.
 | **F12** per-URL / per-payTo budgets | **The one gap.** Needs 11 settles inside 60s; the harness manages 6 at ~8s each. Requires **one funded classic source account per concurrent settler** — sharing one gives `tx_bad_seq`, and the resulting 1-success/10-failure result *looks* like a budget refusing when F12 is log-only on testnet and cannot refuse. Also needs `STELLAR_NETWORK=pubnet` against testnet RPC to see a real 503, or assertion on the `{payTo, wouldReject}` log. Full procedure in runbook §7 |
 | **G-5, G-6, G-7** | Closed structurally by the migration; the states they describe are no longer representable, so there is nothing to demonstrate |
 | **RA-1…RA-8, RA-10…RA-14** | Input-validation and guard logic; a live run adds nothing a mutation-verified test does not |
-| **G-13, G-14** | Written and mutation-verified, **not deployed** — pending #35 |
+| **G-13, G-14** | On `main` and mutation-verified. **Not yet on the running instance** — a deploy is the last step, and G-14 is a live hijack path until then |
 
 ---
 
@@ -251,7 +273,7 @@ argument fails with the code.
 
 | Item | Note |
 | --- | --- |
-| **#35** | Re-land G-13 + G-14. Written, tested, mutation-verified. **Verify by content, not by "merged"** |
+| **Deploy `main`** | G-13 + G-14 are merged and *not running*. `scripts/verify-merged.mjs` confirms they are on `main`; only a redeploy puts them in front of traffic |
 | **F12 live demonstration** | Half a day, needs N funded source accounts. The last control with no live evidence |
 | **The 1-in-3 submission failures** | `settle_exact_stellar_transaction_submission_failed`, `transaction: ""`. Reproduced twice at the same rate (3/11, 3/9). Not the cutover — it fails before the chain sees anything. Costs nothing. Next step: capture the RPC's own error beneath that reason string and re-run against a second provider. **A lead, not a cause** |
 
@@ -283,8 +305,9 @@ reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
 
 ### Blockers — must be true before `STELLAR_NETWORK=pubnet`
 
-1. **#35 merged and verified on `main` by content.** G-14 is a live hijack path
-   and it is not deployed. Non-negotiable.
+1. **G-14 actually deployed.** It is merged and verified on `main`; the running
+   instance does not have it. A live hijack path closed in the repo is not
+   closed. Non-negotiable.
 2. **F12 demonstrated, or explicitly accepted as unproven in writing.** It is the
    only control with no live evidence, and pubnet is where it stops being
    log-only and starts refusing real money. Shipping a control whose first real
