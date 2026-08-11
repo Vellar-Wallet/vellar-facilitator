@@ -68,6 +68,10 @@ export async function buildServer(
   policy?: SpendPolicy,
   hardening: HardeningOptions = {},
   balanceGuard?: BalanceGuard,
+  /** CAIP-2 network id, echoed in conformant error bodies (G-13, spec §5.3
+   *  marks it Required). The production call site passes config.network; the
+   *  default keeps the many test call sites terse and is asserted to match. */
+  network: string = "stellar:testnet",
 ) {
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
@@ -139,18 +143,24 @@ export async function buildServer(
   app.post<{ Body: FacilitatorRequestBody }>("/verify", async (request, reply) => {
     const { paymentPayload, paymentRequirements } = request.body ?? {};
     if (!paymentPayload || !paymentRequirements) {
-      return reply
-        .status(400)
-        .send({ error: "invalid_body", detail: "paymentPayload and paymentRequirements are required" });
+      return reply.status(400).send(
+        verifyError("invalid_body", {
+          error: "invalid_body",
+          detail: "paymentPayload and paymentRequirements are required",
+        }),
+      );
     }
     // Fix 2: shed obviously-malformed payloads at the route, before spending an
     // RPC simulation. /verify is the free amplification path (an invalid payload
     // still costs one simulation upstream), so reject anything whose transaction
     // isn't parseable XDR without a network round-trip.
     if (!isParseableTransactionXdr(paymentPayload)) {
-      return reply
-        .status(400)
-        .send({ error: "invalid_payload", detail: "payload.transaction is not a parseable transaction envelope" });
+      return reply.status(400).send(
+        verifyError("invalid_payload", {
+          error: "invalid_payload",
+          detail: "payload.transaction is not a parseable transaction envelope",
+        }),
+      );
     }
     return facilitator.verify(paymentPayload, paymentRequirements);
   });
@@ -158,24 +168,35 @@ export async function buildServer(
   app.post<{ Body: FacilitatorRequestBody }>("/settle", async (request, reply) => {
     const { paymentPayload, paymentRequirements } = request.body ?? {};
     if (!paymentPayload || !paymentRequirements) {
-      return reply
-        .status(400)
-        .send({ error: "invalid_body", detail: "paymentPayload and paymentRequirements are required" });
+      return reply.status(400).send(
+        settleError(network, "invalid_body", {
+          error: "invalid_body",
+          detail: "paymentPayload and paymentRequirements are required",
+        }),
+      );
     }
     // Re-audit: shed unsubmittable payloads BEFORE reserving spend budget,
     // symmetric with /verify. Junk costs the sponsor no XLM, so it must not be
     // able to consume the global ceiling and refuse real settlement.
     if (!isParseableTransactionXdr(paymentPayload)) {
-      return reply
-        .status(400)
-        .send({ error: "invalid_payload", detail: "payload.transaction is not a parseable transaction envelope" });
+      return reply.status(400).send(
+        settleError(network, "invalid_payload", {
+          error: "invalid_payload",
+          detail: "payload.transaction is not a parseable transaction envelope",
+        }),
+      );
     }
     // Fix 3: refuse settle when the sponsor is below the hard balance floor —
     // fees would fail on-chain anyway. Discovery is unaffected. A failed/absent
     // balance check leaves settle allowed (fail open).
     if (balanceGuard && !balanceGuard.settleAllowed()) {
       request.log.error({ balanceStatus: balanceGuard.status() }, "[balance] settle refused: sponsor below hard floor");
-      return reply.status(503).send({ error: "settlement_refused", reason: "sponsor_balance_low" });
+      return reply.status(503).send(
+        settleError(network, "sponsor_balance_low", {
+          error: "settlement_refused",
+          reason: "sponsor_balance_low",
+        }),
+      );
     }
     // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
     // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
@@ -210,9 +231,12 @@ export async function buildServer(
           { payTo: payToKey, reason: verdict.reason },
           "[policy] settle refused",
         );
-        return reply
-          .status(503)
-          .send({ error: "settlement_refused", reason: verdict.reason });
+        return reply.status(503).send(
+          settleError(network, verdict.reason ?? "spend_policy", {
+            error: "settlement_refused",
+            reason: verdict.reason,
+          }),
+        );
       }
       if (verdict.wouldReject) {
         request.log.warn(
@@ -305,12 +329,39 @@ export async function buildServer(
  * attacker-chosen keys. Anything that is not a plausibly-shaped Stellar address
  * string collapses into one shared bucket, which cannot earn free settles.
  */
-const MAX_PAYTO_KEY_LEN = 128;
-function policyBucketKey(payTo: unknown): string {
-  if (typeof payTo !== "string") return "<no-payto>";
-  const trimmed = payTo.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_PAYTO_KEY_LEN) return "<no-payto>";
-  return trimmed;
+/**
+ * G-13 — x402 conformance for facilitator error responses.
+ *
+ * `x402-specification-v2.md` §5.3 marks `success`, `transaction` and `network`
+ * REQUIRED on a SettleResponse (`transaction` is the empty string when
+ * settlement failed), and §5.4 marks `isValid` REQUIRED on a VerifyResponse.
+ * Our refusals returned `{error, reason}` and omitted all of them.
+ *
+ * That is not an ergonomics problem, it is non-conformance, and it had a
+ * concrete cost: `HTTPFacilitatorClient` requires `"success" in data` before it
+ * will build a structured `SettleError` (`@x402/core/http`, index.js:1120).
+ * Without the field it throws a GENERIC error instead, whose message happens to
+ * carry the body as text — which is why every facilitator refusal reached the
+ * seller as an unexplained empty 402 until the seller was patched to dig the
+ * reason out of an error string. Conformance fixes that at the source, for every
+ * client, not just the one seller we control.
+ *
+ * The legacy `error`/`reason` fields are KEPT alongside. Extra fields are
+ * permitted, and removing them would break anything already reading them —
+ * including our own seller. This change is strictly additive.
+ */
+function settleError(network: string, errorReason: string, extra: Record<string, unknown> = {}) {
+  return { success: false, transaction: "", network, errorReason, ...extra };
+}
+function verifyError(invalidReason: string, extra: Record<string, unknown> = {}) {
+  return { isValid: false, invalidReason, ...extra };
+}
+
+export function policyBucketKey(payTo: unknown): string {
+  // Delegates to the SAME derivation the catalog uses. It used to reimplement
+  // the rule, which is how the two drifted: identical intent, two copies, no
+  // test that they agreed. See BazaarCatalog.canonicalPayTo.
+  return BazaarCatalog.canonicalPayTo(payTo) ?? "<no-payto>";
 }
 
 /**
@@ -382,7 +433,15 @@ if (isDirectRun) {
   });
   balanceGuard.start();
 
-  const app = await buildServer(buildFacilitator(config), catalog, trust, policy, {}, balanceGuard);
+  const app = await buildServer(
+    buildFacilitator(config),
+    catalog,
+    trust,
+    policy,
+    {},
+    balanceGuard,
+    config.network,
+  );
   app.listen({ port: config.port, host: config.host }).catch((err) => {
     app.log.error(err);
     process.exit(1);

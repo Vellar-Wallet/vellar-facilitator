@@ -38,6 +38,9 @@ const MAX_ACCEPTS = 20;
 /** Max ownership tombstones. At this cap the catalog FREEZES new bindings
  * rather than forgetting ownership — see `frozen`. */
 const MAX_TOMBSTONES = 100_000;
+/** Longest string that can be a payTo identity. Shared by the catalog and the
+ *  spend policy — see BazaarCatalog.canonicalPayTo. */
+export const MAX_PAYTO_LEN = 128;
 /** G-1 retry floors. A `mismatch` is a DEFINITE answer, so retrying it buys
  * nothing but outbound traffic — 24h makes it effectively terminal while still
  * self-healing after a legitimate operator rotation. An `unverifiable` is
@@ -652,6 +655,32 @@ export class BazaarCatalog {
    * Degrades to the raw string on an unparseable url — this is client-supplied,
    * so it must not throw, and a non-url simply cannot match a binding.
    */
+  /**
+   * The ONE derivation of a payTo identity.
+   *
+   * G-11's real finding was not the trailing slash, it was that one identity had
+   * two derivations that agreed only by luck. payTo was the same shape: the
+   * spend policy trimmed it and capped it at 128 chars (`policyBucketKey`, added
+   * to stop attacker-minted buckets), while the catalog compared the raw string
+   * — so `"G… "` and `"G…"` were ONE rate-limit bucket and TWO catalog
+   * identities.
+   *
+   * That is a hijack variant, not a curiosity: a padded copy of a victim's
+   * address binds a URL to something that renders identically in
+   * `/discovery/resources` while the victim's own clean address is "not bound"
+   * and locked out forever.
+   *
+   * Returns undefined for anything that cannot be an identity. Callers decide
+   * what that means — the policy collapses it into one shared bucket, the
+   * catalog refuses the upsert — but they no longer decide what the identity IS.
+   */
+  static canonicalPayTo(payTo: unknown): string | undefined {
+    if (typeof payTo !== "string") return undefined;
+    const trimmed = payTo.trim();
+    if (trimmed.length === 0 || trimmed.length > MAX_PAYTO_LEN) return undefined;
+    return trimmed;
+  }
+
   static canonicalResourceKey(rawUrl: string): string {
     try {
       const u = new URL(rawUrl);
@@ -943,6 +972,19 @@ export class BazaarCatalog {
     // spelling is precisely when raw and canonical diverge.
     const key = BazaarCatalog.canonicalResourceKey(discovered.resourceUrl);
     const existing = this.entries.get(key);
+
+    // One derivation, shared with the spend policy. An unusable payTo is refused
+    // outright rather than bound: a binding nobody can ever match is a URL
+    // permanently removed from its owner.
+    const payTo = BazaarCatalog.canonicalPayTo(requirements.payTo);
+    if (payTo === undefined) {
+      console.warn(
+        `[catalog] rejected upsert for ${key}: payTo is not a usable identity ` +
+          `(non-string, empty, or over ${MAX_PAYTO_LEN} chars)`,
+      );
+      return false;
+    }
+    requirements = { ...requirements, payTo };
 
     // F3: an evicted entry leaves its ownership tombstone behind, so a URL that
     // was cached out cannot be reclaimed by a different payTo. This is what stops
