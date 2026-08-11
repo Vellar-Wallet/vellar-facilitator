@@ -21,9 +21,9 @@ without hardcoded integrations.
 Both are properties of *this deployment*, not of the code, and both are more
 surprising to find by experiment than to be told.
 
-**1. First request after idle takes ~50 seconds — but only outside
-08:00–23:59 UTC.** A keep-alive holds the service warm inside that window, so
-there is no cold start there. Outside it, Render spins a free service down after
+**1. First request after idle takes ~50 seconds — but only outside the warm
+window.** A keep-alive holds the service warm **00:00–07:59 and 12:00–19:59
+UTC**, so there is no cold start then. Outside it, Render spins a free service down after
 15 minutes without traffic and the container is replaced, not paused; measured
 cold start **42 seconds**. You pay it once — the service then stays warm for 15
 minutes past your last request.

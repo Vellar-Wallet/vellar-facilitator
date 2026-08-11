@@ -386,7 +386,7 @@ claims, and only the first is true.
 
 ```yaml
 schedule:
-  - cron: "*/5 8-23 * * *"     # 16 h/day, 08:00-23:59 UTC
+  - cron: "*/5 0-7,12-19 * * *"   # 16 h/day, split: 00:00-07:59 + 12:00-19:59 UTC
 ```
 
 **16 h rather than 20 h is a margin decision, not a cost one.** The projection is

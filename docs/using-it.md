@@ -237,7 +237,7 @@ Five things, in the order you will meet them.
 
 | | What | What to do |
 | --- | --- | --- |
-| **1** | **~50s on the first request after 15 min idle — but only OUTSIDE 08:00–23:59 UTC.** A keep-alive holds it warm inside that window. Measured cold start 42s | Inside the window, nothing to do. Outside it, set a generous client timeout or send a warming `GET /health` first (exempt from rate limiting). Either way you pay it once — it stays warm 15 min past your last call |
+| **1** | **~50s on the first request after 15 min idle — but only OUTSIDE the warm window.** A keep-alive holds it warm **00:00–07:59 and 12:00–19:59 UTC** (covering the working day in Asia-Pacific, Europe and US East). Measured cold start 42s | Inside the window, nothing to do. Outside it, set a generous client timeout or send a warming `GET /health` first (exempt from rate limiting). Either way you pay it once — it stays warm 15 min past your last call |
 | **2** | **Roughly 1 settle in 3 fails** with `settle_exact_stellar_transaction_submission_failed` and an empty `transaction` | **Retry.** It fails before the chain sees anything, so nothing was spent and nothing double-pays. Observed at 3/11 and 3/9 across two sessions; cause not established — a testnet RPC lead, not a facilitator defect |
 | **3** | **Trust badges are inert.** `verification` and `acceptsVerification` are always `"unknown"` | Read `ownerVerified` instead — that one works. The badge source is deployed nowhere and is not switching on soon (README has the dependency chain) |
 | **4** | **`?verified_only=true` returns an empty list** | Do not use it. It filters on the inert field |
