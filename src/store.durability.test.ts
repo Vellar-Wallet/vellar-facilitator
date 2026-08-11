@@ -203,7 +203,10 @@ describe("fail closed, with the right diagnosis", () => {
     ).rejects.toBeInstanceOf(StoreUnreachableError);
 
     expect(attempts, "first attempt plus the approved 3 retries").toBe(4);
-    expect(sleeps, "the approved backoff, in order").toEqual([200, 600, 1800]);
+    // Pinned deliberately. The first step is 500ms, not 200ms, because the
+    // baseline round trip to Tokyo is ~250ms and a 200ms backoff retried before
+    // a merely-slow network could have answered.
+    expect(sleeps, "the approved backoff, in order").toEqual([500, 1000, 2000]);
   });
 
   it("an INVALID store is never retried — the same query returns the same bad answer", async () => {
@@ -268,6 +271,46 @@ describe("fail closed, with the right diagnosis", () => {
     // recordSettlement is the settlement-side call; it must not throw either.
     expect(() => catalog.recordSettlement(URL_A, "CPAYER", "GANY")).not.toThrow();
     vi.restoreAllMocks();
+  });
+});
+
+describe("round trips — the cost that only shows up across an ocean", () => {
+  it("a first binding costs exactly ONE request, not an interactive transaction", async () => {
+    // MUTATION — restore the interactive form: `client.transaction("write")`,
+    // two execute()s, commit(). This test then counts 4 calls instead of 1, and
+    // sees a transaction() opened.
+    //
+    // Why a test and not a comment: the difference is invisible locally, where
+    // four round trips cost microseconds. It is only expensive at distance, and
+    // an in-datacenter test run would never notice a regression back to the
+    // chatty form. With the database in Tokyo and the service in Oregon
+    // (~250ms), four round trips is ~1s of a 2s timeout spent on protocol.
+    const { store, url } = tmpStore();
+    await store.init();
+    const inner = reopen(url) as unknown as { client: Record<string, unknown> };
+    const calls: string[] = [];
+    const real = inner.client;
+    inner.client = new Proxy(real, {
+      get(target, prop: string) {
+        const v = (target as Record<string, unknown>)[prop];
+        if (typeof v === "function" && ["batch", "execute", "transaction"].includes(prop)) {
+          return (...args: unknown[]) => {
+            calls.push(prop);
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return v;
+      },
+    }) as Record<string, unknown>;
+
+    await (inner as unknown as { bindAndUpsertEntry: typeof store.bindAndUpsertEntry }).bindAndUpsertEntry(
+      { resourceKey: URL_A, boundPayTo: ["GOWNER"] },
+      { resourceKey: URL_A, payload: "{}", lastUpdated: 1 },
+    );
+
+    expect(calls, "one batch, no interactive transaction").toEqual(["batch"]);
+    // ...and it is still atomic: the batch really wrote both rows.
+    expect(await readOwnership(url)).toEqual([{ resourceKey: URL_A, boundPayTo: ["GOWNER"] }]);
   });
 });
 

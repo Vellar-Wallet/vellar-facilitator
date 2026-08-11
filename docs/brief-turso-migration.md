@@ -282,11 +282,60 @@ the broken version is not evidence:
 
 ---
 
-## 7. The four numbers — APPROVED 2026-08-11
+## 6b. Latency — Tokyo database, Oregon service
 
-All four as proposed. They live in `PROPOSED_TIMINGS` (`src/store.ts`) so a
-review is one diff, and so none of them can acquire a second, quietly-different
-value the way `SETTLE_RATE_MAX` once shadowed `SETTLE_PER_PAYTO_MAX`.
+The database was created in **ap-northeast-1 (Tokyo)** and the service runs in
+**Oregon**: ~100–150ms each way, ~250ms round trip. Checked against that rather
+than assumed, because the numbers were already merged.
+
+**What the settle path actually costs.** `bindOwnership` is awaited **only on
+first catalog** — so the transpacific cost is paid **once per URL, not once per
+payment**:
+
+| | Added to the settle response |
+| --- | --- |
+| **First** settlement for a URL | **one round trip, ~250ms** |
+| Every later settlement | **zero** — the entry write is debounced and fire-and-forget |
+
+Against a measured ~8s end-to-end settle that is ~3% on one settlement per URL,
+and it lands *after* the payment is final on-chain. Boot costs two round trips
+(~500ms) against a ~35s cold start.
+
+**The timeout holds — but only after a change.** `bindAndUpsertEntry` was an
+*interactive* transaction: open, execute, execute, commit — up to four round
+trips, ~1s of a 2s budget spent on protocol before the query runs. It is now a
+single `batch(..., "write")`, which libSQL wraps in an implicit transaction, so
+the atomicity guarantee is unchanged and the cost is one request. **2,000ms then
+carries ~8× headroom.**
+
+Two problems that fix independently of distance:
+
+- an interactive transaction holds a **write lock** until it commits (libSQL
+  times it out at 5s), so concurrent first-settles for *different* URLs
+  serialised on it — each holding it for ~1s across the Pacific;
+- our timeout raced the whole block, so a timeout abandoned an **open**
+  transaction and the rollback never ran. A batch has nothing to leave open.
+
+**The backoff's first step moved 200ms → 500ms.** At a ~250ms baseline, 200ms
+retried before a merely-slow network could have answered — a second attempt at
+the same instant rather than a wait for the condition to pass. These fire only at
+**boot**; nothing on the settle path retries, so no payment can be lengthened by
+them. Worst case to freeze: ~11.5s.
+
+**The bigger lever, if you want it:** the catalog is empty, so recreating the
+database in a region near Oregon costs nothing to migrate and takes the round
+trip from ~250ms to ~10–20ms. The batch change is right either way — it is a
+correctness fix as much as a latency one — but region choice is the difference
+between "fine" and "not a consideration".
+
+## 7. The four numbers — APPROVED 2026-08-11, one revised
+
+All four as proposed, with **one revised after the region was known**: the retry
+backoff is now **500/1000/2000**, not 200/600/1800 (§6b). They live in
+`PROPOSED_TIMINGS` (`src/store.ts`) so a review is one diff, and so none of them
+can acquire a second, quietly-different value the way `SETTLE_RATE_MAX` once
+shadowed `SETTLE_PER_PAYTO_MAX`. The backoff is pinned by a test, which is what
+caught the change rather than letting it pass silently.
 
 1. **Connection/query timeout to Turso on the settle path.** Recommend **2000 ms**
    — it sits after on-chain settlement, so it delays a response but cannot fail a
