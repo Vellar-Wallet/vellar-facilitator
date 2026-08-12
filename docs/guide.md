@@ -34,6 +34,8 @@ roles, two scripts, both in `examples/`.
 ## 1. Start the facilitator
 
 ```sh
+mkdir -p data     # libSQL will NOT create the directory; without it you get
+                  # ConnectionFailed(... "./data/catalog.db: 14")  <- SQLITE_CANTOPEN
 SPONSOR_SECRET_KEY=S... PORT=4100 CATALOG_DB_URL=file:./data/catalog.db npm start
 ```
 
@@ -116,6 +118,12 @@ RESOURCE_URL=http://127.0.0.1:4031/quote \
 WALLET_CONTRACT_ID=C... AGENT_SECRET=S... SIM_SOURCE_ACCOUNT=G... \
 node buyer.mjs
 ```
+
+`WALLET_CONTRACT_ID` comes from `provision-testnet.mjs` when you pass it an
+`AGENT_PUBLIC`. To generate that keypair safely — and for the rules on handling
+`AGENT_SECRET` — see [`using-it.md` § First: bring your own payment
+asset](./using-it.md#first-bring-your-own-payment-asset) and
+[`walkthrough-wallet-spec.md`](./walkthrough-wallet-spec.md).
 
 `SIM_SOURCE_ACCOUNT` must be a **different** account from the payer. The
 facilitator rebuilds the transaction with itself as the source, so yours is used

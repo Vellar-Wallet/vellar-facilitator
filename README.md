@@ -21,12 +21,18 @@ without hardcoded integrations.
 Both are properties of *this deployment*, not of the code, and both are more
 surprising to find by experiment than to be told.
 
-**1. First request after idle takes ~50 seconds — but only outside the warm
-window.** A keep-alive holds the service warm **00:00–07:59 and 12:00–19:59
-UTC**, so there is no cold start then. Outside it, Render spins a free service down after
-15 minutes without traffic and the container is replaced, not paused; measured
-cold start **42 seconds**. You pay it once — the service then stays warm for 15
-minutes past your last request.
+**1. First request after idle takes ~45 seconds, at any hour.** Render spins a
+free service down after 15 minutes without traffic and the container is
+replaced, not paused; measured cold start **44.76 seconds**. You pay it once —
+the service then stays warm for 15 minutes past your last request.
+
+There is a keep-alive workflow, and it does **not** deliver a warm window: it is
+a GitHub Actions cron, and scheduled workflows are best-effort. Asked for a ping
+every 5 minutes, it delivered **6 of 96** inside one 8-hour window, with a
+**47-minute shortest gap** and none under the 15-minute idle timeout. Warm hours
+were advertised here until 2026-08-12 and have been withdrawn; see
+[`using-it.md` § About the cold start](./docs/using-it.md#about-the-cold-start--there-is-no-warm-window).
+Making it real needs an external pinger, not a tighter cron.
 
 The catalog survives either way: it lives in libSQL/Turso rather than on the
 container, so your listings and ownership bindings are there when it wakes.

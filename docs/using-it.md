@@ -46,8 +46,28 @@ node provision-testnet.mjs
 
 That creates an issuer, deploys a Stellar Asset Contract for a fresh token,
 funds a merchant account **with a trustline** (your `payTo`), funds a classic
-payer **with a balance** (your buyer), and prints a paste-ready env block. Add
-`AGENT_PUBLIC=G…` if you also want a Vellar smart account as the payer.
+payer **with a balance** (your buyer), and prints a paste-ready env block.
+
+**Only if you want a smart-account payer** (`buyer.mjs`) rather than a classic
+one, generate an agent keypair first and pass its public key. Generate and store
+it in ONE process, so the secret is a result rather than an argument that reaches
+your shell history:
+
+```sh
+mkdir -p ~/.vellar-keys && chmod 700 ~/.vellar-keys
+node -e '
+  const {Keypair}=require("@stellar/stellar-sdk"), fs=require("fs");
+  const kp=Keypair.random();
+  fs.writeFileSync(process.env.HOME+"/.vellar-keys/agent.key", kp.secret(), {mode:0o600});
+  console.log("AGENT_PUBLIC="+kp.publicKey());   // public key ONLY
+'
+AGENT_PUBLIC=G... node provision-testnet.mjs      # adds a smart account
+```
+
+`buyer.mjs` then needs that secret as `AGENT_SECRET`, plus the
+`WALLET_CONTRACT_ID` the script prints. The full handling rules — never in a
+transcript, never as an argument, never across a session boundary — are in
+[`walkthrough-wallet-spec.md`](./walkthrough-wallet-spec.md).
 
 Doing it by hand needs, in order: an issuer account, a SAC for the asset
 (`createStellarAssetContract`), a `changeTrust` on every classic recipient, and
@@ -331,12 +351,50 @@ Six things, in the order you will meet them.
 
 | | What | What to do |
 | --- | --- | --- |
-| **1** | **~50s on the first request after 15 min idle — but only OUTSIDE the warm window.** A keep-alive holds it warm **00:00–07:59 and 12:00–19:59 UTC** (covering the working day in Asia-Pacific, Europe and US East). Measured cold start 42s | Inside the window, nothing to do. Outside it, set a generous client timeout or send a warming `GET /health` first (exempt from rate limiting). Either way you pay it once — it stays warm 15 min past your last call |
+| **1** | **~45s on the first request, at any hour.** The service sleeps after 15 minutes idle and there is **no reliable warm window** — see below | **Assume you will pay it.** Send a warming `GET /health` first (exempt from rate limiting) and give it a 120s timeout, or expect your first real call to hang for ~45s. It then stays warm 15 min past your last call |
 | **2** | **Roughly 1 settle in 3 fails**, with an empty `transaction` and one of two reasons: `settle_exact_stellar_transaction_submission_failed` or `settle_exact_stellar_transaction_failed` | **Retry — and no, you did not pay twice.** See below |
 | **3** | **Trust badges are inert.** `verification` and `acceptsVerification` are always `"unknown"` | Read `ownerVerified` instead — that one works. The badge source is deployed nowhere and is not switching on soon (README has the dependency chain) |
 | **4** | **`?verified_only=true` returns an empty list** | Do not use it. It filters on the inert field |
 | **5** | **`curl -I` on a paid route returns 200, not 402** | Debug with `GET`, not `HEAD` — a HEAD request does not carry the payment challenge, so the route looks unpaid when it is working correctly |
 | **6** | **Your first settlement writes to a shared catalog, and the write is one-way** | Know this before you settle, not after — see below |
+
+### About the cold start — there is no warm window
+
+This page used to claim a keep-alive held the instance warm during
+`00:00–07:59` and `12:00–19:59 UTC`, and that inside those hours there was
+nothing to do. **That claim was false and has been withdrawn.** The schedule
+exists; the delivery does not.
+
+Measured on 2026-08-11/12 from the workflow's own run history:
+
+| | |
+| --- | --- |
+| Cron on `main` | `*/5 0-7,12-19 * * *` — 12 pings/hour |
+| Actually delivered, 12:00–19:59 on 2026-08-11 | **6 runs out of 96 — 6.2%** |
+| Shortest gap between consecutive runs (10 gaps) | **47 minutes** |
+| Median gap | 68 minutes |
+| Gaps shorter than Render's 15-minute idle timeout | **0 of 10** |
+
+GitHub's scheduled workflows are best-effort and were delivering roughly hourly
+regardless of the interval requested. Render sleeps after 15 minutes idle, so a
+~60-minute ping gap leaves ~45 minutes of sleep inside every "warm" hour.
+**Tightening the cron does not help** — `*/5` is already the tightest useful
+value and it produced ~1 run/hour.
+
+This is not theoretical. A cold start was measured at **44.76s at 17:01 UTC**,
+inside the old advertised window, falling exactly between the 16:24 and 17:25
+runs; `/health` reported `uptimeSeconds: 48` immediately afterwards, which means
+the process started when the request arrived.
+
+**Making a warm window real needs an external pinger** — a GitHub Actions cron
+cannot do it. An uptime monitor on a 5-minute check (UptimeRobot's free tier,
+~5 minutes to set up) is dependable in the way this is not. Note the budget
+interaction before adding one: a monitor left on 24/7 keeps the instance awake
+~744 h/month against a **750 h per-workspace** Free allowance, which would
+suspend every Free service in the workspace. Give it a maintenance window
+matching the hours you actually want, rather than leaving it always-on.
+
+Until that exists, treat the service as **always cold** and warm it yourself.
 
 ### Your first settlement writes to a shared catalog, permanently
 
@@ -403,13 +461,13 @@ Plainly, because the answer differs a lot by use case.
 Point a client at the hosted instance and try the loop. The full path is
 live-proven with transaction hashes: a smart account paid a discoverable
 resource, this facilitator settled it on-chain, and the resource became
-searchable. Expect the five annoyances above.
+searchable. Expect the six annoyances above.
 
 ### Ready — self-hosting for something real
 
 Run your own instance. The code is the part that has been reviewed hardest: a
 full pre-mainnet security audit with every finding tracked to closure
-([`closing-state.md`](./closing-state.md)), 327 tests, and mutation-verified
+([`closing-state.md`](./closing-state.md)), 342 tests, and mutation-verified
 controls. You supply a funded sponsor account and a libSQL/Turso database.
 
 What you inherit that is genuinely yours to run: the sponsor pays every
@@ -421,8 +479,9 @@ confusingly on-chain.
 
 Do not. Three reasons, none of them about the code:
 
-1. **It is a free-tier testnet demo.** One instance, no uptime commitment, a 50s
-   cold start, and a sponsor account funded for demonstration.
+1. **It is a free-tier testnet demo.** One instance, no uptime commitment, a
+   ~45s cold start at any hour (there is no reliable warm window), and a sponsor
+   account funded for demonstration.
 2. **`stellar:testnet` only.** Testnet assets are not money.
 3. **Spend controls are log-only on testnet.** The protections against a funded
    attacker are not enforced in the environment you would be evaluating them in.

@@ -8,7 +8,16 @@ The site is a **client-SDK site**; the facilitator is a footnote. Pages audited:
 `/docs/introduction`, `/docs/quickstart`, `/docs/x402`, `/docs/facilitator`.
 
 **The pattern:** the site documents the two things that explain themselves (cold
-starts, rate limits) and omits the ones that silently cost hours. Every fact
+starts, rate limits) and omits the ones that silently cost hours. Re-audited
+2026-08-12 against the live site: **nothing below had been actioned**, and one
+item (§6) turned out to be actively wrong rather than merely missing.
+
+**One thing the site gets right — do not "fix" it.** It says the first request
+after idle "can take up to a minute (cold start)" and claims **no warm window**.
+That is correct. The facilitator's own docs claimed warm hours until 2026-08-12
+and the claim was withdrawn as false — the keep-alive delivered 6 of 96 pings,
+shortest gap 47 min against a 15-min idle timeout. Do not import a warm-window
+claim from anywhere. Every fact
 below is verified live — sources are in `docs/using-it.md` and
 `docs/closing-state.md` § Cold-start findings (O-1…O-11) in the facilitator repo.
 
@@ -82,13 +91,39 @@ publicly resolvable; unauthenticated GET returns 402; a `PAYMENT-REQUIRED`
 header ≤ 64 KiB; `accepts[].payTo` includes your address; answers within 3s with
 no redirect. Add the trailing-slash canonicalisation note.
 
-### 6. `verified_only` is inert
+### 6. `verified_only` — mentioned, but with the WRONG CAUSE
 
-Not mentioned. Agents will filter on it and get an empty list.
+This is the only item on the site that is actively **incorrect** rather than
+absent, so it ranks above the other P1s. Re-audited 2026-08-12; the page says:
+
+> "Don't build UI on trust badges yet. On the hosted free-tier instance,
+> ownership verification does not survive restarts, so badges currently read
+> unverified and `verified_only=true` can return an empty list."
+
+That conflates two independent mechanisms and gives a cause that is not the real
+one:
+
+- **`verification` / `acceptsVerification`** (what `verified_only` actually
+  filters on) are **always `"unknown"`**, on every deployment, because the
+  external attestation service is deployed nowhere. Restarts are irrelevant.
+  This will not improve on the hosted instance.
+- **`ownerVerified`** is a different field, computed by the facilitator itself,
+  and it **does** work. It is what the restart caveat applies to (G-1), and it
+  recovers automatically on the next settlement after a cooldown.
+
+The harm is specific: a reader concludes the badges would work if the instance
+stopped restarting — they never will — and is steered away from `ownerVerified`,
+which is the one signal that does work.
+
+The same page also says `verification` "reads `'verified'` only when the
+resource's URL ownership has been actively verified (`ownerVerified`)". Same
+conflation: `verification` comes from the attestation service, not from
+`ownerVerified`, and does not read `"verified"` on this deployment at any time.
 
 **Write:** do not use `?verified_only=true`; it filters on `verification`, which
 is always `"unknown"` because the attestation service is deployed nowhere. Read
-`ownerVerified` instead — that one works.
+`ownerVerified` instead — that one works, and it is lost on restart but restored
+by the next settlement.
 
 ### 7. Simulation source must differ from the payer
 
@@ -121,8 +156,12 @@ Verified live on 2026-08-11 against `https://vellar-facilitator.onrender.com`:
 
 - Rate limit **60 req/min per IP**; `/verify` and `/settle` bodies capped at
   **32 KiB**. `/health` is exempt from rate limiting.
-- Cold start ~42–50s, but a keep-alive holds the instance warm
-  **00:00–07:59 and 12:00–19:59 UTC**. Inside that window there is no cold start.
+- Cold start **~45s at any hour** (44.76s measured). There is **no reliable warm
+  window** — the keep-alive is a GitHub Actions cron that delivered 6 of 96
+  requested pings, shortest gap 47 min against a 15-min idle timeout. Do not
+  repeat the old "warm 00:00–07:59 and 12:00–19:59 UTC" claim; it was withdrawn
+  on 2026-08-12. Tell readers to send a warming `GET /health` with a 120s
+  timeout.
 - Spend controls are **log-only on testnet** — you cannot test your handling of
   `503 settlement_refused` there.
 - `stellar:testnet` only. Testnet assets are not money.
