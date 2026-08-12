@@ -87,10 +87,45 @@ once, and the badge flips to `true` on that settlement.
 
 ## What changed here
 
-Only one thing, and it is not the fix: `render.yaml` now sets `PAYTO` and
-`ASSET` explicitly on the `vellar-seller-demo` service. They were unset, so the
-deployed public service silently inherited `examples/seller.mjs`'s built-in
-defaults — an edit to a source default would have changed what a public service
-advertises, with nothing in the deployment file to show it. The pinned values
-are the ones already in effect, so this is a no-op today; it is a prerequisite
-for changing those defaults without breaking the deployment.
+`render.yaml` now sets `PAYTO` and `ASSET` explicitly on `vellar-seller-demo`.
+They were unset, so the deployed public service silently inherited
+`examples/seller.mjs`'s built-in defaults — an edit to a source default would
+have changed what a public service advertises, with nothing in the deployment
+file to show it.
+
+The values are the fix:
+
+- **`ASSET`** is now canonical testnet USDC
+  (`CBIELTK6…`), obtainable by anyone from the DEX with no faucet
+  (`USE_USDC=1 node provision-testnet.mjs`). The resource becomes payable by
+  strangers for the first time, which is what makes the badge reachable at all.
+- **`PAYTO`** is a new merchant account holding a live USDC trustline. The
+  secret was generated straight to disk and never printed; it is **not** needed
+  at runtime — `seller.mjs` only ever uses the public address.
+
+The old binding to `GBJX3E4G…` resolves itself. Because it was never verified,
+the first settlement naming the new address **displaces** it automatically. No
+operator step, no runbook §1.
+
+## What is still outstanding
+
+This repo's part is done. Two actions remain and neither can happen here:
+
+1. **Deploy.** Render picks up `render.yaml` on push. Until it redeploys, the
+   live demo still advertises the dead asset.
+2. **Settle once against the hosted facilitator.** That is what creates the
+   displacement, triggers re-verification, and flips the badge. Provision a
+   payer with `USE_USDC=1`, point `buyer-classic.mjs` at
+   `https://vellar-seller-demo.onrender.com/quote`, and pay once. Retry if it
+   fails — roughly one settle in three does, and nothing is spent when it does.
+
+Afterwards, confirm with:
+
+```sh
+curl -s https://vellar-facilitator.onrender.com/discovery/resources \
+  | python3 -c 'import sys,json; [print(i["resource"], i["trust"]["ownerVerified"]) for i in json.load(sys.stdin)["items"]]'
+```
+
+The demo entry should read `True`. The three `localhost` entries will not — they
+are unreachable by design and cannot be removed; the boot guard added alongside
+this stops a fourth.

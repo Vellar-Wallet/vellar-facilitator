@@ -167,16 +167,25 @@ services:
       # PINNED DELIBERATELY. These were previously unset, so the deployed demo
       # silently inherited seller.mjs's built-in defaults — meaning an edit to a
       # source default would change what a PUBLIC service advertises, with no
-      # sign of it in this file. Pin them here so the deployment states its own
-      # configuration and source defaults only affect local runs.
+      # sign of it in this file.
       #
-      # These are the values the service already advertises; setting them is a
-      # no-op today. The asset is the DEAD X402TST — its issuer secret no longer
-      # exists, so nobody can obtain a balance and nobody can pay this resource.
-      # That is why the catalog entry is stuck at ownerVerified:false: the badge
-      # only re-checks on the next settlement, and no settlement can happen.
-      # See docs/diagnosis-demo-listing.md for the full chain and the fix.
+      # The demo previously advertised the DEAD X402TST asset, whose issuer
+      # secret no longer exists. Nobody could obtain a balance, so nobody could
+      # pay it, so the catalog entry was frozen at ownerVerified:false — the
+      # badge only re-checks on the next settlement, and no settlement was
+      # possible. See docs/diagnosis-demo-listing.md.
+      #
+      # Now: canonical testnet USDC, which anyone can obtain from the DEX with
+      # no faucet (examples/provision-testnet.mjs USE_USDC=1). The resource is
+      # payable by strangers for the first time.
+      #
+      # PAYTO is a new merchant holding a live USDC trustline. The catalog's URL
+      # binding still points at the old GBJX3E4G… address, whose secret is not
+      # known to be held. That resolves itself WITHOUT operator involvement: the
+      # old binding was never verified, so the first settlement naming this
+      # address displaces it. Runbook §1 is only needed to move an
+      # already-verified binding.
       - key: PAYTO
-        value: "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH"
+        value: "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC"
       - key: ASSET
-        value: "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR"
+        value: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
