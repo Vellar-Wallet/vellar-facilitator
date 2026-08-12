@@ -265,7 +265,10 @@ console.log(`
   Done. Paste this into examples/.env.recording (testnet keys — do not reuse)
 ════════════════════════════════════════════════════════════════════════════
 
-FACILITATOR_URL=https://vellar-facilitator.onrender.com
+# Local by default: the walkthrough runs a localhost seller, and a localhost URL
+# written to the SHARED hosted catalog is public and permanent. Point at the
+# hosted instance only once your seller has a public https address.
+FACILITATOR_URL=http://localhost:4100
 STELLAR_RPC_URL=${RPC_URL}
 
 # The token you just created. This is YOUR asset — you can mint more.
@@ -282,6 +285,7 @@ SELLER_PORT=4031
 # Buyer — classic keypair (works with buyer-classic.mjs)
 PAYER_SECRET=${payer.secret()}
 # Simulate-only, never charged, never signs. MUST differ from the payer.
+# Needed by buyer.mjs (smart account) ONLY — buyer-classic.mjs ignores it.
 SIM_SOURCE_ACCOUNT=${simSource.publicKey()}
 ${
   walletId
@@ -301,7 +305,6 @@ Next:
   2. Pay it (classic keypair — the values above are already in .env.recording):
        RESOURCE_URL=http://127.0.0.1:4031/quote \\
        PAYER_SECRET=${payer.secret()} \\
-       SIM_SOURCE_ACCOUNT=${simSource.publicKey()} \\
        node buyer-classic.mjs
 
   Roughly 1 settle in 3 fails on testnet with an empty transaction — retry it.

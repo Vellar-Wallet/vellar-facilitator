@@ -93,6 +93,46 @@ const ASSET_SOURCE = sourceOf(shellAsset, "ASSET");
 function publicBase() {
   return process.env.PUBLIC_BASE_URL ?? `http://localhost:${PORT}`;
 }
+
+/**
+ * Can this resource URL ever pass the facilitator's ownership verification?
+ *
+ * The facilitator's precondition is public https: http is rejected before a
+ * socket opens, and so are loopback, private ranges and link-local. This is the
+ * seller-side mirror of that rule, and it is deliberately the ONLY copy — both
+ * /whoami's `verifiable` and the boot guard read it, so they cannot drift.
+ *
+ * Previously /whoami tested `startsWith("https://") && !includes("localhost")`,
+ * which passed `https://127.0.0.1` and `https://192.168.1.10` — URLs the
+ * facilitator refuses. Reporting `verifiable: true` for a URL that can never
+ * verify is the exact failure this endpoint exists to prevent.
+ */
+function isPubliclyVerifiable(url) {
+  let host;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+  if (host === "::1" || host.startsWith("fc") || host.startsWith("fd")) return false;
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+  if (/^169\.254\./.test(host)) return false; // link-local, incl. cloud metadata
+  return true;
+}
+
+/** Is the configured facilitator this machine, rather than a shared one? */
+function isLocalFacilitator(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "localhost" || host === "::1" || /^127\./.test(host);
+  } catch {
+    return false;
+  }
+}
 // PORT first: Render (and most PaaS) inject it and health-check that port, so
 // binding SELLER_PORT there would fail the deploy. SELLER_PORT still wins
 // locally when PORT is unset, so `docs/guide.md`'s walkthrough is unchanged.
@@ -314,6 +354,50 @@ async function preflightMerchant() {
   );
 }
 
+/**
+ * Refuse the one combination that writes permanent junk into shared state.
+ *
+ * A resource is cataloged the first time a payment settles for it, keyed by URL,
+ * and there is no self-service removal and no supported operator one. So a
+ * seller advertising `http://localhost:4031/quote` while pointed at a SHARED
+ * facilitator leaves a public entry that every agent can see, no one can call,
+ * and nobody can delete — it can never pass ownership verification, so it is
+ * `ownerVerified: false` forever and counted in the facilitator's
+ * `unverifiableEntries`.
+ *
+ * The trap was that this is the DEFAULT path: FACILITATOR_URL defaults to the
+ * hosted instance and PUBLIC_BASE_URL is usually unset locally, so following the
+ * walkthrough literally produced exactly this. docs/using-it.md warned about it
+ * at length while the tooling walked people into it.
+ *
+ * Deliberately narrow: it refuses ONLY remote-facilitator + unverifiable-URL.
+ * A public seller on a shared facilitator is the normal deployed case and is
+ * untouched; a localhost seller on a localhost facilitator is the walkthrough
+ * and is untouched. Both fixes are named because either one is legitimate
+ * depending on what you are doing.
+ */
+function preflightCatalogSafety() {
+  const resourceUrl = `${publicBase()}/quote`;
+  if (isLocalFacilitator(FACILITATOR_URL) || isPubliclyVerifiable(resourceUrl)) return;
+
+  console.error(
+    `\n[seller] REFUSING TO BOOT — this would write a permanent entry into a shared catalog.\n\n` +
+      `  advertising : ${resourceUrl}\n` +
+      `  facilitator : ${FACILITATOR_URL}  (not local)\n\n` +
+      `  That URL can never pass ownership verification (public https only — no http,\n` +
+      `  no loopback, no private ranges). The first settlement would list it publicly,\n` +
+      `  permanently, with ownerVerified: false. There is no removal path.\n\n` +
+      `  Fix it whichever way matches what you are doing:\n\n` +
+      `    • Walking the guide locally — run your own facilitator and point at it:\n` +
+      `        FACILITATOR_URL=http://localhost:4100 node seller.mjs\n\n` +
+      `    • Deploying for real — advertise your public address:\n` +
+      `        PUBLIC_BASE_URL=https://your-seller.example node seller.mjs\n\n` +
+      `  Override with ALLOW_UNVERIFIABLE_ON_SHARED=1 if you genuinely mean it.\n`,
+  );
+  process.exit(1);
+}
+
+if (!process.env.ALLOW_UNVERIFIABLE_ON_SHARED) preflightCatalogSafety();
 await preflightMerchant();
 await initializeWithRetry();
 
@@ -370,7 +454,7 @@ app.get("/whoami", (_req, res) => {
       : {}),
     // Decided here rather than by the reader: an ownership-verifiable resource
     // URL must be public https. This is the per-settle precondition.
-    verifiable: resourceUrl.startsWith("https://") && !resourceUrl.includes("localhost"),
+    verifiable: isPubliclyVerifiable(resourceUrl),
   });
 });
 

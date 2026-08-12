@@ -5,6 +5,12 @@ node_modules/
 !.env.recording.example
 *.log
 
+# Local libSQL catalog. docs/guide.md tells you to `mkdir -p data` and point
+# CATALOG_DB_URL at file:./data/catalog.db to run a facilitator locally, so
+# following the guide leaves an untracked database here. It holds resource
+# listings and ownership bindings — operational state, never source.
+data/
+
 # Scratch and provisioning scripts — never commit.
 #
 # These are the files that HANDLE key material even when they do not contain it:

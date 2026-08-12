@@ -164,3 +164,19 @@ services:
       # permanently unverified.
       - key: PUBLIC_BASE_URL
         value: "https://vellar-seller-demo.onrender.com"
+      # PINNED DELIBERATELY. These were previously unset, so the deployed demo
+      # silently inherited seller.mjs's built-in defaults — meaning an edit to a
+      # source default would change what a PUBLIC service advertises, with no
+      # sign of it in this file. Pin them here so the deployment states its own
+      # configuration and source defaults only affect local runs.
+      #
+      # These are the values the service already advertises; setting them is a
+      # no-op today. The asset is the DEAD X402TST — its issuer secret no longer
+      # exists, so nobody can obtain a balance and nobody can pay this resource.
+      # That is why the catalog entry is stuck at ownerVerified:false: the badge
+      # only re-checks on the next settlement, and no settlement can happen.
+      # See docs/diagnosis-demo-listing.md for the full chain and the fix.
+      - key: PAYTO
+        value: "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH"
+      - key: ASSET
+        value: "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR"
