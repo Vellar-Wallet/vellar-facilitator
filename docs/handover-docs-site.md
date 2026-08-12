@@ -121,8 +121,12 @@ Verified live on 2026-08-11 against `https://vellar-facilitator.onrender.com`:
 
 - Rate limit **60 req/min per IP**; `/verify` and `/settle` bodies capped at
   **32 KiB**. `/health` is exempt from rate limiting.
-- Cold start ~42–50s, but a keep-alive holds the instance warm
-  **00:00–07:59 and 12:00–19:59 UTC**. Inside that window there is no cold start.
+- Cold start **~45s at any hour** (44.76s measured). There is **no reliable warm
+  window** — the keep-alive is a GitHub Actions cron that delivered 6 of 96
+  requested pings, shortest gap 47 min against a 15-min idle timeout. Do not
+  repeat the old "warm 00:00–07:59 and 12:00–19:59 UTC" claim; it was withdrawn
+  on 2026-08-12. Tell readers to send a warming `GET /health` with a 120s
+  timeout.
 - Spend controls are **log-only on testnet** — you cannot test your handling of
   `503 settlement_refused` there.
 - `stellar:testnet` only. Testnet assets are not money.

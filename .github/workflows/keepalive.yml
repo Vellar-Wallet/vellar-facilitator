@@ -31,15 +31,39 @@
 ## TO RUN 24/7 instead: change the cron to "*/10 * * * *" and first confirm this
 ## is the only Free service in the workspace.
 ##
-## RELIABILITY CAVEAT — READ BEFORE RELYING ON THIS.
+## RELIABILITY — MEASURED 2026-08-12. THIS DOES NOT HOLD A WARM WINDOW.
 ##
-## GitHub's scheduled workflows are best-effort and can be delayed well past
-## their cron time under load. A delay beyond 15 minutes lets the service sleep
-## anyway, so this is a keep-alive that *mostly* works — the failure mode is
-## silent and intermittent. An external uptime monitor (UptimeRobot free tier:
-## 50 monitors, 5-minute checks, ~5 minutes to set up, no code) is dependable in
-## a way this is not. Recommended arrangement: external monitor as primary, this
-## workflow as backup.
+## This was written as a caveat ("mostly works, silent and intermittent"). It is
+## now a measurement, and the answer is worse than the caveat implied: the
+## workflow does not keep the service warm at all, and cannot be made to.
+##
+## From this workflow's own run history:
+##
+##   cron requested            */5  -> 12 runs/hour
+##   delivered 12:00-19:59 UTC on 2026-08-11:  6 runs out of 96   (6.2%)
+##   gaps between consecutive runs (10 samples):
+##     shortest 47.2 min | median 68.3 min | longest 1470 min
+##   gaps shorter than Render's 15-minute idle timeout:  0 of 10
+##
+## GitHub delivered roughly ONE run per hour regardless of the interval asked
+## for. Render sleeps after 15 minutes idle, so a ~60-minute gap leaves ~45
+## minutes of sleep inside every "warm" hour.
+##
+## TIGHTENING THE CRON CANNOT FIX THIS. */5 is already the tightest useful value
+## and it produced ~1 run/hour; the limit is delivery, not the schedule. A
+## measured consequence: a 44.76s cold start at 17:01 UTC — inside the window
+## below, between the 16:24 and 17:25 runs — with /health reporting
+## uptimeSeconds:48 straight after, i.e. the process started on that request.
+##
+## WHAT WOULD WORK: an external uptime monitor (UptimeRobot free tier: 50
+## monitors, 5-minute checks, ~5 minutes to set up, no code). Keep this workflow
+## as a backup and as the stale-deploy check, but do not describe it as a warm
+## window — the docs claimed one until 2026-08-12 and it was not real.
+##
+## BUDGET, IF YOU ADD ONE: a monitor left on 24/7 keeps the instance awake ~744
+## h/month against a 750 h per-WORKSPACE allowance, which would suspend every
+## Free service in the workspace. Give it a maintenance window matching the
+## hours below rather than leaving it always-on.
 ##
 ## BUDGET INTERACTION — the pinger schedule is not free to choose.
 ## An external monitor checking every 5 minutes runs 24/7 by default, which keeps
