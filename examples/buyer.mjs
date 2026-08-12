@@ -13,6 +13,30 @@
 // (docs/decisions.md 2026-07-26): a policy-governed Vellar smart account with
 // an ed25519 agent signer, no passkey, budget enforced on-chain.
 //
+// WHY THIS FILE IS HAND-ROLLED AND buyer-classic.mjs IS NOT
+// --------------------------------------------------------
+// Not a style choice, and not something to "fix" by porting this file onto the
+// official client the way buyer-classic.mjs was. The official client CANNOT
+// express a smart-account signature today. Traced through the published code:
+//
+//   1. `@x402/stellar/exact/client` signs via
+//      `tx.signAuthEntries({ address, signAuthEntry, expiration })` and never
+//      passes an `authorizeEntry` override.
+//   2. `AssembledTransaction.signAuthEntries` narrows whatever your signer
+//      returns to a NAKED BUFFER — `Buffer.from(signedAuthEntry, "base64")`.
+//   3. A naked buffer sends `authorizeEntry` down the ed25519 branch, which
+//      calls `Keypair.fromPublicKey()` on the auth entry's own address. For a
+//      smart account that address is a C-address, and it throws:
+//      `invalid version byte. expected 48, got 16`.
+//
+// The SDK core does support this — `authorizeEntry`'s signer may return
+// `{ signatureScVal }`, documented verbatim for "custom account contracts
+// (smart wallets, passkey/WebAuthn signers)" whose `__check_auth` expects its
+// own signature structure. But `signAuthEntries` closes that door, and the
+// x402 client scheme does not reopen it. Hence: hand-rolled, until upstream
+// threads `authorizeEntry` (or `signatureScVal`) through the client scheme.
+// See docs/upstream-issue-smart-accounts.md.
+//
 // Run (testnet):
 //   RESOURCE_URL=http://localhost:4031/quote \
 //   WALLET_CONTRACT_ID=C...   (the smart-account payer) \
