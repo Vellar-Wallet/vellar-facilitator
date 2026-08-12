@@ -29,6 +29,7 @@
 
 import {
   Asset,
+  Horizon,
   Keypair,
   Networks,
   Operation,
@@ -57,6 +58,32 @@ const WALLET_WASM_HASH =
 
 const PAYER_MINT_ATOMIC = 1_000_000_000n; // 100 tokens @ 7 decimals
 const MERCHANT_SEED_UNITS = "1"; // so the merchant's trustline is visibly live
+
+/**
+ * USE_USDC=1 provisions against CANONICAL testnet USDC instead of minting a
+ * throwaway token.
+ *
+ * Which you want depends on who has to hold the asset. A token you mint is
+ * self-contained and needs nothing external — right for walking the loop. But
+ * it is a token nobody else holds, so two parties who have never met cannot
+ * transact in it, which is the whole premise of agent-to-agent payment. USDC is
+ * the asset both sides already have.
+ *
+ * No faucet is involved and no human step: the asset sets auth_required=false
+ * so trustlines are permissionless, and there is a live XLM/USDC market on the
+ * testnet DEX. Verified 2026-08-12 — 10 USDC cost 5.59 XLM against friendbot
+ * funds, so the ~10,000 XLM friendbot hands out is ample.
+ *
+ * Circle's testnet issuer (home_domain centre.io). The contract id is DERIVED
+ * from the asset rather than pasted, so it cannot drift from the issuer above.
+ */
+const USE_USDC = process.env.USE_USDC === "1";
+const USDC_ISSUER = process.env.USDC_ISSUER || "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const USDC_ACQUIRE_UNITS = process.env.USDC_ACQUIRE_UNITS || "100";
+// Cap on XLM spent buying that. Generous against a thin testnet order book, and
+// still far inside friendbot's grant — a runaway price fails the op rather than
+// silently draining the account.
+const USDC_MAX_XLM = "5000";
 
 if (!/^[A-Za-z0-9]{1,12}$/.test(ASSET_CODE)) {
   console.error(`ASSET_CODE must be 1-12 alphanumeric characters, got "${ASSET_CODE}"`);
@@ -161,17 +188,54 @@ const deployer = Keypair.random();
 // credentials. Its secret is never needed, so it is never printed.
 const simSource = Keypair.random();
 
-const asset = new Asset(ASSET_CODE, issuer.publicKey());
+const assetCode = USE_USDC ? "USDC" : ASSET_CODE;
+const assetIssuer = USE_USDC ? USDC_ISSUER : issuer.publicKey();
+const asset = new Asset(assetCode, assetIssuer);
 const sacId = asset.contractId(PASSPHRASE);
 
-console.log(`\nProvisioning ${ASSET_CODE} on testnet — this takes 2-4 minutes.\n`);
+/**
+ * Buy `destAmount` of the asset on the DEX, paying in XLM. Used only in USDC
+ * mode — there is no mint authority to call, so the open market is how a
+ * balance is obtained.
+ */
+async function acquireOnDex(kp, destAmount) {
+  const horizon = new Horizon.Server(HORIZON);
+  const paths = await retry("usdc-path", async () => {
+    const res = await horizon.strictReceivePaths([Asset.native()], asset, destAmount).call();
+    if (!res.records.length) throw new Error("no XLM->USDC path offered");
+    return res.records;
+  });
+  const best = paths[0];
+  await submit("acquire-usdc", kp, [
+    Operation.pathPaymentStrictReceive({
+      sendAsset: Asset.native(),
+      sendMax: USDC_MAX_XLM,
+      destination: kp.publicKey(),
+      destAsset: asset,
+      destAmount,
+      path: best.path.map((p) =>
+        p.asset_type === "native" ? Asset.native() : new Asset(p.asset_code, p.asset_issuer),
+      ),
+    }),
+  ]);
+  return best.source_amount;
+}
+
+console.log(
+  `\nProvisioning ${assetCode} on testnet — this takes 2-4 minutes.` +
+    (USE_USDC ? "\nUsing CANONICAL testnet USDC — no token is minted.\n" : "\n"),
+);
 
 console.log("[1/7] funding accounts (friendbot, then waiting for RPC visibility)…");
 await Promise.all([issuer, merchant, payer, deployer, simSource].map((k) => fundAndWait(k.publicKey())));
 console.log("  ok — 5 accounts funded and visible");
 
-console.log(`[2/7] deploying the SAC for ${ASSET_CODE}:${issuer.publicKey().slice(0, 6)}…`);
-const sacHash = await submit("sac-deploy", deployer, [Operation.createStellarAssetContract({ asset })]);
+if (USE_USDC) {
+  console.log(`[2/7] using canonical USDC:${USDC_ISSUER.slice(0, 6)}… — skipping SAC deploy`);
+} else {
+  console.log(`[2/7] deploying the SAC for ${ASSET_CODE}:${issuer.publicKey().slice(0, 6)}…`);
+  await submit("sac-deploy", deployer, [Operation.createStellarAssetContract({ asset })]);
+}
 console.log(`  ok — ${sacId}`);
 
 console.log("[3/7] waiting for the contract instance to be readable…");
@@ -192,18 +256,29 @@ await submit("merchant-trustline", merchant, [Operation.changeTrust({ asset })])
 await submit("payer-trustline", payer, [Operation.changeTrust({ asset })]);
 console.log("  ok — both trustlines live");
 
-console.log("[5/7] funding the payer with tokens…");
-const mintHash = await submit("mint-to-payer", issuer, [
-  Operation.invokeContractFunction({
-    contract: sacId,
-    function: "mint",
-    args: [nativeToScVal(payer.publicKey(), { type: "address" }), nativeToScVal(PAYER_MINT_ATOMIC, { type: "i128" })],
-  }),
-]);
-await submit("seed-merchant", issuer, [
-  Operation.payment({ destination: merchant.publicKey(), asset, amount: MERCHANT_SEED_UNITS }),
-]);
-console.log(`  ok — payer holds ${PAYER_MINT_ATOMIC} atomic (100 ${ASSET_CODE})`);
+if (USE_USDC) {
+  console.log(`[5/7] buying ${USDC_ACQUIRE_UNITS} USDC for the payer on the DEX…`);
+  const spent = await acquireOnDex(payer, USDC_ACQUIRE_UNITS);
+  // The merchant needs a live trustline, not a balance — but seeding one unit
+  // makes it visible in the [7/7] check the same way the minted path does.
+  await submit("seed-merchant", payer, [
+    Operation.payment({ destination: merchant.publicKey(), asset, amount: MERCHANT_SEED_UNITS }),
+  ]);
+  console.log(`  ok — payer holds ${USDC_ACQUIRE_UNITS} USDC (cost ${spent} XLM)`);
+} else {
+  console.log("[5/7] funding the payer with tokens…");
+  await submit("mint-to-payer", issuer, [
+    Operation.invokeContractFunction({
+      contract: sacId,
+      function: "mint",
+      args: [nativeToScVal(payer.publicKey(), { type: "address" }), nativeToScVal(PAYER_MINT_ATOMIC, { type: "i128" })],
+    }),
+  ]);
+  await submit("seed-merchant", issuer, [
+    Operation.payment({ destination: merchant.publicKey(), asset, amount: MERCHANT_SEED_UNITS }),
+  ]);
+  console.log(`  ok — payer holds ${PAYER_MINT_ATOMIC} atomic (100 ${ASSET_CODE})`);
+}
 
 let walletId;
 if (agentPublic) {
@@ -235,13 +310,32 @@ if (agentPublic) {
   );
   const { result: walletClient } = await deployTx.signAndSend();
   walletId = walletClient.options.contractId;
-  await submit("mint-to-wallet", issuer, [
-    Operation.invokeContractFunction({
-      contract: sacId,
-      function: "mint",
-      args: [nativeToScVal(walletId, { type: "address" }), nativeToScVal(PAYER_MINT_ATOMIC, { type: "i128" })],
-    }),
-  ]);
+  if (USE_USDC) {
+    // No mint authority for USDC, so the wallet is funded by transfer. The payer
+    // is the transaction source and authorizes with source-account credentials,
+    // which is fine for a direct submission — it is only the x402 payment path
+    // that requires address credentials.
+    const half = (BigInt(USDC_ACQUIRE_UNITS) * 10_000_000n) / 2n;
+    await submit("fund-wallet", payer, [
+      Operation.invokeContractFunction({
+        contract: sacId,
+        function: "transfer",
+        args: [
+          nativeToScVal(payer.publicKey(), { type: "address" }),
+          nativeToScVal(walletId, { type: "address" }),
+          nativeToScVal(half, { type: "i128" }),
+        ],
+      }),
+    ]);
+  } else {
+    await submit("mint-to-wallet", issuer, [
+      Operation.invokeContractFunction({
+        contract: sacId,
+        function: "mint",
+        args: [nativeToScVal(walletId, { type: "address" }), nativeToScVal(PAYER_MINT_ATOMIC, { type: "i128" })],
+      }),
+    ]);
+  }
   console.log(`  ok — ${walletId} (funded)`);
 } else {
   console.log("[6/7] skipping the smart account (set AGENT_PUBLIC to create one)");
@@ -254,7 +348,7 @@ for (const [label, kp] of [
 ]) {
   const acct = await (await fetch(`${HORIZON}/accounts/${kp.publicKey()}`)).json();
   const line = (acct.balances ?? []).find(
-    (b) => b.asset_code === ASSET_CODE && b.asset_issuer === issuer.publicKey(),
+    (b) => b.asset_code === assetCode && b.asset_issuer === assetIssuer,
   );
   if (!line) throw new Error(`${label} trustline missing after provisioning`);
   console.log(`  ok — ${label} balance: ${line.balance}`);
@@ -265,13 +359,25 @@ console.log(`
   Done. Paste this into examples/.env.recording (testnet keys — do not reuse)
 ════════════════════════════════════════════════════════════════════════════
 
-FACILITATOR_URL=https://vellar-facilitator.onrender.com
+# Local by default: the walkthrough runs a localhost seller, and a localhost URL
+# written to the SHARED hosted catalog is public and permanent. Point at the
+# hosted instance only once your seller has a public https address.
+FACILITATOR_URL=http://localhost:4100
 STELLAR_RPC_URL=${RPC_URL}
 
-# The token you just created. This is YOUR asset — you can mint more.
+${
+  USE_USDC
+    ? `# Canonical testnet USDC — the asset strangers can also hold. Not yours to
+# mint; buy more on the DEX the way this script just did.
 ASSET=${sacId}
-ASSET_CODE_ISSUER=${ASSET_CODE}:${issuer.publicKey()}
-ISSUER_SECRET=${issuer.secret()}
+ASSET_CODE_ISSUER=${assetCode}:${assetIssuer}`
+    : `# The token you just created. This is YOUR asset — you can mint more.
+# Nobody else holds it, so it is fine for testing your own loop and useless for
+# transacting with anyone else. Re-run with USE_USDC=1 for canonical USDC.
+ASSET=${sacId}
+ASSET_CODE_ISSUER=${assetCode}:${assetIssuer}
+ISSUER_SECRET=${issuer.secret()}`
+}
 
 # Seller (the paid API)
 PAYTO=${merchant.publicKey()}
@@ -282,6 +388,7 @@ SELLER_PORT=4031
 # Buyer — classic keypair (works with buyer-classic.mjs)
 PAYER_SECRET=${payer.secret()}
 # Simulate-only, never charged, never signs. MUST differ from the payer.
+# Needed by buyer.mjs (smart account) ONLY — buyer-classic.mjs ignores it.
 SIM_SOURCE_ACCOUNT=${simSource.publicKey()}
 ${
   walletId
@@ -301,7 +408,6 @@ Next:
   2. Pay it (classic keypair — the values above are already in .env.recording):
        RESOURCE_URL=http://127.0.0.1:4031/quote \\
        PAYER_SECRET=${payer.secret()} \\
-       SIM_SOURCE_ACCOUNT=${simSource.publicKey()} \\
        node buyer-classic.mjs
 
   Roughly 1 settle in 3 fails on testnet with an empty transaction — retry it.

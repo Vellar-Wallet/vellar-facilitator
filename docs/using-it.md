@@ -25,8 +25,44 @@ Both roles need this, and it is the step most likely to stop you before you
 start.
 
 The facilitator settles in a **SEP-41 token, and it does not care which one.**
-There is no canonical asset, no built-in test token, and no faucet. You bring a
-token you control.
+It ships no token of its own and runs no faucet, so you need to decide which
+token you are transacting in before anything else works.
+
+Two options, and the first is newer advice than the rest of this page:
+
+**Canonical testnet USDC.** `@x402/stellar` ships its address, so it is the
+closest thing to a default the ecosystem has:
+
+```
+CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
+  → USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5, 7 decimals
+```
+
+**You can obtain it with no faucet and no human step** — verified end to end on
+2026-08-12:
+
+```sh
+cd examples && USE_USDC=1 node provision-testnet.mjs
+```
+
+Circle's testnet issuer sets `auth_required: false`, so trustlines are
+permissionless, and there is a live XLM/USDC market on the testnet DEX. The
+script funds an account from friendbot, opens the trustline, and buys USDC with
+a path payment — **10 USDC cost 5.59 XLM** against a 10,000 XLM friendbot grant,
+so the budget is not close to binding. A full x402 payment then settled in it
+(`f9b743c5…`, merchant balance reconciling exactly).
+
+Use USDC when two parties who have never met need to transact. Agent-to-agent
+payment requires an asset both sides already accept, and a token you minted
+yourself is one nobody else holds.
+
+**A token you mint yourself.** The default, and still the right choice for
+walking the loop: fully self-contained, no dependency on an external market, and
+you can mint as much as you want. Correspondingly useless to anyone but you.
+
+```sh
+cd examples && node provision-testnet.mjs
+```
 
 **You cannot use the demo seller's token.** The `X402TST` asset (`CDYCX4PE…`)
 advertised by `vellar-seller-demo` was minted by an issuer keypair generated
@@ -112,12 +148,18 @@ cd examples
 PAYTO=G... ASSET=C... PRICE_ATOMIC=1000000 node seller.mjs
 ```
 
-It refuses to boot if that pair cannot be paid: `PAYTO` must be a funded account
-holding a **trustline to `ASSET`**. Without the trustline every payment verifies
+It refuses to boot in two cases. First, if that pair cannot be paid: `PAYTO` must
+be a funded account holding a **trustline to `ASSET`**. Without the trustline every payment verifies
 and then fails at settlement, with an on-chain error that reads exactly like a
 spend control refusing it — so the check happens once, at boot, and names the
 fix. `SKIP_TRUSTLINE_CHECK=1` bypasses it; an unreachable RPC warns rather than
 blocks.
+
+Second, if booting would pollute shared state: an **unverifiable resource URL
+pointed at a non-local facilitator** is refused, because the first settlement
+would write a permanent public entry nobody can remove. See [§ Your first
+settlement writes to a shared
+catalog](#your-first-settlement-writes-to-a-shared-catalog-permanently).
 
 ### What your 402 must declare
 
@@ -260,28 +302,39 @@ needs [runbook §1](./operator-runbook.md).
 | The **payment asset**, and a trustline to it | **XLM for fees** — the facilitator's sponsor pays them |
 | A Stellar signer: a plain classic keypair **or** a smart account | An account on this facilitator. No signup, no key, no allowlist |
 
-**A smart account is optional, and both paths have working code.**
+**A smart account is optional, and both paths have working code — but they are
+not equally easy, and the difference is upstream, not here.**
 
-| Payer | Example | Use it when |
-| --- | --- | --- |
-| **Classic keypair** | `examples/buyer-classic.mjs` | You just want to pay. No extra dependencies. |
-| **Vellar smart account** | `examples/buyer.mjs` | You want an agent whose budget is enforced on-chain by a policy contract. |
+| Payer | Example | Built on | Use it when |
+| --- | --- | --- | --- |
+| **Classic keypair** | `examples/buyer-classic.mjs` | The **official** x402 client | You just want to pay. ~12 lines. |
+| **Vellar smart account** | `examples/buyer.mjs` | Hand-rolled, of necessity | You want an agent whose budget is enforced on-chain by a policy contract. |
 
-The classic example is the smaller one and is proven against this facilitator
-(settlement `6cf8091c…`). The smart-account example exists because of the "agent
-with a budget" pattern: policy-governed accounts run their policy inside
-`__check_auth`, which pushes the simulated fee to ~130k stroops, and
-facilitators defaulting to a 50k ceiling reject them. This one defaults to
-500,000.
+The classic path is the one to copy. It is proven against this facilitator
+(settlement `9512a079…`) and it delegates everything to
+`@x402/stellar/exact/client` plus `@x402/core/client` — no custom SDK, no
+hand-assembled transaction, no hand-signed auth entry.
 
-**Whichever you use, simulate from a different account than the payer.** Both
-examples take a `SIM_SOURCE_ACCOUNT`: any funded account, never charged, never
-signs. It exists because the facilitator **rebuilds the transaction with itself
-as the source** before submitting, so your source is only ever used to simulate
-— but if the payer *is* that source, Soroban authorizes the transfer with
-source-account credentials, and the scheme accepts only address credentials
-(`invalid_exact_stellar_payload_unsupported_credential_type`). Simulating from a
-separate account is what produces an auth entry you can sign detached.
+The smart-account example exists for the "agent with a budget" pattern:
+policy-governed accounts run their policy inside `__check_auth`, which pushes the
+simulated fee to ~130k stroops, and facilitators defaulting to a 50k ceiling
+reject them. This one defaults to 500,000.
+
+It is hand-rolled because **the official client cannot express a smart-account
+signature today.** `AssembledTransaction.signAuthEntries` narrows your signer's
+result to a naked buffer, which routes to the ed25519 branch of `authorizeEntry`
+and throws on a C-address. The SDK's `{ signatureScVal }` escape hatch — added
+for exactly this case — is not reachable through the x402 client scheme. Details
+and the proposed fix: [`upstream-issue-smart-accounts.md`](./upstream-issue-smart-accounts.md).
+
+**You do not need a second funded account.** Earlier revisions of this page told
+you to pass a `SIM_SOURCE_ACCOUNT` different from the payer, because simulating
+from the payer yields source-account credentials that the scheme rejects
+(`invalid_exact_stellar_payload_unsupported_credential_type`). That was a
+consequence of building the transaction by hand. The official client simulates
+from the SDK's null account, so the payer is never the transaction source and the
+failure cannot arise. `buyer-classic.mjs` ignores the variable if you still have
+it set. `buyer.mjs` still needs one.
 
 ### Discovering resources
 
@@ -310,38 +363,45 @@ filter on `verified_only`; it is inert here and returns nothing.
 
 ### Paying
 
-```
-1. GET the resource                    → 402 + PAYMENT-REQUIRED header
-2. Build the SEP-41 transfer            (from you, to payTo, amount)
-3. Sign your auth entry
-4. Echo required.extensions into the payload   ← this is what catalogs it
-5. Retry with PAYMENT-SIGNATURE: base64(payload) → 200 + content
+With a classic keypair, the whole thing is three steps and the middle one is a
+single call:
+
+```js
+const signer = createEd25519Signer(PAYER_SECRET, "stellar:testnet");
+const client = new x402Client().register("stellar:testnet", new ExactStellarScheme(signer, { url: RPC_URL }));
+const http = new x402HTTPClient(client);
+
+const unpaid = await fetch(RESOURCE_URL);                                  // 402
+const required = http.getPaymentRequiredResponse(n => unpaid.headers.get(n));
+const payload = await client.createPaymentPayload(required);               // builds + signs
+const paid = await fetch(RESOURCE_URL, { headers: http.encodePaymentSignatureHeader(payload) });
 ```
 
+`createPaymentPayload` assembles the SEP-41 transfer, signs your auth entry, sets
+expiry from the seller's `maxTimeoutSeconds`, **and echoes the seller's
+`extensions` into the payload** — the last of which is what makes the facilitator
+catalog the resource. You do not register a client-side extension to get that;
+the merge is unconditional.
+
 **Copy from `examples/buyer-classic.mjs`** (classic keypair) or
-`examples/buyer.mjs` (smart account). Both are the exact signing code proven
-against this facilitator; the auth-entry shape is the part worth not
-reinventing.
+`examples/buyer.mjs` (smart account).
 
 ```sh
 cd examples
-RESOURCE_URL=https://your-seller/quote \
-PAYER_SECRET=S... SIM_SOURCE_ACCOUNT=G... \
-node buyer-classic.mjs
+RESOURCE_URL=https://your-seller/quote PAYER_SECRET=S... node buyer-classic.mjs
 ```
 
-The two differ only in step 3. A classic account signs its auth entry with a vec
-of `{ public_key, signature }` maps; a smart account signs with its own
-contract-defined `SignerKey`/`Signature` shape. Everything else — the transfer,
-the extension echo, the retry — is identical.
+One thing that will cost you time otherwise:
 
-Two things that will cost you time otherwise:
+- **Signatures expire in ledgers (~5s each), not wall-clock.** The scheme derives
+  the expiry ledger from `maxTimeoutSeconds` at signing time. Do not cache a
+  signed payload — sign a fresh one per attempt, which also matters because
+  retrying a failed settle is mandatory (see below).
 
-- **Step 4 is not optional if you want discovery to work.** Echoing the
-  extensions is what tells the facilitator to catalog the resource. Skip it and
-  the payment succeeds and nothing is listed.
-- **Signatures expire in ledgers (~5s each), not wall-clock.** The examples sign
-  for current + 12. Do not cache a signed payload.
+If you are writing the payer by hand instead — as `buyer.mjs` must — the flow
+underneath is: GET → 402, build the SEP-41 transfer, sign the auth entry, echo
+`required.extensions`, retry with `PAYMENT-SIGNATURE`. Skipping the echo still
+pays, but lists nothing.
 
 ---
 
@@ -420,10 +480,18 @@ Nothing breaks, and your payments are unaffected. The cost is borne by everyone
 reading the catalog: agents see a localhost URL they cannot call, listed
 alongside real resources.
 
+**`seller.mjs` now refuses to boot in exactly this combination** — an
+unverifiable resource URL (http, loopback, private range) pointed at a
+non-local facilitator — and names both fixes: run a local facilitator, or set
+`PUBLIC_BASE_URL`. It is deliberately narrow: a public seller on the hosted
+instance is the normal deployed case and is untouched, as is a localhost seller
+on a localhost facilitator. `ALLOW_UNVERIFIABLE_ON_SHARED=1` overrides it if you
+genuinely mean it.
+
 **If you would rather not leave one:** run your own facilitator for the
 walkthrough (`docs/guide.md`, one command and a local database), and point at the
 hosted instance only once your seller has a public https URL. If you do settle
-from localhost, that is accepted and expected here — just do it knowing it is a
+from localhost deliberately, that is accepted here — just do it knowing it is a
 one-way write to shared state.
 
 ### About that settle failure

@@ -19,13 +19,16 @@ roles, two scripts, both in `examples/`.
 
   ```sh
   cd examples && node provision-testnet.mjs
+  # or, to use canonical testnet USDC instead of minting a throwaway token:
+  cd examples && USE_USDC=1 node provision-testnet.mjs
   ```
 
-  There is no built-in test token and no faucet — the facilitator settles in
-  whatever SEP-41 asset you name, so you bring your own. The demo seller's
-  `X402TST` **cannot be acquired by anyone**: its issuer secret no longer
-  exists. See [`using-it.md` § First: bring your own payment
-  asset](./using-it.md#first-bring-your-own-payment-asset).
+  The facilitator settles in whatever SEP-41 asset you name and ships none of
+  its own. Minting one is right for this walkthrough; canonical testnet USDC
+  (`CBIELTK6…`) is right when strangers need to transact in something they both
+  already hold. The demo seller's `X402TST` **cannot be acquired by anyone**:
+  its issuer secret no longer exists. See [`using-it.md` § First: bring your own
+  payment asset](./using-it.md#first-bring-your-own-payment-asset).
 
 - A **payer signer**: a plain classic keypair (`buyer-classic.mjs`) or a Vellar
   smart account with an ed25519 session key (`buyer.mjs`, the "agent with a
@@ -96,22 +99,18 @@ extension.
 The buyer flow, condensed:
 
 1. `GET` the resource → decode the `PAYMENT-REQUIRED` header.
-2. Build the SEP-41 `transfer(from = your account, to = payTo, amount)`.
-3. Sign the payer's auth entry (the examples sign with an ed25519 session
-   key as V1 address credentials — the pattern proven against this
-   facilitator; see `buyer.mjs` for the exact signing code).
-4. **Echo `required.extensions` into the payment payload** — this is what
+2. `client.createPaymentPayload(required)` — the official scheme builds the
+   SEP-41 `transfer(from = you, to = payTo, amount)`, signs your auth entry,
+   sets ledger-based expiry, and **echoes `required.extensions`**, which is what
    lets the facilitator catalog the resource for discovery.
-5. Retry with `PAYMENT-SIGNATURE: base64(paymentPayload)` → `200` + the
+3. Retry with `PAYMENT-SIGNATURE: base64(paymentPayload)` → `200` + the
    content + the on-chain settlement hash.
 
 ```sh
 cd examples
 
-# Classic keypair — the smaller path, no extra dependencies.
-RESOURCE_URL=http://127.0.0.1:4031/quote \
-PAYER_SECRET=S... SIM_SOURCE_ACCOUNT=G... \
-node buyer-classic.mjs
+# Classic keypair — the smaller path, built on the official x402 client.
+RESOURCE_URL=http://127.0.0.1:4031/quote PAYER_SECRET=S... node buyer-classic.mjs
 
 # Or a Vellar smart account, for an on-chain enforced budget.
 RESOURCE_URL=http://127.0.0.1:4031/quote \
@@ -125,11 +124,15 @@ node buyer.mjs
 asset](./using-it.md#first-bring-your-own-payment-asset) and
 [`walkthrough-wallet-spec.md`](./walkthrough-wallet-spec.md).
 
-`SIM_SOURCE_ACCOUNT` must be a **different** account from the payer. The
-facilitator rebuilds the transaction with itself as the source, so yours is used
-only to simulate — but simulating from the payer yields source-account
-credentials, which the scheme rejects
-(`invalid_exact_stellar_payload_unsupported_credential_type`).
+**Only `buyer.mjs` needs `SIM_SOURCE_ACCOUNT`**, and it must be a **different**
+account from the payer: the facilitator rebuilds the transaction with itself as
+the source, so yours is used only to simulate — but simulating from the payer
+yields source-account credentials, which the scheme rejects
+(`invalid_exact_stellar_payload_unsupported_credential_type`). `buyer-classic.mjs`
+does not need it, because the official client simulates from the SDK's null
+account. That is also the only reason `buyer.mjs` is hand-rolled at all — the
+official client cannot sign for a smart account; see
+[`upstream-issue-smart-accounts.md`](./upstream-issue-smart-accounts.md).
 
 Expect to retry: roughly one settle in three fails on testnet with an empty
 `transaction`. Nothing is spent when that happens.

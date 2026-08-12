@@ -237,9 +237,16 @@ locally and walking the loop with both example scripts.
 
 - **`seller.mjs`** — an Express API with one paid route that declares the
   bazaar discovery extension (price, input schema, output example).
+- **`buyer-classic.mjs`** — a plain Stellar keypair pays it, built entirely on
+  the **official** x402 client (`@x402/stellar/exact/client` +
+  `@x402/core/client`). ~12 lines of payment logic: no hand-assembled
+  transaction, no hand-signed auth entry, no second funded account, and the
+  discovery extension is echoed for you.
 - **`buyer.mjs`** — an agent pays it from a Vellar smart account with an
   ed25519 session key (V1 credentials), echoing the discovery extension so
-  the facilitator catalogs the resource on settlement.
+  the facilitator catalogs the resource on settlement. Hand-rolled by
+  necessity: the official client cannot sign for a smart account
+  ([`docs/upstream-issue-smart-accounts.md`](./docs/upstream-issue-smart-accounts.md)).
 
 See [`docs/guide.md`](./docs/guide.md) for the walkthrough.
 

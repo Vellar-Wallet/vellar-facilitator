@@ -164,3 +164,28 @@ services:
       # permanently unverified.
       - key: PUBLIC_BASE_URL
         value: "https://vellar-seller-demo.onrender.com"
+      # PINNED DELIBERATELY. These were previously unset, so the deployed demo
+      # silently inherited seller.mjs's built-in defaults — meaning an edit to a
+      # source default would change what a PUBLIC service advertises, with no
+      # sign of it in this file.
+      #
+      # The demo previously advertised the DEAD X402TST asset, whose issuer
+      # secret no longer exists. Nobody could obtain a balance, so nobody could
+      # pay it, so the catalog entry was frozen at ownerVerified:false — the
+      # badge only re-checks on the next settlement, and no settlement was
+      # possible. See docs/diagnosis-demo-listing.md.
+      #
+      # Now: canonical testnet USDC, which anyone can obtain from the DEX with
+      # no faucet (examples/provision-testnet.mjs USE_USDC=1). The resource is
+      # payable by strangers for the first time.
+      #
+      # PAYTO is a new merchant holding a live USDC trustline. The catalog's URL
+      # binding still points at the old GBJX3E4G… address, whose secret is not
+      # known to be held. That resolves itself WITHOUT operator involvement: the
+      # old binding was never verified, so the first settlement naming this
+      # address displaces it. Runbook §1 is only needed to move an
+      # already-verified binding.
+      - key: PAYTO
+        value: "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC"
+      - key: ASSET
+        value: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
