@@ -19,6 +19,8 @@ roles, two scripts, both in `examples/`.
 
   ```sh
   cd examples && node provision-testnet.mjs
+  # or, to use canonical testnet USDC instead of minting a throwaway token:
+  cd examples && USE_USDC=1 node provision-testnet.mjs
   ```
 
   The facilitator settles in whatever SEP-41 asset you name and ships none of

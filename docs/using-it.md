@@ -38,20 +38,31 @@ CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
   → USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5, 7 decimals
 ```
 
-Verified live: the contract exists on testnet and the asset sets
-`auth_required: false`, so **anyone can open a trustline without the issuer's
-permission**. Use it when you want two parties who have never met to transact —
-agent-to-agent payment needs an asset both sides already accept, and a token you
-minted yourself is one nobody else holds.
+**You can obtain it with no faucet and no human step** — verified end to end on
+2026-08-12:
 
-What is *not* verified here: how you obtain a **balance**. Trustlines are
-permissionless; the tokens still have to come from a faucet or another holder.
-Confirm that before committing to this path.
+```sh
+cd examples && USE_USDC=1 node provision-testnet.mjs
+```
 
-**A token you mint yourself.** Fully self-contained, no faucet, no external
-dependency — and correspondingly useless to anyone but you. Right for walking
-the loop and for testing your own integration end to end. That is what
-`provision-testnet.mjs` below produces.
+Circle's testnet issuer sets `auth_required: false`, so trustlines are
+permissionless, and there is a live XLM/USDC market on the testnet DEX. The
+script funds an account from friendbot, opens the trustline, and buys USDC with
+a path payment — **10 USDC cost 5.59 XLM** against a 10,000 XLM friendbot grant,
+so the budget is not close to binding. A full x402 payment then settled in it
+(`f9b743c5…`, merchant balance reconciling exactly).
+
+Use USDC when two parties who have never met need to transact. Agent-to-agent
+payment requires an asset both sides already accept, and a token you minted
+yourself is one nobody else holds.
+
+**A token you mint yourself.** The default, and still the right choice for
+walking the loop: fully self-contained, no dependency on an external market, and
+you can mint as much as you want. Correspondingly useless to anyone but you.
+
+```sh
+cd examples && node provision-testnet.mjs
+```
 
 **You cannot use the demo seller's token.** The `X402TST` asset (`CDYCX4PE…`)
 advertised by `vellar-seller-demo` was minted by an issuer keypair generated
