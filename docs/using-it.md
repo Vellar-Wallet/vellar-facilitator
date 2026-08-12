@@ -461,13 +461,13 @@ Plainly, because the answer differs a lot by use case.
 Point a client at the hosted instance and try the loop. The full path is
 live-proven with transaction hashes: a smart account paid a discoverable
 resource, this facilitator settled it on-chain, and the resource became
-searchable. Expect the five annoyances above.
+searchable. Expect the six annoyances above.
 
 ### Ready — self-hosting for something real
 
 Run your own instance. The code is the part that has been reviewed hardest: a
 full pre-mainnet security audit with every finding tracked to closure
-([`closing-state.md`](./closing-state.md)), 327 tests, and mutation-verified
+([`closing-state.md`](./closing-state.md)), 342 tests, and mutation-verified
 controls. You supply a funded sponsor account and a libSQL/Turso database.
 
 What you inherit that is genuinely yours to run: the sponsor pays every
@@ -479,8 +479,9 @@ confusingly on-chain.
 
 Do not. Three reasons, none of them about the code:
 
-1. **It is a free-tier testnet demo.** One instance, no uptime commitment, a 50s
-   cold start, and a sponsor account funded for demonstration.
+1. **It is a free-tier testnet demo.** One instance, no uptime commitment, a
+   ~45s cold start at any hour (there is no reliable warm window), and a sponsor
+   account funded for demonstration.
 2. **`stellar:testnet` only.** Testnet assets are not money.
 3. **Spend controls are log-only on testnet.** The protections against a funded
    attacker are not enforced in the environment you would be evaluating them in.
