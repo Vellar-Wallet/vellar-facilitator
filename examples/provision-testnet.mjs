@@ -78,6 +78,7 @@ const MERCHANT_SEED_UNITS = "1"; // so the merchant's trustline is visibly live
  * from the asset rather than pasted, so it cannot drift from the issuer above.
  */
 const USE_USDC = process.env.USE_USDC === "1";
+const SKIP_FINAL_VERIFY = process.env.SKIP_FINAL_VERIFY === "1";
 const USDC_ISSUER = process.env.USDC_ISSUER || "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const USDC_ACQUIRE_UNITS = process.env.USDC_ACQUIRE_UNITS || "100";
 // Cap on XLM spent buying that. Generous against a thin testnet order book, and
@@ -341,17 +342,21 @@ if (agentPublic) {
   console.log("[6/7] skipping the smart account (set AGENT_PUBLIC to create one)");
 }
 
-console.log("[7/7] verifying on-chain state…");
-for (const [label, kp] of [
-  ["merchant", merchant],
-  ["payer", payer],
-]) {
-  const acct = await (await fetch(`${HORIZON}/accounts/${kp.publicKey()}`)).json();
-  const line = (acct.balances ?? []).find(
-    (b) => b.asset_code === assetCode && b.asset_issuer === assetIssuer,
-  );
-  if (!line) throw new Error(`${label} trustline missing after provisioning`);
-  console.log(`  ok — ${label} balance: ${line.balance}`);
+if (SKIP_FINAL_VERIFY) {
+  console.log("[7/7] skipping on-chain state verification (SKIP_FINAL_VERIFY=1)");
+} else {
+  console.log("[7/7] verifying on-chain state…");
+  for (const [label, kp] of [
+    ["merchant", merchant],
+    ["payer", payer],
+  ]) {
+    const acct = await (await fetch(`${HORIZON}/accounts/${kp.publicKey()}`)).json();
+    const line = (acct.balances ?? []).find(
+      (b) => b.asset_code === assetCode && b.asset_issuer === assetIssuer,
+    );
+    if (!line) throw new Error(`${label} trustline missing after provisioning`);
+    console.log(`  ok — ${label} balance: ${line.balance}`);
+  }
 }
 
 console.log(`
