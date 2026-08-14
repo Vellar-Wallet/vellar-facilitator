@@ -47,9 +47,12 @@ describe("pagination.total counts what the caller can page through", () => {
     await catalog.upsertFromPayment(disc("https://a.example/one"), reqs("GA"));
     await catalog.upsertFromPayment(disc("https://b.example/two"), reqs("GB"));
 
-    // No verification API configured, which is the deployed reality: every
-    // verdict is "unknown", so verified_only filters everything out.
-    const trust = createTrustResolver({ verificationApiUrl: undefined, rpcUrl: "https://rpc.invalid" });
+    // A CONFIGURED verdict source whose answer is "unverified" for everything.
+    // This test used to run with no source at all — the deployed reality — but
+    // that case is now refused with a 400 rather than answered (see the
+    // refusal suite below), so the total-agrees-with-items concern needs a
+    // deployment where the filter legitimately drops entries.
+    const trust = { hasVerdictSource: true, assetStatus: async () => "unverified" as const };
     const app = await buildServer(buildFacilitator(testConfig), catalog, trust);
 
     const unfiltered = (await app.inject({ method: "GET", url: "/discovery/resources" })).json();
@@ -64,6 +67,48 @@ describe("pagination.total counts what the caller can page through", () => {
       filtered.pagination.total,
       "total must agree with items — a self-contradicting page teaches clients to trust nothing in it",
     ).toBe(0);
+  });
+
+  it("verified_only with NO verdict source is refused, not answered with an empty list", async () => {
+    // The old behaviour was `items: []` — a correct-LOOKING answer to a
+    // question this deployment cannot answer. A caller read it as "nothing
+    // here is verified" when the truth was "this deployment cannot tell".
+    //
+    // MUTATION THAT MUST BREAK THIS: drop the hasVerdictSource gate and let
+    // the filter run over all-"unknown" verdicts. The 400 becomes a silent 200.
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(disc("https://a.example/one"), reqs("GA"));
+    const trust = createTrustResolver({ verificationApiUrl: undefined, rpcUrl: "https://rpc.invalid" });
+    const app = await buildServer(buildFacilitator(testConfig), catalog, trust);
+
+    for (const url of [
+      "/discovery/resources?verified_only=true",
+      "/discovery/search?query=one&verified_only=true",
+    ]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode, url).toBe(400);
+      const body = res.json();
+      expect(body.error).toBe("verified_only_unavailable");
+      expect(body.reason).toBe("no_verdict_source_configured");
+      expect(body.detail, "must point at the signal that works").toContain("ownerVerified");
+    }
+
+    // Without the filter the same deployment answers normally.
+    const plain = await app.inject({ method: "GET", url: "/discovery/resources" });
+    expect(plain.statusCode).toBe(200);
+    expect(plain.json().items).toHaveLength(1);
+  });
+
+  it("verified_only with NO trust layer at all is refused too — it used to return everything", async () => {
+    // The quietly WORSE case: with no resolver, the filter was ignored
+    // entirely, so a caller asking for verified-only entries got every entry.
+    const catalog = await BazaarCatalog.create();
+    await catalog.upsertFromPayment(disc("https://a.example/one"), reqs("GA"));
+    const app = await buildServer(buildFacilitator(testConfig), catalog, undefined);
+
+    const res = await app.inject({ method: "GET", url: "/discovery/resources?verified_only=true" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("verified_only_unavailable");
   });
 
   it("an unfiltered request is untouched", async () => {

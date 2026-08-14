@@ -38,7 +38,7 @@ The catalog survives either way: it lives in libSQL/Turso rather than on the
 container, so your listings and ownership bindings are there when it wakes.
 
 **2. THE TRUST LAYER IS INERT HERE. Every verification badge reads `"unknown"`,
-and `?verified_only=true` returns an empty list.** Not a bug and not
+and `?verified_only=true` is refused with an explicit 400.** Not a bug and not
 misconfiguration:
 
 ```json
@@ -83,12 +83,13 @@ both must be true before one would be worth trusting.
 | `ownerVerified` | **working, proven live** | Whether the resource's own 402 challenge names its bound `payTo` — fetched by this facilitator, no external service involved |
 
 So ownership verification works and is enforced; *reputation* verification is
-switched off. If you filter on `verified_only`, you are filtering on the inert
-one and will get nothing.
+switched off. If you filter on `verified_only`, you are asking about the inert
+one, and the API now says so instead of pretending: a 400 with
+`verified_only_unavailable` and a pointer at `ownerVerified`.
 
-**A rough edge, so it does not surprise you twice:** `verified_only=true` filters
-`items` but `pagination.total` still reports the unfiltered count, so you will
-see `items: []` alongside `total: 1`.
+That refusal replaced an older, worse behaviour: a silent `items: []` — a
+correct-looking answer to a question this deployment cannot answer, which read
+as "nothing here is verified" when the truth was "nothing is being checked".
 
 ## What it does
 
@@ -101,9 +102,10 @@ see `items: []` alongside `total: 1`.
 | `GET /discovery/search` | Keyword search over the catalog — tokenized and relevance-scored, not semantic (`query`, same filters, cursor-paginated) |
 | `GET /health` | Liveness, plus the deployed `commit`, `uptimeSeconds`, `catalogSize`, `catalogFrozen` when bindings are frozen, and `unverifiableEntries` when any seller advertises an address the facilitator cannot fetch |
 
-† `verified_only` returns an **empty list** on this deployment. The verdicts it
-filters on come from a service that is deployed nowhere — see *Two things to
-know* above. `ownerVerified` is the field that works.
+† `verified_only` is **refused with a 400** (`verified_only_unavailable`) on
+this deployment. The verdicts it filters on come from a service that is deployed
+nowhere — see *Two things to know* above — so an empty list would describe the
+deployment, not the resources. `ownerVerified` is the field that works.
 
 **Smart accounts welcome.** Policy-governed smart-account payments cost ~130k
 stroops of simulation fee (the policy contract runs inside `__check_auth`);
@@ -139,7 +141,7 @@ before you build on it:
   permanently unverified. `PUBLIC_BASE_URL` is how the example declares its real
   address; `/health` reports `unverifiableEntries` when any entry is in this state.
 - **Verification verdicts read `"unknown"` on this deployment and
-  `?verified_only=true` returns nothing** — see *Two things to know* at the top.
+  `?verified_only=true` is refused with a 400** — see *Two things to know* at the top.
   `ownerVerified` is the field that does work here.
 
 ## Integration limits

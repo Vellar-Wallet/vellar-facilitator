@@ -85,6 +85,15 @@ export const TRUST_LIMITS = Object.freeze({
 export interface TrustResolver {
   /** Verification verdict for one contract id (cached). */
   assetStatus(contractId: string): Promise<TrustVerification>;
+  /**
+   * Whether a verdict source is configured at all. When false, every
+   * `assetStatus` answer is the constant "unknown" — so a filter on
+   * `verification === "verified"` can never match anything, and serving an
+   * empty list for it is a correct-looking answer to a question this
+   * deployment cannot answer. Routes read this to refuse that question
+   * loudly instead (see server.ts, verified_only).
+   */
+  readonly hasVerdictSource: boolean;
 }
 
 export interface TrustResolverOptions {
@@ -223,6 +232,7 @@ export function createTrustResolver(options: TrustResolverOptions): TrustResolve
   }
 
   return {
+    hasVerdictSource: Boolean(options.verificationApiUrl),
     async assetStatus(contractId) {
       if (!options.verificationApiUrl) return "unknown";
 

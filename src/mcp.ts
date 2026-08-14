@@ -41,13 +41,35 @@ const sharedFilters = {
 
 /** Trust-layer client-side filter: keeps wire compatibility with the canonical
  * bazaar client (which has no verified_only param) by filtering on the
- * additive `trust.verification` field the facilitator annotates. */
+ * additive `trust.verification` field the facilitator annotates.
+ *
+ * Returns a `note` alongside the filtered items when the filter is being asked
+ * a question the facilitator visibly cannot answer: if EVERY observed verdict
+ * is "unknown", the deployment has no verdict source, and an empty result
+ * describes the deployment rather than the resources. This server cannot see
+ * the facilitator's config, so it reasons from what it observed — which is
+ * also why the note only appears when there were items to observe. The note is
+ * data for the model, not an error: silently returning [] taught agents that
+ * nothing is trustworthy, when the truth was that nothing was being checked. */
 function applyVerifiedOnly<T extends { trust?: { verification?: string } }>(
   items: T[],
   verifiedOnly: boolean | undefined,
-): T[] {
-  if (!verifiedOnly) return items;
-  return items.filter((item) => item.trust?.verification === "verified");
+): { items: T[]; note?: string } {
+  if (!verifiedOnly) return { items };
+  const filtered = items.filter((item) => item.trust?.verification === "verified");
+  const allUnknown =
+    items.length > 0 && items.every((item) => (item.trust?.verification ?? "unknown") === "unknown");
+  if (allUnknown) {
+    return {
+      items: filtered,
+      note:
+        "verified_only matched nothing, and every verdict this facilitator returned was \"unknown\" — " +
+        "which means it has no verification service configured, not that these resources failed a check. " +
+        "Do not read this as \"nothing is trustworthy\". For a per-resource trust signal that does work " +
+        "here, read trust.ownerVerified.",
+    };
+  }
+  return { items: filtered };
 }
 
 /**
@@ -83,13 +105,19 @@ server.registerTool(
   },
   async ({ verified_only, ...params }) => {
     const result = await bazaar.listResources(compact(params));
-    const items = frameDescriptions(
-      applyVerifiedOnly(
-        result.items as Array<(typeof result.items)[number] & { trust?: { verification?: string } }>,
-        verified_only,
-      ),
+    const { items: filtered, note } = applyVerifiedOnly(
+      result.items as Array<(typeof result.items)[number] & { trust?: { verification?: string } }>,
+      verified_only,
     );
-    return { content: [{ type: "text", text: JSON.stringify({ ...result, items }, null, 2) }] };
+    const items = frameDescriptions(filtered);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ...result, items, ...(note ? { verifiedOnlyNote: note } : {}) }, null, 2),
+        },
+      ],
+    };
   },
 );
 
@@ -108,16 +136,24 @@ server.registerTool(
   },
   async ({ verified_only, ...params }) => {
     const result = await bazaar.search(compact(params) as { query: string });
-    const resources = frameDescriptions(
-      applyVerifiedOnly(
-        result.resources as Array<
-          (typeof result.resources)[number] & { trust?: { verification?: string } }
-        >,
-        verified_only,
-      ),
+    const { items: filtered, note } = applyVerifiedOnly(
+      result.resources as Array<
+        (typeof result.resources)[number] & { trust?: { verification?: string } }
+      >,
+      verified_only,
     );
+    const resources = frameDescriptions(filtered);
     return {
-      content: [{ type: "text", text: JSON.stringify({ ...result, resources }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            { ...result, resources, ...(note ? { verifiedOnlyNote: note } : {}) },
+            null,
+            2,
+          ),
+        },
+      ],
     };
   },
 );

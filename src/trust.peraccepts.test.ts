@@ -9,7 +9,7 @@ import { annotateTrust, type TrustedDiscoveryResource, type TrustResolver } from
 // is the strict minimum across accepts, further clamped by owner-verification.
 
 function resolver(map: Record<string, "verified" | "unverified" | "unknown">): TrustResolver {
-  return { assetStatus: async (id) => map[id] ?? "unknown" };
+  return { hasVerdictSource: true, assetStatus: async (id) => map[id] ?? "unknown" };
 }
 
 function item(assets: string[], resource = "https://api.example.com/r"): TrustedDiscoveryResource {

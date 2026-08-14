@@ -25,7 +25,7 @@ function historyResponse(status: string, outputHash?: string) {
 }
 
 function fixedResolver(map: Record<string, "verified" | "unverified" | "unknown">): TrustResolver {
-  return { assetStatus: async (id) => map[id] ?? "unknown" };
+  return { hasVerdictSource: true, assetStatus: async (id) => map[id] ?? "unknown" };
 }
 
 function item(asset: string | string[], over: Partial<TrustedDiscoveryResource> = {}): TrustedDiscoveryResource {
