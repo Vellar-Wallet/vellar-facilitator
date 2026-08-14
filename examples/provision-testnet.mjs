@@ -341,17 +341,37 @@ if (agentPublic) {
   console.log("[6/7] skipping the smart account (set AGENT_PUBLIC to create one)");
 }
 
+// This was the ONE unprotected network read in the script, and it failed often
+// enough that someone proposed a flag to skip it (#53, rejected). The cause is
+// not a bad check — it is that every transaction above was confirmed on SOROBAN
+// RPC, while this reads HORIZON. Two services, independent ingestion, and
+// Horizon lags. `fundAndWait` already exists because friendbot has the same
+// shape of problem.
+//
+// So it retries like everything else here, and still fails LOUDLY when the
+// trustline genuinely is not there. Skipping it instead would let broken
+// provisioning print a clean env block, and the developer would discover it at
+// settlement — where a missing trustline reads exactly like a spend control
+// refusing the payment, which is the misdiagnosis preflightMerchant() exists to
+// prevent.
 console.log("[7/7] verifying on-chain state…");
 for (const [label, kp] of [
   ["merchant", merchant],
   ["payer", payer],
 ]) {
-  const acct = await (await fetch(`${HORIZON}/accounts/${kp.publicKey()}`)).json();
-  const line = (acct.balances ?? []).find(
-    (b) => b.asset_code === assetCode && b.asset_issuer === assetIssuer,
-  );
-  if (!line) throw new Error(`${label} trustline missing after provisioning`);
-  console.log(`  ok — ${label} balance: ${line.balance}`);
+  const balance = await retry(`verify-${label}`, async () => {
+    const res = await fetch(`${HORIZON}/accounts/${kp.publicKey()}`);
+    if (!res.ok) throw new Error(`horizon returned HTTP ${res.status}`);
+    const acct = await res.json();
+    const line = (acct.balances ?? []).find(
+      (b) => b.asset_code === assetCode && b.asset_issuer === assetIssuer,
+    );
+    // Thrown, not returned, so retry() gets a chance at it — this is the case
+    // that is usually just lag.
+    if (!line) throw new Error(`${label} trustline not visible on Horizon yet`);
+    return line.balance;
+  });
+  console.log(`  ok — ${label} balance: ${balance}`);
 }
 
 console.log(`
