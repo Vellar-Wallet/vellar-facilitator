@@ -1,6 +1,7 @@
 # Decision memo — the fee ceiling, and what it forces
 
-**Status: analysis only. No value changed. Blocked on Test B.**
+**Status: RESOLVED 2026-08-14. Test B landed; `MAX_TX_FEE_STROOPS = 500,000`
+stands; no value changes. See § Resolution at the end.**
 
 Every number below carries its source. Where a number is *simulated* rather than
 settled on-chain it says so, because D-4 was caused by a figure defended as
@@ -13,7 +14,8 @@ settled on-chain it says so, because D-4 was caused by a figure defended as
 | Value | Source |
 | --- | --- |
 | **28,711** stroops charged, **38,888** max_fee | tx `1da6f9e6a90b78da898c99dfefba8821b5f632b72f584968fb057fd8a298e039`, Horizon testnet. **On-chain, hash-verifiable.** |
-| **26,222,858** stroops | **SIMULATED, never submitted.** `simulateTransaction` on the signed payment from `CCXPXAP4…` to `CDYCX4PE…`. Reproduced at 26,314,797 and 26,315,012. No hash exists because nothing settled. |
+| **26,222,858** stroops | **SIMULATED, never submitted — and RETRACTED** (audit D-4): a stale reading from an unhealthy RPC node. The same wallet, same script, re-measured later at **32,655**, four times, from fresh processes. Left in this table because the decision below was framed against it. |
+| **140,331** stroops | **SIMULATED, no hash (nothing settled). Test B, 2026-08-14, SDK side:** a freshly provisioned policy-governed wallet simulating a signed payment. Single reported figure; under D-4's protocol it counts as an observation until independently re-measured — but this decision does not rest on it alone (see Resolution). |
 | **17,714** stroops | **Derived**, not measured: published rates × observed resources (2,836,645 instructions @7/10k; 5 reads @1,563; 3 writes @2,500; 124B read, 420B written). |
 | **1,363,909** / **552,074** | **Simulated** `extendFootprintTtl` to max TTL — asset instance / balance entry. |
 | **127,808** | **No hash. Unverifiable.** Cited in five places as measured; see D-4. |
@@ -114,7 +116,7 @@ papered over.
 
 ---
 
-## Recommendation
+## Recommendation (as written while blocked)
 
 **Change nothing until Test B lands.** If a fresh wallet and fresh SAC also
 simulate at ~26M, the finding is that smart-account payment costs moved
@@ -127,3 +129,45 @@ some way not yet identified, and the walkthrough proceeds unchanged.
 Either way, the six settle-path controls stay unproven until a payment settles,
 and that should be stated as the limit of the exercise rather than engineered
 around.
+
+---
+
+## Resolution — 2026-08-14, Test B landed on the cheap branch
+
+**A freshly provisioned policy-governed wallet simulates a signed payment at
+140,331 stroops** (SDK side; simulated, nothing settled, so no hash). The fresh
+wallet is newer than `CCXPXAP4…` and does strictly *more* work — it runs a
+policy inside `__check_auth` — so if smart-account costs had moved network-wide,
+this is exactly the reading that would have shown it. It did not.
+
+That closes the question from the second flank. Audit D-4 had already closed the
+first: the 26.2M reading was a stale simulation from an unhealthy RPC node, and
+the *same* wallet re-measured at 32,655. Between them, the anomaly is fully
+localized — not a property of the network, and not a property of
+policy-governed wallets as a class.
+
+**The ceiling therefore stands on three independent, mutually consistent
+readings**, which is why the single-figure caveat on 140,331 does not weaken the
+conclusion:
+
+| Reading | Provenance |
+| --- | --- |
+| 28,711 charged | on-chain, hash-verifiable |
+| 32,655 simulated | the spike wallet, re-measured 4x from fresh processes (D-4) |
+| 140,331 simulated | fresh policy-governed wallet, Test B |
+
+Headroom: **500,000 / 140,331 ≈ 3.6×** against the most expensive verified
+reading — a defensible basis for the README's claim, replacing the unverifiable
+127,808 (which lands in the same band, but carries no provenance and stays
+retired per D-4).
+
+**What this resolution does NOT change:**
+
+- §1's cascade analysis survives as method for any future real fee anomaly.
+- §2's product question recedes to theoretical: at ~0.014 XLM per settle,
+  sponsorship is a convenience again, not a cost center.
+- §3 stands in full: **a pubnet ceiling still cannot be derived — it must be
+  measured on pubnet**, and remains part of the pubnet gate (thresholds
+  blocker).
+- The six settle-path controls without live evidence are unchanged by any of
+  this; settlement, not simulation, is what proves them.
