@@ -145,6 +145,36 @@ down (what the operator must verify before editing a binding).
   the demo. Anything sold as "the rotation fix" must say which rows of the
   table it actually covers.
 
+## The live illustration — read this before re-opening the question
+
+Captured from the hosted instance on 2026-08-14, minutes after the O-18 deploy
+(`commit ea7a849`). One entry, one response, both findings visible at once:
+
+```json
+{
+  "resource": "https://vellar-seller-demo.onrender.com/quote/",
+  "accepts": [{ "payTo": "GBJX3E4G…", "asset": "CDYCX4PE…" }],
+  "trust": {
+    "settlements": 0, "uniquePayers": 0, "observedSettlements": 0,
+    "statsSource": "persisted",
+    "verification": "unknown", "acceptsVerification": ["unknown"],
+    "ownerVerified": false,
+    "ownershipState": "proven-unconfirmed"
+  }
+}
+```
+
+This entry is simultaneously the clearest example of **O-18 fixed** and **O-17
+unfixed**: it *says* `proven-unconfirmed` — a diagnosis that previously cost
+three settlements, now one field read — and it *cannot move*, because the
+proof behind that state is latched forever while the address it names has
+rotated away. Both facts correct, both visible in one response.
+
+Whoever re-opens the rotation decision should start from this JSON rather than
+from any description of the problem: every option in this document is a
+different answer to the question "what should happen to this exact entry, and
+to the real merchant who will eventually be in its position?"
+
 ## If we do nothing — the interim position, stated as one
 
 **Adopted 2026-08-14, deliberately.** The decision above waits for a real
