@@ -142,7 +142,7 @@ describe.skipIf(!enabled)("LIVE — Layer 2 over a real network path (manual gat
   it("recovers from a real cold start: times out, waits, then matches", async () => {
     const t0 = Date.now();
     const singleShot = await verifyResourceOwnership(LIVE_URL!, LIVE_PAYTO!, {
-      coldStartRetryDelayMs: 0,
+      coldStartRetryDelaysMs: [],
     });
     const firstMs = Date.now() - t0;
 
