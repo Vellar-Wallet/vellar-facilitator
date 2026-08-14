@@ -68,22 +68,85 @@ something obtainable — the natural choice is canonical testnet USDC
 `USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`, 7 decimals,
 `auth_required: false` so trustlines are permissionless).
 
-**Which path depends on one unanswered question: is the secret for
-`GBJX3E4G…` still held?** The account exists and is funded (9999.99 XLM, 13.0
-X402TST), but the key's whereabouts is not recorded anywhere in this repo.
+The secret for `GBJX3E4G…` is not known to be held — the account exists and is
+funded, but its key's whereabouts is recorded nowhere in this repo. So the demo
+moved to a merchant we control (`GAATVGLR…`) with a live USDC trustline.
 
-| | If the secret is held | If it is lost |
+**The prediction was that displacement would recover the binding automatically.
+It was tested live, and it is false — see below.**
+
+---
+
+## What actually happened, 2026-08-14
+
+The demo was redeployed on canonical USDC and the served 402 was confirmed by
+content:
+
+```
+resource.url : https://vellar-seller-demo.onrender.com/quote
+payTo        : GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC
+asset        : CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
+```
+
+Two payments then settled against it:
+
+| tx | ledger | on-chain |
 | --- | --- | --- |
-| Merchant | Keep `GBJX3E4G…` | Use a merchant you control |
-| Trustline | Add one to USDC on that account | Provision the new merchant with one |
-| Binding | Untouched — `payTo` is unchanged | Transfers by **displacement** on first settlement |
-| Operator involvement | none | none |
+| `bc7e4a157fd8e433…` | 4133889 | successful |
+| `2d1c3c78d3f174c4…` | 4133905 | successful |
 
-The displacement path works here specifically because this binding was **never
-verified**. Runbook §1 is only required to move an already-verified binding.
+The merchant received exactly 0.2 USDC, so both were real. **The catalog did not
+move**: still bound to `GBJX3E4G…`, still advertising the dead asset,
+`ownerVerified: false`, `settlements: 0`.
 
-Then: redeploy the demo with the new `ASSET` (and `PAYTO`, if changed), pay it
-once, and the badge flips to `true` on that settlement.
+Two settlements were used deliberately, because `tryDisplace`'s own contract says
+the settle that *triggers* a displacement is still refused and the next one lands
+normally. The second one did not land either.
+
+### What this rules out
+
+| Suspect | Excluded by |
+| --- | --- |
+| Trailing-slash key mismatch | `normalizePath` strips it; both spellings map to one key |
+| The `everVerified` one-way latch | `ownerVerified` **is** that latch (`annotateTrust` → `isVerifiedOwner`), and it reads false |
+| Catalog frozen | `/health` reports no freeze |
+| Ownership probe timing out | 3s budget; the demo answers warm in ~0.8s |
+| Displacement not wired up | Fires fire-and-forget on every settle (`bazaar.ts`) |
+| "First settle reveals, second lands" | Two were run |
+| **Restoration from storage** | **New test** — a restored *unverified* binding displaces correctly |
+
+That last row was the leading hypothesis and it is wrong. The suite had no
+coverage for "restored, unverified, claimant proves ownership" — every passing
+displacement test built its binding in the same process, and the only restart
+test covered a *verified* binding, where the right answer is "skipped". So a
+test was added for the production shape. **It passes**, which excludes
+restoration rather than reproducing the failure.
+
+### Why it took source-reading to get this far
+
+Every remaining candidate lives behind a guard that returned a bare `"skipped"`.
+Eight of them, no signal, so a displacement that silently did not happen could
+not be diagnosed from outside the process — the same defect as `settle`
+collapsing every submission failure into one constant `errorReason`, and this
+time inside the control built to prevent squatting.
+
+Both `tryDisplace` and `reverify` now log a reason on every exit, excluding the
+two that fire on ordinary settlements. The next occurrence names its own cause.
+
+### Still open
+
+The cause. The remaining candidates are the empty-binding skip and a cooldown
+from a prior verdict, and distinguishing them needs the deployment's logs:
+
+```
+grep -E "displacement (skipped|refused|check failed)|rejected upsert for|DISPLACED" 
+# window: 2026-08-14 07:00–07:05 UTC
+```
+
+`rejected upsert for … is not bound … (F11)` is the discriminator. If it is
+**present**, the settlement reached the catalog and the key matched, so the
+failure is inside `tryDisplace`. If it is **absent**, the settlement never
+reached cataloging at all and the question is upstream of displacement entirely.
 
 ## What changed here
 
@@ -107,19 +170,20 @@ The old binding to `GBJX3E4G…` resolves itself. Because it was never verified,
 the first settlement naming the new address **displaces** it automatically. No
 operator step, no runbook §1.
 
-## What is still outstanding
+## Where it stands
 
-This repo's part is done. Two actions remain and neither can happen here:
+**Done:** the demo is deployed on canonical USDC and is payable by a stranger
+for the first time — proven by two settlements from an unrelated payer. That was
+the point of the change, and it is finished.
 
-1. **Deploy.** Render picks up `render.yaml` on push. Until it redeploys, the
-   live demo still advertises the dead asset.
-2. **Settle once against the hosted facilitator.** That is what creates the
-   displacement, triggers re-verification, and flips the badge. Provision a
-   payer with `USE_USDC=1`, point `buyer-classic.mjs` at
-   `https://vellar-seller-demo.onrender.com/quote`, and pay once. Retry if it
-   fails — roughly one settle in three does, and nothing is spent when it does.
+**Not done:** the catalog entry still shows the old binding and the dead asset,
+and the badge still reads false. That is a display problem in shared state, not a
+payment problem — nothing about paying this resource is broken.
 
-Afterwards, confirm with:
+**Do not** expect a further settlement to fix it. Two already failed to, which is
+the whole finding above. The next step is the log grep, not another payment.
+
+To re-check the badge at any point:
 
 ```sh
 curl -s https://vellar-facilitator.onrender.com/discovery/resources \

@@ -187,6 +187,40 @@ describe("one-way — proof never displaces proof", () => {
     expect(await restarted.tryDisplace(URL_V, C, reqs(C), disc(), endpointNaming(C).fn)).toBe("skipped");
     expect(restarted.isBound(URL_V, A)).toBe(true);
   });
+
+  it("an UNVERIFIED binding restored from storage is still displaceable", async () => {
+    // THE SHAPE PRODUCTION IS ACTUALLY IN, and the one this suite did not cover.
+    //
+    // Every passing displacement above builds its binding in the SAME PROCESS
+    // that then displaces it. The only restart test covers a VERIFIED binding,
+    // where the correct answer is "skipped". So "restored, unverified, claimant
+    // proves ownership" — which is exactly the hosted demo entry
+    // (statsSource:"persisted", observedSettlements:0, ownerVerified:false) —
+    // had no coverage at all.
+    //
+    // Written because two live settlements against that entry recovered
+    // nothing, and a suite that is green while production does not recover is
+    // a suite proving something adjacent. This asserts the mechanism survives
+    // restoration; it passes, which RULES OUT restoration as the cause and
+    // leaves the live failure to the logged reasons added alongside.
+    //
+    // MUTATION: make tryDisplace read boundPayTo from the in-memory entry only,
+    // or have bindLoadedEntry leave a restored binding empty. This goes red
+    // while every other test here stays green.
+    const { store, url } = tmpStore();
+    const first = await BazaarCatalog.create(store);
+    await first.upsertFromPayment(disc(), reqs(B));
+    await first.flush();
+
+    const restarted = await BazaarCatalog.create(reopen(url));
+    expect(restarted.isBound(URL_V, B), "the binding survived the restart").toBe(true);
+    expect(restarted.isEverVerified(URL_V), "and it was never proven").toBe(false);
+
+    const v = endpointNaming(A);
+    expect(await restarted.tryDisplace(URL_V, A, reqs(A), disc(), v.fn)).toBe("displaced");
+    expect(restarted.isBound(URL_V, A), "the real owner took it back").toBe(true);
+    expect(restarted.isBound(URL_V, B), "and the squatter lost it").toBe(false);
+  });
 });
 
 describe("the ownership rows — neither an UPDATE nor an append", () => {

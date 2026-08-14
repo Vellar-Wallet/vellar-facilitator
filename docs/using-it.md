@@ -257,10 +257,21 @@ Ownership is trust-on-first-use: the first settlement for a canonical URL
 settles for your URL first, they hold the binding** and your own settlements are
 refused from the catalog — though your payments still go through.
 
-This is recoverable without an operator: settle once, and if your 402 names your
-address, you take the binding back automatically (displacement). What is *not*
-automatic is changing the address on a binding that was already verified — that
-needs [runbook §1](./operator-runbook.md).
+This is *designed* to be recoverable without an operator: settle once, and if
+your 402 names your address, you take the binding back automatically
+(displacement). Changing the address on a binding that was already **verified**
+is not automatic and needs [runbook §1](./operator-runbook.md).
+
+**Do not rely on that recovery yet.** It works in tests, including against a
+binding restored from storage — and on 2026-08-14 it did **not** recover a real
+stale binding on the hosted instance. Two settlements naming the claimant landed
+on-chain and the catalog did not move. The cause is not yet established, and
+until it is, treat displacement as a mechanism that should work rather than one
+observed working in production. Detail, including everything ruled out:
+[`diagnosis-demo-listing.md`](./diagnosis-demo-listing.md).
+
+The practical advice is unchanged and now matters more: **be first to settle for
+your own URL.**
 
 ### What you see in discovery
 
