@@ -1,4 +1,18 @@
-# Upstream issue — DRAFT, NOT FILED
+# Upstream issue — FILED as [#3159](https://github.com/x402-foundation/x402/issues/3159)
+
+> **Do not file this again.** Opened 2026-08-14 as
+> [x402-foundation/x402#3159](https://github.com/x402-foundation/x402/issues/3159),
+> merged with a second, zero-dependency reproduction contributed from the
+> vellar-sdk payer side (no deployed contract, network or funded account needed)
+> and the `signAuthEntries` error text that documents the `authorizeEntry`
+> override in the SDK's own words.
+>
+> One correction carried into the filed version: the `{ signatureScVal }` hatch
+> quoted below does **not** exist in `@stellar/stellar-sdk@16.0.1`. It was added
+> later in the 16.x line and is present in 16.2.0. Both satisfy `@x402/stellar`'s
+> `^16.0.1`, so the filed issue cites 16.2.0 and says so explicitly.
+>
+> Kept for the record and for the reference implementation notes.
 
 **Target:** `x402-foundation/x402` (the repo `@x402/stellar` points at).
 **Confirmed against:** `@x402/stellar@2.22.0` — the latest published release,
@@ -8,7 +22,7 @@ is byte-identical in both.
 not inferred from reading the source. Stack trace under
 [Reproduction](#reproduction).
 
-**Not opened.** It goes out under the repo owner's name, so it is here to be read
+**Opened.** It went out under the repo owner's name after being read
 first — same handling as
 [`upstream-issue-draft.md`](./upstream-issue-draft.md) (filed as
 [#3125](https://github.com/x402-foundation/x402/issues/3125)).
