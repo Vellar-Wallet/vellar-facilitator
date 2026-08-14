@@ -106,7 +106,7 @@ path after these changes is **~2m30s**.
 | **O-12** | **The advertised warm window did not exist.** Docs claimed a keep-alive held the instance warm `00:00–07:59` / `12:00–19:59 UTC`. Measured: **6 of 96** requested pings delivered, shortest gap **47 min** against a 15-min idle timeout, **0 of 10** gaps under it | closed-by-doc — claim withdrawn from `using-it.md`, `README.md` and the handover. **The underlying gap is open**: a warm window needs an external pinger, which a GitHub cron cannot provide |
 | **O-13** | **`guide.md`'s self-hosting start command fails on a fresh clone** — `./data/` does not exist and libSQL will not create it (`SQLITE_CANTOPEN`, error 14) | closed-by-doc — `mkdir -p data` added with the error it prevents |
 | **O-14** | **`walkthrough-wallet-spec.md` was linked from nowhere** and was the only place explaining how to generate `AGENT_PUBLIC` — the smart-account path dead-ended for anyone who had not read it | closed-by-doc — generation inlined in `using-it.md`, spec linked from both it and `guide.md` |
-| **O-15** | **The verifier allows 3 seconds; the README documents a 45-second cold start. Both facts have been in this repo the whole time, and nothing checked them against each other.** Ownership verification aborts at `FETCH_TIMEOUT_MS = 3_000`, while the hosted instance's ~45s spin-up is a headline caveat in `README.md` and `using-it.md`. So Layer 2 could never verify a resource that sleeps — it succeeded only if a probe happened to fire during a warm window. Measured 2026-08-14 against `vellar-seller-demo`: **asleep → `unverifiable` at 3006ms and 4046ms; warm → `match` in 679ms**. This is what left the demo listing permanently unverified and what silently blocked displacement (see [`diagnosis-demo-listing.md`](./diagnosis-demo-listing.md)). Two correct, individually-documented facts that contradict each other in a way no test could catch, because no test ran against a sleeping host | partially closed — a timeout is now a distinct verdict from `unverifiable`, earns a **60s** cooldown rather than 15 minutes, and gets **one** bounded retry. Retries extended to **three attempts** (45s, 120s), sized from the measured 31.7s / 42.5s / 43.7s cold starts. **The underlying gap stays open and is now a documented limitation rather than a pending fix**: verification is triggered by settlement and nothing else, so a resource asleep when its last-ever payment arrives stays unverified. A periodic sweep was designed and refused — see [`decision-no-verification-sweep.md`](./decision-no-verification-sweep.md), which keeps the argument for why a timeout-only sweep *would* clear the original no-background-prober objection, and the three reasons it is still not worth building. Chief among them: it would have failed on the >200s run in O-16 too |
+| **O-15** | **The verifier allows 3 seconds; the README documents a 45-second cold start. Both facts have been in this repo the whole time, and nothing checked them against each other.** Ownership verification aborts at `FETCH_TIMEOUT_MS = 3_000`, while the hosted instance's ~45s spin-up is a headline caveat in `README.md` and `using-it.md`. So Layer 2 could never verify a resource that sleeps — it succeeded only if a probe happened to fire during a warm window. Measured 2026-08-14 against `vellar-seller-demo`: **asleep → `unverifiable` at 3006ms and 4046ms; warm → `match` in 679ms**. This is what left the demo listing permanently unverified and what silently blocked displacement (see [`diagnosis-demo-listing.md`](./diagnosis-demo-listing.md)). Two correct, individually-documented facts that contradict each other in a way no test could catch, because no test ran against a sleeping host | partially closed — a timeout is now a distinct verdict from `unverifiable`, earns a **60s** cooldown rather than 15 minutes, and gets **one** bounded retry. Retries extended to **three attempts** (45s, 120s), sized from the measured 31.7s / 42.5s / 43.7s cold starts. **The underlying gap stays open and is now a documented limitation rather than a pending fix**: verification is triggered by settlement and nothing else, so a resource asleep when its last-ever payment arrives stays unverified. A periodic sweep was designed and refused — see [`decision-no-verification-sweep.md`](./decision-no-verification-sweep.md), which keeps the argument for why a timeout-only sweep *would* clear the original no-background-prober objection, and the three reasons it is still not worth building. Chief among them: it would have failed on the >200s run in O-16 too. **CAUSE CORRECTION 2026-08-14 (late):** the recorded cause — "the seller was asleep" — is half right at best. `buyer-classic.mjs` opens with an unpaid GET that itself wakes the seller, so by settle time the target has been warming for the whole payment flow; and a settlement against a measurably WARM seller (0.82s response), with the retry deployed, still did not displace. The 3s budget being blown is established; *whose* latency blows it is not. Leading candidates: the facilitator's own cold outbound path (a fresh container's first DNS resolution + TLS handshake to a new host), or in-provider DNS resolving `.onrender.com` to a private range from inside Render — which would trip the SSRF guard into an instant `unverifiable`, matching both the speed and the 15-minute cooldown observed. The #57 logging is now deployed, so the next settlement's `[catalog] displacement …` line names its verdict and settles this |
 | **O-16** | **A resource was unreachable for over three minutes, which is an availability floor no verification strategy can cross.** Separate from O-15's budget mismatch: on 2026-08-14 `vellar-seller-demo` returned nothing to a 200-second request, then nothing to a further 60-second one, then answered in 2.9s. It was not down — Render's wake latency simply has a long tail (31.7s / 42.5s / 43.7s measured, one run >200s). This bounds every strategy, not just the current one: **no retry schedule, sweep or budget can verify a resource that is not answering**, so on this hosting some fraction of verification attempts must fail regardless of design. Consequences: `unverifiableEntries` on the hosted instance is partly a hosting artifact rather than a merchant defect, and any SLA-style claim about verification would be false | open — accepted as a property of free-tier hosting, not a defect to fix. Mitigation is hosting (a paid tier that does not spin down), not code. Recorded so that a future "why is verification flaky" investigation starts here instead of re-deriving it |
 | **O-11** | **A gitignored `.env.recording` silently outranks the built-in defaults** — found while regression-testing O-3. With no shell vars the seller advertised the *dead* `GBDZH5KZ…`/`CBIN4HTP…` pair from a stale local file, not the in-code defaults. This is the exact hazard the hardcoding existed to prevent, re-entering through the env-file path | closed — boot log now prints the **provenance** of each value (`environment` / `examples/.env.recording` / `built-in default`) and the trustline preflight runs regardless. Deployment is unaffected: the file is gitignored and never shipped |
 
@@ -782,7 +782,7 @@ reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
 
 ## 6. Pubnet go / no-go
 
-**Not yet. Three blockers, all tractable.**
+**Not yet. Four blockers — three tractable, one a hosting decision.**
 
 ### Blockers — must be true before `STELLAR_NETWORK=pubnet`
 
@@ -798,6 +798,19 @@ reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
    testnet sample of one wallet. G-10 says the spend ceiling is 22× more
    conservative than its name implies; nobody knows yet whether that is
    comfortable or crippling at real volume.
+4. **Hosting that does not sleep — IF `ownerVerified` is meant to carry weight
+   for real merchants.** Added 2026-08-14 (O-15/O-16). On free-tier hosting,
+   verification has an availability floor we do not control: the probe budget
+   is 3s, wake latency is 30–45s with a tail past 200s, and no retry schedule
+   crosses that gap. On testnet that is an annoyance; on pubnet, `ownerVerified`
+   is the anti-squat signal buyers are told to read before paying real money —
+   a signal that silently fails for any merchant whose host sleeps is worse
+   than no signal, because it converts "our probe could not reach you" into
+   what reads as an adverse trust verdict. Either the facilitator (and the
+   badge's dependability claim) moves to hosting that does not spin down, or
+   the docs must demote `ownerVerified` to best-effort BEFORE real money reads
+   it. This is a decision, not a task — but it must be made deliberately, not
+   inherited from the demo setup.
 
 ### Conditions — true at cutover, watched afterwards
 
@@ -809,9 +822,13 @@ reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
   binding. Database-scoped, read-write, non-expiring — and rotated deliberately,
   never on a timer, because we fail closed and an expiring token is a scheduled
   outage.
-- **A squat no longer self-heals.** Displacement recovers the unverified case
-  automatically; a verified binding needs runbook §1 and an operator who is
-  actually available.
+- **Displacement is designed to recover the unverified squat case, and has
+  never yet been observed doing so live.** Three settlements against a real
+  stale binding (2026-08-14) all failed to displace it; the staged tests pass,
+  including against a restored binding. Cause under investigation with the
+  per-exit logging now deployed. Until one real displacement is witnessed,
+  treat squat recovery as unproven — and a verified binding needs runbook §1
+  and an operator who is actually available either way.
 - **`VERIFICATION_API_URL` stays unset** until F4-ts lands. Configuring it makes
   that service a trust root, and it is unauthenticated with no per-record
   timestamp.

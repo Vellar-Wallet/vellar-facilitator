@@ -164,7 +164,7 @@ const { resources } = await bazaar.search({ query: "weather data" });
 For AI agents, the MCP server (`src/mcp.ts`) exposes the same two operations
 as MCP tools — see the README for client config.
 
-> **Do not filter on `verified_only` here.** It returns an empty list on the
+> **Do not filter on `verified_only` here.** It is refused with a 400 on the
 > hosted instance, and will on yours too unless you run your own verification
 > API. The `verification` / `acceptsVerification` badges it filters on come from
 > an external attestation service that is **deployed nowhere** (the wallet repo's

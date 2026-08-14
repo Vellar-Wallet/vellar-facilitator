@@ -166,9 +166,10 @@ The values are the fix:
   secret was generated straight to disk and never printed; it is **not** needed
   at runtime — `seller.mjs` only ever uses the public address.
 
-The old binding to `GBJX3E4G…` resolves itself. Because it was never verified,
-the first settlement naming the new address **displaces** it automatically. No
-operator step, no runbook §1.
+The old binding to `GBJX3E4G…` was *predicted* to resolve itself by
+displacement, since it was never verified. **That prediction is falsified** —
+three live settlements naming the new address have not displaced it (see
+above). The design intent stands; the observed behaviour does not match it yet.
 
 ## Where it stands
 
@@ -180,8 +181,34 @@ the point of the change, and it is finished.
 and the badge still reads false. That is a display problem in shared state, not a
 payment problem — nothing about paying this resource is broken.
 
-**Do not** expect a further settlement to fix it. Two already failed to, which is
-the whole finding above. The next step is the log grep, not another payment.
+**Do not** expect a further settlement to fix it. Two already failed to — and a
+**third** (2026-08-14T12:28:38Z, `cda3cbaa…`, ledger 4137813) failed under the
+conditions the cold-seller explanation said should succeed: seller measurably
+warm (0.82s response), the 3-attempt retry deployed (`commit 6e4845d`), monitor
+watching for 8 minutes. Catalog unchanged.
+
+That falsifies "the seller was asleep" as the whole story. `buyer-classic.mjs`
+opens with an unpaid GET that itself wakes the seller, so the target was never
+cold at probe time in ANY of the three attempts. What remains consistent with
+everything observed: the **facilitator's own outbound path** — a fresh
+container's first DNS + TLS to a new host blowing the 3s budget — or in-provider
+DNS resolving `.onrender.com` to a private range from inside Render, which the
+SSRF guard would refuse as an instant `unverifiable` (matching both the speed
+and the 15-minute cooldown of the original incident).
+
+The #57/#58 logging was live for the third settlement, so the discriminating
+evidence now exists:
+
+```
+grep "\[catalog\] displacement" 
+# window: 2026-08-14 12:28–12:33 UTC
+```
+
+The line names its verdict. `timeout` → facilitator outbound latency, and the
+retry should also appear. `unverifiable` arriving fast → the SSRF-guard/DNS
+hypothesis, which no timeout retry will ever fix and which would mean the
+facilitator can never verify a sibling Render service from inside Render.
+The next step is that grep, not another payment.
 
 To re-check the badge at any point:
 

@@ -370,7 +370,9 @@ README has the client config.
 
 **Read `ownerVerified` before you pay.** It is the signal that a listing is not a
 squat — the resource's own 402 names the address you would be paying. Do **not**
-filter on `verified_only`; it is inert here and returns nothing.
+filter on `verified_only`; it is inert here, and asking for it is refused with
+an explicit `400 verified_only_unavailable` rather than answered with a silent
+empty list.
 
 ### Paying
 
@@ -425,7 +427,7 @@ Six things, in the order you will meet them.
 | **1** | **~45s on the first request, at any hour.** The service sleeps after 15 minutes idle and there is **no reliable warm window** — see below | **Assume you will pay it.** Send a warming `GET /health` first (exempt from rate limiting) and give it a 120s timeout, or expect your first real call to hang for ~45s. It then stays warm 15 min past your last call |
 | **2** | **Roughly 1 settle in 3 fails**, with an empty `transaction` and one of two reasons: `settle_exact_stellar_transaction_submission_failed` or `settle_exact_stellar_transaction_failed` | **Retry — and no, you did not pay twice.** See below |
 | **3** | **Trust badges are inert.** `verification` and `acceptsVerification` are always `"unknown"` | Read `ownerVerified` instead — that one works. The badge source is deployed nowhere and is not switching on soon (README has the dependency chain) |
-| **4** | **`?verified_only=true` returns an empty list** | Do not use it. It filters on the inert field |
+| **4** | **`?verified_only=true` is refused with a 400** (`verified_only_unavailable`) | Do not use it. It filters on the inert field, and the refusal names `ownerVerified` as the signal that works |
 | **5** | **`curl -I` on a paid route returns 200, not 402** | Debug with `GET`, not `HEAD` — a HEAD request does not carry the payment challenge, so the route looks unpaid when it is working correctly |
 | **6** | **Your first settlement writes to a shared catalog, and the write is one-way** | Know this before you settle, not after — see below |
 

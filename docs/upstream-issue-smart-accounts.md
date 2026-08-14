@@ -1,4 +1,12 @@
-# Upstream issue — DRAFT, NOT FILED
+# Upstream issue — FILED
+
+**Open: https://github.com/x402-foundation/x402/issues/3158** (2026-08-14),
+cross-referenced with #3125. The text below is what was submitted, from
+[Summary](#summary) down, plus a PR offer.
+
+---
+
+## Original draft notes
 
 **Target:** `x402-foundation/x402` (the repo `@x402/stellar` points at).
 **Confirmed against:** `@x402/stellar@2.22.0` — the latest published release,

@@ -288,8 +288,34 @@ export async function buildServer(
     return result;
   });
 
-  app.get<{ Querystring: ListQuery }>("/discovery/resources", async (request) => {
+  /**
+   * verified_only asks a question only a deployment with a verdict source can
+   * answer. Without one, every verdict is the constant "unknown", so the filter
+   * can never match — and the old behaviour, a silent `items: []`, was a
+   * correct-LOOKING answer to a question the system could not answer. A caller
+   * read it as "nothing here is verified" when the truth was "this deployment
+   * cannot tell". Refused loudly instead, naming the field that does work.
+   *
+   * Also covers the no-trust-layer case, which was quietly WORSE: with no
+   * resolver at all, verified_only was ignored entirely and the caller who
+   * asked for verified-only entries got every entry, unfiltered.
+   */
+  const verifiedOnlyRefusal = () => ({
+    error: "verified_only_unavailable",
+    reason: "no_verdict_source_configured",
+    detail:
+      "This deployment has no verification API configured, so every verification " +
+      "verdict is \"unknown\" and a verified_only filter can never match anything. " +
+      "An empty list here would describe the deployment, not the resources. " +
+      "For a per-resource trust signal that does work, read trust.ownerVerified.",
+  });
+  const verifiedOnlyUnanswerable = () => !trust || !trust.hasVerdictSource;
+
+  app.get<{ Querystring: ListQuery }>("/discovery/resources", async (request, reply) => {
     const q = request.query;
+    if (q.verified_only === "true" && verifiedOnlyUnanswerable()) {
+      return reply.status(400).send(verifiedOnlyRefusal());
+    }
     const response = catalog.list({
       ...(q.type !== undefined ? { type: q.type } : {}),
       ...(q.payTo !== undefined ? { payTo: q.payTo } : {}),
@@ -325,6 +351,9 @@ export async function buildServer(
       return reply
         .status(400)
         .send({ error: "invalid_query", detail: "the `query` parameter is required" });
+    }
+    if (q.verified_only === "true" && verifiedOnlyUnanswerable()) {
+      return reply.status(400).send(verifiedOnlyRefusal());
     }
     const response = catalog.search({
       query: q.query,

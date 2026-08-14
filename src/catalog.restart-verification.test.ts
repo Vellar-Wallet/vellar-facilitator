@@ -67,7 +67,7 @@ function disc(url = URL_X): DiscoveredResource {
 
 /** Every asset reads "verified", so any non-verified verdict below is caused by
  * owner-clamping alone — the thing under test. */
-const allVerified: TrustResolver = { assetStatus: async () => "verified" };
+const allVerified: TrustResolver = { hasVerdictSource: true, assetStatus: async () => "verified" };
 
 const testConfig = {
   port: 0,
