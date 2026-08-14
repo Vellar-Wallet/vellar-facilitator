@@ -108,7 +108,7 @@ normally. The second one did not land either.
 | Suspect | Excluded by |
 | --- | --- |
 | Trailing-slash key mismatch | `normalizePath` strips it; both spellings map to one key |
-| The `everVerified` one-way latch | `ownerVerified` **is** that latch (`annotateTrust` → `isVerifiedOwner`), and it reads false |
+| ~~The `everVerified` one-way latch~~ | **THIS RULE-OUT WAS WRONG, and it was the cause.** The reasoning conflated two states that share a name: `trust.ownerVerified` on the wire reads `isVerifiedOwner()` — the *ephemeral badge* that RA-9 deliberately rebuilds as `false` after every restart. The latch is `isEverVerified()` — durable, and deliberately never on the wire. The badge read false; the latch was set the whole time. See § The actual cause below |
 | Catalog frozen | `/health` reports no freeze |
 | Ownership probe timing out | 3s budget; the demo answers warm in ~0.8s |
 | Displacement not wired up | Fires fire-and-forget on every settle (`bazaar.ts`) |
@@ -133,20 +133,14 @@ time inside the control built to prevent squatting.
 Both `tryDisplace` and `reverify` now log a reason on every exit, excluding the
 two that fire on ordinary settlements. The next occurrence names its own cause.
 
-### Still open
+### ~~Still open~~ RESOLVED — see § The actual cause below
 
-The cause. The remaining candidates are the empty-binding skip and a cooldown
-from a prior verdict, and distinguishing them needs the deployment's logs:
-
-```
-grep -E "displacement (skipped|refused|check failed)|rejected upsert for|DISPLACED" 
-# window: 2026-08-14 07:00–07:05 UTC
-```
-
-`rejected upsert for … is not bound … (F11)` is the discriminator. If it is
-**present**, the settlement reached the catalog and the key matched, so the
-failure is inside `tryDisplace`. If it is **absent**, the settlement never
-reached cataloging at all and the question is upstream of displacement entirely.
+This section predicted the empty-binding skip or a cooldown. Both wrong: the
+operator's grep found the F11 refusal lines (so the settlements reached the
+catalog), and the later grep of the third settlement found the latch skip. The
+07:01 skips were the same latch, silent because the per-exit logging did not
+exist yet. Kept as written because being wrong in a recorded, checkable way is
+what let the next grep settle it.
 
 ## What changed here
 
@@ -167,9 +161,13 @@ The values are the fix:
   at runtime — `seller.mjs` only ever uses the public address.
 
 The old binding to `GBJX3E4G…` was *predicted* to resolve itself by
-displacement, since it was never verified. **That prediction is falsified** —
-three live settlements naming the new address have not displaced it (see
-above). The design intent stands; the observed behaviour does not match it yet.
+displacement, on the premise that it was never verified. **The premise was
+false** — the binding WAS verified, circa 2026-08-11, when `GBJX3E4G…`
+genuinely controlled the endpoint. The wire's `ownerVerified: false` reflected
+the post-restart badge, not the durable latch. Displacement therefore refused
+all three settlements *correctly*; what is broken is not the mechanism but the
+recovery story for a once-verified binding whose payTo has rotated — see
+§ The actual cause and `decision-verified-binding-rotation.md`.
 
 ## Where it stands
 
@@ -206,9 +204,95 @@ grep "\[catalog\] displacement"
 
 The line names its verdict. `timeout` → facilitator outbound latency, and the
 retry should also appear. `unverifiable` arriving fast → the SSRF-guard/DNS
-hypothesis, which no timeout retry will ever fix and which would mean the
-facilitator can never verify a sibling Render service from inside Render.
-The next step is that grep, not another payment.
+hypothesis.
+
+**The grep was run, and the answer was neither.** See the next section.
+
+---
+
+## The actual cause — found 2026-08-14, third explanation, first with evidence
+
+The operator's grep of the settlement window returned one line:
+
+```
+[catalog] displacement skipped for https://vellar-seller-demo.onrender.com/quote
+(claimant GAATVGLR…): binding was PROVEN once and is permanently
+non-displaceable (one-way latch)
+```
+
+Not cold start. Not DNS. Not a cooldown. **Displacement refused correctly:
+the stale binding is latched as verified, and the one-way latch is permanent.**
+
+### The reconstructed history
+
+- **~2026-08-11:** `GBJX3E4G…` genuinely controlled the demo endpoint — it was
+  the advertised `payTo` of the era — and a settlement-triggered probe proved
+  it. `latchVerified` wrote `verified_at` to durable storage. This was correct
+  at the time. *(Reconstruction: the latch-set event predates the per-exit
+  logging, so the date is inferred from the walkthrough records; the latch
+  being set is not inferred — the log line above is authoritative.)*
+- **Every restart since:** the *badge* (`entry.verifiedOwner`) was rebuilt as
+  `false` — RA-9, by design, so eviction cannot become a downgrade primitive.
+  The *latch* (`everVerified`) survived — also by design.
+- **2026-08-13:** we rotated the demo's `payTo` to `GAATVGLR…`. From that
+  moment the binding was **once-verified but no longer current** — and the
+  latch does not know the difference.
+- **2026-08-14, all three settlements:** `tryDisplace` hit the latch guard and
+  returned in the first handful of lines. **No probe ever ran.** No timeout,
+  no cooldown, no verdict — the entire cold-start causal chain recorded for the
+  07:01 incident was a mechanism that never executed for this entry.
+
+### Why both earlier explanations were wrong, mechanically
+
+**Explanation 1 (empty-binding / cooldown)** died at the rule-out table, which
+excluded the latch by reading `trust.ownerVerified: false` off the wire. That
+field reports the **ephemeral badge**, not the **durable latch** — two states,
+one name. The only places the latch's truth lived were the ownership table's
+`verified_at` column and (after #57) the log line. The wire actively misled.
+
+**Explanation 2 (cold-start timeout)** was supported by a real local
+reproduction — a sleeping seller genuinely does return `timeout` at the 3s
+budget. But that reproduced *a* failure, not *this* failure: `buyer-classic.mjs`
+opens with an unpaid GET that wakes the seller, so the target was warm at probe
+time in every attempt — and no probe ran anyway. A reproduction of a plausible
+mechanism is not evidence the mechanism fired. The O-15 budget gap is real and
+its fix (#58/#60) stands on its own; it just was not this.
+
+### The state the entry is in now — contradictory, and doubly permanent
+
+- **Served as unverified:** the badge is `false`, and `reverify` — the only
+  path that rebuilds it — is gated on the *bound owner* settling. `GBJX3E4G…`
+  will never settle again (custody unknown, advertised asset dead), so the
+  badge is false forever.
+- **Enforced as verified:** the latch is set, so displacement is off forever —
+  no settlement, no retry, and not the declined sweep either would move it.
+
+Consumers see an entry with no trust signal; the catalog treats it as maximally
+trusted for displacement purposes. Worst of both, each half permanent.
+
+### The G-11 collapse made the survivor the immovable one
+
+From the 14:09 boot log: `…/quote/` and `…/quote` normalised to a single
+canonical key, and the G-11 dedup kept the **verified** entry and dropped the
+other. Individually correct — prefer the proven entry. Combined with the latch,
+it means the entry that survived the collapse is precisely the one that can
+never be displaced. The dedup's preference and the latch's permanence compound.
+
+### What would have discriminated cheapest
+
+Three settlements were spent, in the most expensive order available:
+
+| Instrument | Cost | Was it available? |
+| --- | --- | --- |
+| `SELECT url, verified_at FROM ownership` on the Turso DB | one query, zero settlements | **The whole time.** The latch loads from `verified_at`; the durable truth sat in one column |
+| The #57 per-exit log line | one grep, zero settlements | After #57 deployed — and it is what actually resolved this |
+| A wire field distinguishing latch from badge | reading the API response | Does not exist — `ownerVerified` promises the latch's meaning and reports the badge |
+| Live settlements | one payment + monitoring each | Used first, three times |
+
+The lesson for the register: when a diagnosis depends on server-side state,
+check whether that state is *readable* before spending experiments on it — and
+a wire field whose name describes a different variable than the one it reports
+will send every diagnosis through the wrong branch first.
 
 To re-check the badge at any point:
 
