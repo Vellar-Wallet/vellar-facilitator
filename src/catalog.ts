@@ -48,6 +48,7 @@ export const MAX_PAYTO_LEN = 128;
  * deliberately do not share a floor. These are the brake on amplification. */
 const REVERIFY_COOLDOWN_MISMATCH_MS = 24 * 60 * 60 * 1000;
 const REVERIFY_COOLDOWN_UNVERIFIABLE_MS = 15 * 60 * 1000;
+const REVERIFY_COOLDOWN_TIMEOUT_MS = 60 * 1000;
 
 /**
  * G-11 — path normalisation for the canonical key.
@@ -115,8 +116,28 @@ export function normalizePath(pathname: string): string {
   return out === "" ? "/" : out;
 }
 
+/**
+ * How long before this (url, claimant) may be probed again.
+ *
+ * The three verdicts are not the same event and must not share a cooldown:
+ *
+ *   mismatch      24h — the endpoint ANSWERED and named someone else. That is a
+ *                       real claim about ownership and reads as a possible
+ *                       takeover, so back off hard.
+ *   unverifiable  15m — the endpoint answered badly. A real fault; give it time.
+ *   timeout       60s — the endpoint did not answer in 3s, which on free-tier
+ *                       hosting usually means asleep, not broken. Sharing the
+ *                       15-minute cooldown is precisely why the demo's second
+ *                       settlement 80 seconds later was silent: the first probe
+ *                       timed out against a cold service and the retry was
+ *                       locked out. 60s outlasts a cold start and still bounds
+ *                       a permanently-dead endpoint to ~2 probes a minute, and
+ *                       only while someone is paying to trigger them.
+ */
 function cooldownFor(verdict: OwnershipVerdict): number {
-  return verdict === "mismatch" ? REVERIFY_COOLDOWN_MISMATCH_MS : REVERIFY_COOLDOWN_UNVERIFIABLE_MS;
+  if (verdict === "mismatch") return REVERIFY_COOLDOWN_MISMATCH_MS;
+  if (verdict === "timeout") return REVERIFY_COOLDOWN_TIMEOUT_MS;
+  return REVERIFY_COOLDOWN_UNVERIFIABLE_MS;
 }
 
 /** A catalog key derived from a client-declared routeTemplate, e.g.
@@ -758,7 +779,7 @@ export class BazaarCatalog {
     settlingPayTo: string,
     verify: (url: string, payTos: string[]) => Promise<OwnershipVerdict>,
     now: number = Date.now(),
-  ): Promise<"match" | "mismatch" | "unverifiable" | "skipped"> {
+  ): Promise<OwnershipVerdict | "skipped"> {
     const key = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
     const entry = this.entries.get(key);
 
