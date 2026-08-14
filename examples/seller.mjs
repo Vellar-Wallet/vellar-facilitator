@@ -59,13 +59,34 @@ const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://vellar-facilitat
 // condition (does this payTo hold a trustline to this asset?) instead of
 // proxying it, and refuses to boot with a message that names the fix.
 //
-// UPDATED 2026-08-10: the previous pair (CBIN4HTP… / GBDZH5KZ…) are DEAD — the
-// old issuer was burned during provisioning. If you change these defaults,
-// redeploy vellar-seller-demo and re-run the live ownership gate
-// (docs/operator-runbook.md §4): the gate verifies the payTo the challenge
-// NAMES, so a stale 402 reads as a mismatch that looks like a control failure.
-const PAYTO = process.env.PAYTO || "GBJX3E4GDO6IT5ZHWM5LVCXYCHN5L3HWZNKFHJMCR6JZJNBL3VVQL2RH";
-const ASSET = process.env.ASSET || "CDYCX4PEXXTPIS67E7WPYM37UFCC5XW7QZX5LQ6UQBR65PQZWZ7HTBHR";
+// UPDATED 2026-08-13. These defaults have now died twice, both times the same
+// way: the asset's issuer key was a throwaway generated in-process, and once it
+// was gone nobody could mint, so nobody could pay, so the resource was
+// permanently unpayable. CBIN4HTP…/GBDZH5KZ… went first; CDYCX4PE… (X402TST)
+// went next and left the demo's catalog entry frozen at ownerVerified:false,
+// because the badge only re-checks on a settlement that could never happen.
+//
+// THE ASSET IS NOW CANONICAL TESTNET USDC, and the reason that ends the pattern
+// is not that it is bigger — it is that ITS ISSUER IS NOT OURS TO DESTROY.
+// Circle holds it (home_domain centre.io, 54k+ authorized accounts). Anyone can
+// obtain a balance from the testnet DEX with no faucet and no human step:
+// `USE_USDC=1 node provision-testnet.mjs`.
+//
+// PAYTO is Vellar's demo merchant, funded and holding a live USDC trustline.
+// Confirmed live before shipping — a second dead default would be worse than
+// the first, since it would arrive labelled as a fix.
+//
+// These are OUR values. Running this seller without PAYTO/ASSET set advertises
+// Vellar's merchant, not yours, so anyone paying it pays us. That is fine for a
+// demo and wrong for anything else, which is why the boot log says so out loud
+// rather than quietly naming a source.
+//
+// If you change these, redeploy vellar-seller-demo and re-run the live
+// ownership gate (docs/operator-runbook.md §4): the gate verifies the payTo the
+// challenge NAMES, so a stale 402 reads as a mismatch that looks like a control
+// failure.
+const PAYTO = process.env.PAYTO || "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC";
+const ASSET = process.env.ASSET || "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
 
 // Used only by the boot-time merchant preflight below — never on the payment
@@ -73,11 +94,24 @@ const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
 const RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
 const PASSPHRASE = Networks.TESTNET;
 
-/** Where a value came from — shell, the env file, or the built-in default. */
+/**
+ * Where a value came from — shell, the env file, or the built-in default.
+ *
+ * The built-in case says "Vellar demo default" rather than "built-in default",
+ * because naming the source is not the useful fact. The useful fact is WHOSE
+ * value it is: run this with no PAYTO and you are advertising Vellar's merchant
+ * address, so any payment goes to us rather than to you. Someone skimming a boot
+ * log will read "built-in default" as "a sensible fallback" and move on.
+ */
 const sourceOf = (shellValue, name) =>
-  shellValue ? "environment" : process.env[name] ? "examples/.env.recording" : "built-in default";
+  shellValue
+    ? "environment"
+    : process.env[name]
+      ? "examples/.env.recording"
+      : "VELLAR DEMO DEFAULT — not yours";
 const PAYTO_SOURCE = sourceOf(shellPayTo, "PAYTO");
 const ASSET_SOURCE = sourceOf(shellAsset, "ASSET");
+const USING_DEMO_DEFAULTS = !shellPayTo && !process.env.PAYTO;
 
 /**
  * The address this merchant advertises as its own — the single source of truth
@@ -271,6 +305,15 @@ async function initializeWithRetry() {
 async function preflightMerchant() {
   console.error(`[seller] payTo ${PAYTO} (from ${PAYTO_SOURCE})`);
   console.error(`[seller] asset ${ASSET} (from ${ASSET_SOURCE})`);
+  if (USING_DEMO_DEFAULTS) {
+    console.error(
+      `[seller] NOTE: no PAYTO/ASSET set, so this is running on Vellar's DEMO merchant\n` +
+        `         and canonical testnet USDC. Payments to this seller go to US, not you.\n` +
+        `         Fine for trying the loop; wrong for your own service. To use your own:\n` +
+        `           cd examples && USE_USDC=1 node provision-testnet.mjs\n` +
+        `         then pass the PAYTO and ASSET it prints.`,
+    );
+  }
   if (!StrKey.isValidEd25519PublicKey(PAYTO)) {
     console.error(
       `\n[seller] FATAL: PAYTO is not a valid Stellar account address.\n` +
