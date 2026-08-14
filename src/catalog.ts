@@ -1094,9 +1094,20 @@ export class BazaarCatalog {
     if (existing && !existing.boundPayTo.includes(requirements.payTo)) {
       // Unbound payTo for an already-established URL: reject the whole write.
       // Do not append accepts, do not overwrite metadata, do not touch stats.
+      // WORDING MATTERS HERE. This said "possible resource-URL hijack" alone,
+      // which is accurate about the mechanism and misleading about the
+      // situation: the same line fires for the LEGITIMATE owner, because the
+      // settle that triggers a displacement is refused by design while the
+      // rebinding lands behind it. An operator meeting this line first
+      // concludes they are under attack, when the real event may be that
+      // displacement did not run. Observed 2026-08-14 — this line appeared
+      // twice for the demo's own merchant.
       console.warn(
         `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} is not bound ` +
-          `(bound: ${existing.boundPayTo.join(", ")}) — possible resource-URL hijack (F11)`,
+          `(bound: ${existing.boundPayTo.join(", ")}). This is EXPECTED for the settle that ` +
+          `triggers a displacement, and is also what a hijack attempt looks like — the two are ` +
+          `indistinguishable here. Read the "[catalog] displacement …" line for this key to tell ` +
+          `them apart before treating it as an attack (F11)`,
       );
       return false;
     }
