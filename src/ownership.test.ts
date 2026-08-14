@@ -21,6 +21,18 @@ function challengeHeader(payTos: string[]): string {
   return Buffer.from(JSON.stringify(body), "utf8").toString("base64");
 }
 
+/** A minimal Response-shaped object carrying a 402 challenge. */
+function okChallenge(payTos: string[], status = 402): Response {
+  const headers = new Map<string, string>();
+  if (status === 402) headers.set("payment-required", challengeHeader(payTos));
+  return {
+    status,
+    headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null },
+    body: null,
+    text: async () => "",
+  } as unknown as Response;
+}
+
 describe("assertPublicHttpsUrl — SSRF guard", () => {
   it("rejects http (non-TLS)", async () => {
     await expect(assertPublicHttpsUrl("http://example.com/x", fakeLookup("93.184.216.34"))).rejects.toThrow(/https/i);
@@ -400,9 +412,83 @@ describe("mutation guards (audit: these all went undetected)", () => {
       fetchFn: fetchFn as unknown as typeof fetch,
       lookupFn: fakeLookup("93.184.216.34"),
       timeoutMs: 25,
+      coldStartRetryDelayMs: 0, // single-shot: this test is about the abort
     });
     expect(sawAbort, "the timeout must fire an abort, not just clear a timer").toBe(true);
-    expect(v).toBe("unverifiable");
+    // NOT "unverifiable". A timeout says the endpoint did not answer; an
+    // unverifiable says it answered badly. Collapsing them gave a sleeping
+    // free-tier resource the same 15-minute cooldown as a broken one, which is
+    // why displacement never recovered the demo's binding.
+    expect(v).toBe("timeout");
+  });
+
+  // A timeout is the ONLY verdict that earns a second probe, and it earns
+  // exactly one. MUTATION: retry on every verdict, or loop instead of retrying
+  // once — the call counts below pin both.
+  describe("cold-start retry", () => {
+    const timingOutFetch = () =>
+      vi.fn(
+        (_u: string, init: { signal?: AbortSignal }) =>
+          new Promise<Response>((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => rej(new Error("aborted")));
+          }),
+      );
+
+    it("retries a timeout exactly once, then gives up", async () => {
+      const fetchFn = timingOutFetch();
+      const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        lookupFn: fakeLookup("93.184.216.34"),
+        timeoutMs: 10,
+        coldStartRetryDelayMs: 1,
+      });
+      expect(v).toBe("timeout");
+      expect(fetchFn, "one probe plus one retry — never a loop").toHaveBeenCalledTimes(2);
+    });
+
+    it("succeeds on the retry when the resource wakes up — the real cold-start case", async () => {
+      let call = 0;
+      const fetchFn = vi.fn((_u: string, init: { signal?: AbortSignal }) => {
+        call += 1;
+        // First probe: asleep, never answers. Second: awake, names the owner.
+        if (call === 1) {
+          return new Promise<Response>((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => rej(new Error("aborted")));
+          });
+        }
+        return Promise.resolve(okChallenge(["GLEGIT"]));
+      });
+      const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        lookupFn: fakeLookup("93.184.216.34"),
+        timeoutMs: 10,
+        coldStartRetryDelayMs: 1,
+      });
+      expect(v, "the resource was asleep, not unowned").toBe("match");
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("does NOT retry a mismatch — that is an answer, not an absence", async () => {
+      const fetchFn = vi.fn(() => Promise.resolve(okChallenge(["GSOMEONEELSE"])));
+      const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        lookupFn: fakeLookup("93.184.216.34"),
+        coldStartRetryDelayMs: 1,
+      });
+      expect(v).toBe("mismatch");
+      expect(fetchFn, "a mismatch is evidence; probing again would only harass").toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT retry an unverifiable — the endpoint answered, and badly", async () => {
+      const fetchFn = vi.fn(() => Promise.resolve(okChallenge([], 200)));
+      const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        lookupFn: fakeLookup("93.184.216.34"),
+        coldStartRetryDelayMs: 1,
+      });
+      expect(v).toBe("unverifiable");
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    });
   });
 
   // MUTATION AE: the header size cap deleted. The header must be a VALID,

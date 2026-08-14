@@ -121,6 +121,82 @@ describe.skipIf(!enabled)("LIVE — Layer 2 over a real network path (manual gat
     expect(verdict, "http must be unverifiable regardless of the host").toBe("unverifiable");
   }, 60_000);
 
+  // ==========================================================================
+  // THE COLD-START CASE — and it must be run against a genuinely SLEEPING host.
+  //
+  // A stubbed 3-second timeout is not this test. The whole finding of
+  // 2026-08-14 is that the harness and production disagreed on exactly this
+  // point: every unit test simulates a timeout that never resolves, whereas a
+  // real free-tier host times out at 3s and then answers correctly 30-45s
+  // later. Only the second shape exercises the retry doing its job.
+  //
+  // TO RUN IT HONESTLY: leave the seller idle for >15 minutes first, so Render
+  // has spun it down. If the host is already warm this test proves nothing —
+  // it will simply match on the first probe, which is why it asserts the
+  // ELAPSED TIME rather than only the verdict.
+  //
+  // Measured when written, against vellar-seller-demo:
+  //   asleep, 3s budget, no retry -> timeout       (3006ms, 4046ms)
+  //   asleep, 3s budget, 1 retry  -> match         (~61s: 3s + 60s + 0.7s)
+  //   warm,   3s budget           -> match         (679ms, 878ms, 718ms)
+  it("recovers from a real cold start: times out, waits, then matches", async () => {
+    const t0 = Date.now();
+    const singleShot = await verifyResourceOwnership(LIVE_URL!, LIVE_PAYTO!, {
+      coldStartRetryDelayMs: 0,
+    });
+    const firstMs = Date.now() - t0;
+
+    if (singleShot === "match") {
+      // The host was warm. Say so loudly rather than passing on nothing — a
+      // green run here would otherwise be indistinguishable from a real one.
+      console.log(
+        `\n  SKIPPED IN EFFECT: host answered in ${firstMs}ms, so it was already warm.\n` +
+          `  Leave it idle >15 minutes and re-run to exercise the cold-start path.\n`,
+      );
+      return;
+    }
+
+    // A sleeping host must be reported as `timeout`, never `unverifiable` —
+    // that distinction is what earns it a retry and a 60s cooldown instead of
+    // a 15-minute one.
+    expect(singleShot, "a sleeping host is a timeout, not a failure").toBe("timeout");
+
+    // Now the real thing: the same probe WITH the retry. The first attempt is
+    // what wakes the host; the retry a minute later lands on a warm one.
+    const t1 = Date.now();
+    const withRetry = await verifyResourceOwnership(LIVE_URL!, LIVE_PAYTO!);
+    const totalMs = Date.now() - t1;
+
+    console.log(`\n  cold single-shot: ${singleShot} in ${firstMs}ms`);
+    console.log(`  with retry:       ${withRetry} in ${totalMs}ms\n`);
+
+    // WHAT THIS ASSERTS, AND WHAT IT DELIBERATELY DOES NOT.
+    //
+    // Asserted: the parts we control. The retry fired (elapsed proves it), and
+    // a sleeping host is reported as `timeout` — never `unverifiable` — which
+    // is what earns the 60s cooldown instead of the 15-minute one.
+    //
+    // NOT asserted: that the host woke in time. We do not control Render's wake
+    // latency, and it has a long tail. Measured 2026-08-14 on this seller:
+    // 31.7s once, 42.5s and 43.7s on the facilitator, and one run where 200s of
+    // requests returned nothing before it recovered. A first version of this
+    // test required `match` and FAILED on the tail — correctly. Turning that
+    // into a bumped constant would have been fitting the number to the test.
+    //
+    // So the honest statement is: no bounded retry covers that tail, and the
+    // real fix is re-verification decoupled from settlement (a periodic sweep),
+    // which is tracked separately. This test proves the retry mechanism works
+    // and reports whether the host cooperated.
+    expect(totalMs, "the retry must actually have waited, not returned immediately").toBeGreaterThan(30_000);
+    expect(["match", "timeout"]).toContain(withRetry);
+    if (withRetry !== "match") {
+      console.log(
+        `  NOTE: the host had not finished waking after the retry. That is the\n` +
+          `  known long tail, not a defect in the retry — see the comment above.\n`,
+      );
+    }
+  }, 180_000);
+
   it("uses undici's fetch, not the global one", async () => {
     // A version mismatch here silently disabled the whole control once before:
     // undici@8's Agent rejects Node's bundled fetch with UND_ERR_INVALID_ARG

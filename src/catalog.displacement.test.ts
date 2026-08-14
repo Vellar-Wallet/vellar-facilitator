@@ -188,6 +188,56 @@ describe("one-way — proof never displaces proof", () => {
     expect(restarted.isBound(URL_V, A)).toBe(true);
   });
 
+  it("a TIMEOUT cools down for a minute; a MISMATCH still cools down for a day", async () => {
+    // THE BUG THIS ENCODES. Timeout and unverifiable used to share a 15-minute
+    // cooldown, so a probe that timed out against a SLEEPING resource locked
+    // out every retry for 15 minutes. Measured live 2026-08-14: the demo's
+    // first settlement timed out at 3s against a cold service, and the second
+    // settlement 80 seconds later was silently skipped by that cooldown.
+    //
+    // A timeout is not evidence about ownership — it is usually evidence the
+    // host is asleep, and a cold start finishes in ~30-45s. So it earns a
+    // 60-second cooldown. A mismatch IS evidence (the endpoint answered and
+    // named someone else) and keeps its 24 hours.
+    //
+    // MUTATION: make cooldownFor return the same value for timeout and
+    // unverifiable. The 61s probe below stops happening.
+    const fixed = (verdict: "timeout" | "mismatch") => {
+      const calls: string[] = [];
+      return {
+        calls,
+        fn: async (url: string) => {
+          calls.push(url);
+          return verdict as never;
+        },
+      };
+    };
+
+    const t0 = 1_000_000;
+    const { store } = tmpStore();
+    const catalog = await BazaarCatalog.create(store);
+    await catalog.upsertFromPayment(disc(), reqs(B));
+
+    const timeout = fixed("timeout");
+    expect(await catalog.tryDisplace(URL_V, A, reqs(A), disc(), timeout.fn, t0)).toBe("refused");
+    expect(timeout.calls).toHaveLength(1);
+    // Still inside the 60s window.
+    expect(await catalog.tryDisplace(URL_V, A, reqs(A), disc(), timeout.fn, t0 + 30_000)).toBe("skipped");
+    expect(timeout.calls, "no second probe while cooling").toHaveLength(1);
+    // Past it — a sleeping host has had time to wake, so we look again.
+    expect(await catalog.tryDisplace(URL_V, A, reqs(A), disc(), timeout.fn, t0 + 61_000)).toBe("refused");
+    expect(timeout.calls, "the retry a sleeping resource depends on").toHaveLength(2);
+
+    // A mismatch is an answer, not an absence: still held off a day later.
+    const { store: store2 } = tmpStore();
+    const catalog2 = await BazaarCatalog.create(store2);
+    await catalog2.upsertFromPayment(disc(), reqs(B));
+    const mismatch = fixed("mismatch");
+    expect(await catalog2.tryDisplace(URL_V, A, reqs(A), disc(), mismatch.fn, t0)).toBe("refused");
+    expect(await catalog2.tryDisplace(URL_V, A, reqs(A), disc(), mismatch.fn, t0 + 61_000)).toBe("skipped");
+    expect(mismatch.calls, "a refuted claim is not re-probed a minute later").toHaveLength(1);
+  });
+
   it("an UNVERIFIED binding restored from storage is still displaceable", async () => {
     // THE SHAPE PRODUCTION IS ACTUALLY IN, and the one this suite did not cover.
     //

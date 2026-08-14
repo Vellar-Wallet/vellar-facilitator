@@ -32,7 +32,20 @@ export const OWNERSHIP_LIMITS = Object.freeze({
   maxResponseBytes: MAX_RESPONSE_BYTES,
 });
 
-export type OwnershipVerdict = "match" | "mismatch" | "unverifiable";
+/**
+ * `timeout` is deliberately NOT folded into `unverifiable`.
+ *
+ * They mean opposite things about the resource. `unverifiable` says the
+ * endpoint answered and the answer was no good — wrong status, no challenge,
+ * unparseable. `timeout` says it did not answer in the budget, which on
+ * free-tier hosting usually means asleep rather than broken. They deserve
+ * different cooldowns and only one of them deserves a retry.
+ */
+export type OwnershipVerdict = "match" | "mismatch" | "unverifiable" | "timeout";
+
+/** One retry, this long after a timeout. Sized to outlast a cold start (~30-45s
+ *  measured) without holding anything open — the wait is a timer, not a socket. */
+const COLD_START_RETRY_DELAY_MS = 60_000;
 
 interface LookupResult {
   address: string;
@@ -105,6 +118,12 @@ export interface VerifyOptions {
   timeoutMs?: number;
   maxBytes?: number;
   /**
+   * Delay before the single cold-start retry. Defaults to
+   * COLD_START_RETRY_DELAY_MS; set 0 to disable retrying entirely (tests that
+   * assert single-shot behaviour, and any caller that cannot wait a minute).
+   */
+  coldStartRetryDelayMs?: number;
+  /**
    * TEST TRANSPORT ONLY — never set this in production.
    *
    * Relaxes the https-only requirement and the private-address block so the
@@ -176,6 +195,45 @@ export async function verifyResourceOwnership(
     (p): p is string => typeof p === "string" && p.length > 0,
   );
   if (claims.length === 0) return "unverifiable";
+
+  const first = await probeOnce(resourceUrl, claims, opts);
+  if (first !== "timeout") return first;
+
+  // COLD-START RETRY — exactly one, and only for a timeout.
+  //
+  // A timeout is not evidence about ownership. It is usually evidence that the
+  // resource is asleep: free-tier hosts spin down after ~15 minutes idle and
+  // take 30-45s to come back, against a 3s probe budget. Measured 2026-08-14 on
+  // vellar-seller-demo — asleep it returns "unverifiable" at 3006ms; warm it
+  // returns "match" in 679ms. The verifier was right and the resource was
+  // simply not there yet.
+  //
+  // The first probe is also what WAKES the host, so a single retry a minute
+  // later lands on a warm service. That is why this is a retry rather than a
+  // longer budget: raising the budget to 10s would still lose to a 31s cold
+  // start while weakening the DoS bound on every probe, including hostile ones.
+  //
+  // WHAT STOPS AN ENDPOINT THAT ALWAYS TIMES OUT FROM GETTING INFINITE RETRIES:
+  //   1. One retry per call. Never a loop, so a trigger costs at most 2 probes.
+  //   2. Each probe is still bounded by `timeoutMs`, so the worst case is two
+  //      3-second waits plus the delay — nothing is held open longer.
+  //   3. The caller cools down on the verdict (catalog.cooldownFor), so a
+  //      repeatedly-timing-out URL is re-probed at most once per cooldown.
+  //   4. Triggers are settlements, which cost the payer money.
+  // Worst case is therefore ~2 probes per cooldown window per URL, and only
+  // while somebody is paying for it.
+  const delayMs = opts.coldStartRetryDelayMs ?? COLD_START_RETRY_DELAY_MS;
+  if (delayMs <= 0) return first;
+  await new Promise((r) => setTimeout(r, delayMs));
+  return probeOnce(resourceUrl, claims, opts);
+}
+
+/** One probe, one budget, one verdict. All retry policy lives in the caller. */
+async function probeOnce(
+  resourceUrl: string,
+  claims: string[],
+  opts: VerifyOptions,
+): Promise<OwnershipVerdict> {
   // MUST be undici's own fetch, not the global one. The pinned dispatcher is an
   // undici@8 Agent; Node's global fetch is a DIFFERENT bundled undici (6.x on
   // Node 22, 7.x on Node 25) whose handler interface undici@8 rejects with
@@ -237,7 +295,15 @@ export async function verifyResourceOwnership(
     if (payTos.size === 0) return "unverifiable";
     return claims.some((c) => payTos.has(c)) ? "match" : "mismatch";
   } catch {
-    // Abort (timeout), network error, DNS failure — all degrade to unverifiable.
+    // A TIMEOUT IS NOT THE SAME AS A FAILURE, and collapsing the two is what
+    // this repo keeps finding. Previously "abort (timeout), network error, DNS
+    // failure — all degrade to unverifiable", which meant a sleeping resource
+    // and a genuinely broken one were indistinguishable, shared a 15-minute
+    // cooldown, and neither was ever retried in time to catch a cold start.
+    //
+    // `controller.signal.aborted` is true only when OUR timer fired, so this
+    // separates "did not answer in time" from "answered badly / not at all".
+    if (controller.signal.aborted) return "timeout";
     return "unverifiable";
   } finally {
     clearTimeout(timer);
