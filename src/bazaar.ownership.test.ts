@@ -127,6 +127,19 @@ describe("Layer 2 populates the ownership binding for real (no mocks)", () => {
 
 describe("registerBazaar — Layer 2 async ownership verification", () => {
   it("does not delay or fail settlement when the verifier hangs", async () => {
+    // THIS TEST IS WHAT MAKES THE COLD-START BACKOFF SAFE. ownership.ts retries
+    // a timeout after 45s and again after 120s, so a settle response can have
+    // ~3 minutes of verification work outstanding behind it. That is only
+    // acceptable because the hook does not await any of it.
+    //
+    // @x402/core AWAITS onAfterSettle (`await hook(resultContext)`), so a
+    // `void` that someone later "cleans up" into an `await` would add those
+    // three minutes to a payment. A verifier that NEVER resolves is the
+    // strictly stronger case — if settlement returns under a hanging verifier,
+    // no finite backoff can delay it either.
+    //
+    // MUTATION: change bazaar.ts's `void catalog.reverify(...)` to `await`.
+    // The elapsed assertion below is the only thing that catches it.
     const catalog = await BazaarCatalog.create();
     // A verifier that never resolves — models a hostile/slow endpoint.
     const hangingVerify = vi.fn(() => new Promise<never>(() => {}));

@@ -43,9 +43,22 @@ export const OWNERSHIP_LIMITS = Object.freeze({
  */
 export type OwnershipVerdict = "match" | "mismatch" | "unverifiable" | "timeout";
 
-/** One retry, this long after a timeout. Sized to outlast a cold start (~30-45s
- *  measured) without holding anything open — the wait is a timer, not a socket. */
-const COLD_START_RETRY_DELAY_MS = 60_000;
+/**
+ * Retry delays after a timeout, in order. Two retries, then stop.
+ *
+ * Sized from measurement rather than preference: cold starts of 31.7s, 42.5s
+ * and 43.7s were observed on 2026-08-14, so 45s covers the common case and
+ * 120s covers most of what it misses. Waiting is a timer, not a held socket —
+ * each probe is still bounded by `timeoutMs`.
+ *
+ * NOT a schedule and NOT a sweep. See docs/decision-no-verification-sweep.md:
+ * the alternative was a background prober, which was refused because it would
+ * grant `verified` on current domain control with no contemporaneous payment.
+ * These retries belong to the settlement that spawned them, so the payment
+ * anchor is preserved BY CONSTRUCTION rather than by an eligibility rule
+ * someone can later relax.
+ */
+const COLD_START_RETRY_DELAYS_MS: readonly number[] = [45_000, 120_000];
 
 interface LookupResult {
   address: string;
@@ -118,11 +131,11 @@ export interface VerifyOptions {
   timeoutMs?: number;
   maxBytes?: number;
   /**
-   * Delay before the single cold-start retry. Defaults to
-   * COLD_START_RETRY_DELAY_MS; set 0 to disable retrying entirely (tests that
-   * assert single-shot behaviour, and any caller that cannot wait a minute).
+   * Delays before each cold-start retry, in order. Defaults to
+   * COLD_START_RETRY_DELAYS_MS; pass `[]` to disable retrying entirely (tests
+   * asserting single-shot behaviour, and any caller that cannot wait minutes).
    */
-  coldStartRetryDelayMs?: number;
+  coldStartRetryDelaysMs?: readonly number[];
   /**
    * TEST TRANSPORT ONLY — never set this in production.
    *
@@ -196,36 +209,63 @@ export async function verifyResourceOwnership(
   );
   if (claims.length === 0) return "unverifiable";
 
-  const first = await probeOnce(resourceUrl, claims, opts);
-  if (first !== "timeout") return first;
+  let verdict = await probeOnce(resourceUrl, claims, opts);
+  if (verdict !== "timeout") return verdict;
 
-  // COLD-START RETRY — exactly one, and only for a timeout.
+  // COLD-START RETRIES — at most two, and only for a timeout.
   //
   // A timeout is not evidence about ownership. It is usually evidence that the
   // resource is asleep: free-tier hosts spin down after ~15 minutes idle and
   // take 30-45s to come back, against a 3s probe budget. Measured 2026-08-14 on
-  // vellar-seller-demo — asleep it returns "unverifiable" at 3006ms; warm it
-  // returns "match" in 679ms. The verifier was right and the resource was
-  // simply not there yet.
+  // vellar-seller-demo — asleep it returns a timeout at 3006ms; warm it returns
+  // "match" in 679ms. The verifier was right; the resource was not there yet.
   //
-  // The first probe is also what WAKES the host, so a single retry a minute
-  // later lands on a warm service. That is why this is a retry rather than a
-  // longer budget: raising the budget to 10s would still lose to a 31s cold
-  // start while weakening the DoS bound on every probe, including hostile ones.
+  // The first probe is also what WAKES the host, so a retry lands on a warming
+  // service. That is why this is a retry rather than a longer budget: raising
+  // the budget to 10s would still lose to a 31s cold start while weakening the
+  // DoS bound on every probe, including hostile ones.
   //
   // WHAT STOPS AN ENDPOINT THAT ALWAYS TIMES OUT FROM GETTING INFINITE RETRIES:
-  //   1. One retry per call. Never a loop, so a trigger costs at most 2 probes.
-  //   2. Each probe is still bounded by `timeoutMs`, so the worst case is two
-  //      3-second waits plus the delay — nothing is held open longer.
+  //   1. A fixed, finite delay list. Never a loop on a condition, so a trigger
+  //      costs at most 3 probes.
+  //   2. Each probe is still bounded by `timeoutMs` — nothing is held open for
+  //      the delay, which is a timer with no socket attached.
   //   3. The caller cools down on the verdict (catalog.cooldownFor), so a
   //      repeatedly-timing-out URL is re-probed at most once per cooldown.
   //   4. Triggers are settlements, which cost the payer money.
-  // Worst case is therefore ~2 probes per cooldown window per URL, and only
-  // while somebody is paying for it.
-  const delayMs = opts.coldStartRetryDelayMs ?? COLD_START_RETRY_DELAY_MS;
-  if (delayMs <= 0) return first;
-  await new Promise((r) => setTimeout(r, delayMs));
-  return probeOnce(resourceUrl, claims, opts);
+  // Worst case is ~3 probes per cooldown window per URL, and only while
+  // somebody is paying for them.
+  //
+  // ============================ WHAT THIS IS NOT ============================
+  //
+  // Read a 3-attempt backoff and it is natural to assume durability. It has
+  // none. Two limits, both deliberate, both consequences of keeping the
+  // payment anchor:
+  //
+  //   THE TASK DIES WITH THE PROCESS. These retries run inside a promise the
+  //   settle hook deliberately does NOT await (see bazaar.ts). A deploy, a
+  //   crash, or a free-tier spin-down during the ~3 minutes of backoff drops
+  //   the remaining attempts silently. There is no queue and no resumption —
+  //   by design, because persisting them would recreate the scheduler this
+  //   avoids.
+  //
+  //   IT NEVER HELPS A RESOURCE WHOSE PAYER DOES NOT SETTLE AGAIN. Verification
+  //   is triggered by settlement and nothing else. A resource that is asleep
+  //   when its last-ever payment arrives stays unverified forever. That is the
+  //   coupling this design accepts rather than fixes; the alternative is
+  //   docs/decision-no-verification-sweep.md, which was considered and refused.
+  //
+  // So this widens the window in which a cold start can be caught. It does not
+  // make verification eventually-consistent, and it must not be described as
+  // though it does.
+  // ==========================================================================
+  const delays = opts.coldStartRetryDelaysMs ?? COLD_START_RETRY_DELAYS_MS;
+  for (const delayMs of delays) {
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    verdict = await probeOnce(resourceUrl, claims, opts);
+    if (verdict !== "timeout") return verdict;
+  }
+  return verdict;
 }
 
 /** One probe, one budget, one verdict. All retry policy lives in the caller. */

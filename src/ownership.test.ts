@@ -412,7 +412,7 @@ describe("mutation guards (audit: these all went undetected)", () => {
       fetchFn: fetchFn as unknown as typeof fetch,
       lookupFn: fakeLookup("93.184.216.34"),
       timeoutMs: 25,
-      coldStartRetryDelayMs: 0, // single-shot: this test is about the abort
+      coldStartRetryDelaysMs: [], // single-shot: this test is about the abort
     });
     expect(sawAbort, "the timeout must fire an abort, not just clear a timer").toBe(true);
     // NOT "unverifiable". A timeout says the endpoint did not answer; an
@@ -434,16 +434,39 @@ describe("mutation guards (audit: these all went undetected)", () => {
           }),
       );
 
-    it("retries a timeout exactly once, then gives up", async () => {
+    it("retries a timeout a FIXED number of times, then gives up", async () => {
       const fetchFn = timingOutFetch();
       const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
         fetchFn: fetchFn as unknown as typeof fetch,
         lookupFn: fakeLookup("93.184.216.34"),
         timeoutMs: 10,
-        coldStartRetryDelayMs: 1,
+        coldStartRetryDelaysMs: [1, 1],
       });
       expect(v).toBe("timeout");
-      expect(fetchFn, "one probe plus one retry — never a loop").toHaveBeenCalledTimes(2);
+      // MUTATION: loop while the verdict is "timeout" instead of iterating a
+      // finite delay list. An endpoint that never answers then probes forever.
+      expect(fetchFn, "one probe plus two retries — never a loop").toHaveBeenCalledTimes(3);
+    });
+
+    it("stops as soon as it gets an answer — a later retry is not spent", async () => {
+      let call = 0;
+      const fetchFn = vi.fn((_u: string, init: { signal?: AbortSignal }) => {
+        call += 1;
+        if (call === 1) {
+          return new Promise<Response>((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => rej(new Error("aborted")));
+          });
+        }
+        return Promise.resolve(okChallenge(["GLEGIT"]));
+      });
+      const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        lookupFn: fakeLookup("93.184.216.34"),
+        timeoutMs: 10,
+        coldStartRetryDelaysMs: [1, 1],
+      });
+      expect(v).toBe("match");
+      expect(fetchFn, "the second retry must not fire once the host answered").toHaveBeenCalledTimes(2);
     });
 
     it("succeeds on the retry when the resource wakes up — the real cold-start case", async () => {
@@ -462,7 +485,7 @@ describe("mutation guards (audit: these all went undetected)", () => {
         fetchFn: fetchFn as unknown as typeof fetch,
         lookupFn: fakeLookup("93.184.216.34"),
         timeoutMs: 10,
-        coldStartRetryDelayMs: 1,
+        coldStartRetryDelaysMs: [1],
       });
       expect(v, "the resource was asleep, not unowned").toBe("match");
       expect(fetchFn).toHaveBeenCalledTimes(2);
@@ -473,7 +496,7 @@ describe("mutation guards (audit: these all went undetected)", () => {
       const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
         fetchFn: fetchFn as unknown as typeof fetch,
         lookupFn: fakeLookup("93.184.216.34"),
-        coldStartRetryDelayMs: 1,
+        coldStartRetryDelaysMs: [1],
       });
       expect(v).toBe("mismatch");
       expect(fetchFn, "a mismatch is evidence; probing again would only harass").toHaveBeenCalledTimes(1);
@@ -484,7 +507,7 @@ describe("mutation guards (audit: these all went undetected)", () => {
       const v = await verifyResourceOwnership("https://example.com/q", "GLEGIT", {
         fetchFn: fetchFn as unknown as typeof fetch,
         lookupFn: fakeLookup("93.184.216.34"),
-        coldStartRetryDelayMs: 1,
+        coldStartRetryDelaysMs: [1],
       });
       expect(v).toBe("unverifiable");
       expect(fetchFn).toHaveBeenCalledTimes(1);
