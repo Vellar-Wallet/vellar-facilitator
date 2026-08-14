@@ -139,6 +139,35 @@ down (what the operator must verify before editing a binding).
   the demo. Anything sold as "the rotation fix" must say which rows of the
   table it actually covers.
 
+## If we do nothing — the interim position, stated as one
+
+**Adopted 2026-08-14, deliberately.** The decision above waits for a real
+merchant to make it concrete rather than being settled on a demo entry. Doing
+nothing is itself a position, so here is exactly what it means:
+
+- **The demo entry stays stale indefinitely.** Bound to `GBJX3E4G…`,
+  advertising a dead asset, no badge — and there is no passive expiry: the
+  latch and the F3 tombstone both survive eviction by design, so even
+  `MAX_ENTRIES` pressure does not clear it. It changes only when an operator
+  runs runbook §1, and doing that *before* the decision would spend the one
+  concrete instance this question currently has.
+- **A real merchant hitting this gets runbook §1.** Their payments still
+  settle — nothing on the payment path is affected. Their catalog entry shows
+  the old `payTo` and no badge until an operator intervenes.
+- **Detection exists on the operator side only.** The #57 log line —
+  `binding was PROVEN once and is permanently non-displaceable` — is the
+  alarm; it fires on every settlement that would have displaced. Grep for it.
+  **Nothing tells the merchant.** They discover the state by reading their own
+  catalog entry, and their remedy is contacting the operator. That asymmetry
+  is the real cost of the interim position, and it is accepted, not overlooked.
+- **What forces the decision:** a real merchant case (the intended trigger),
+  or `ownerVerified` becoming load-bearing — pubnet blocker 4 already conditions
+  go-live on the badge's dependability, and a badge that can be silently stuck
+  false for a rotated merchant fails that bar.
+- **What this does not pre-decide:** any option above. In particular, O-18's
+  honesty fix (making the once-proven state visible on the wire) is
+  independent of rotation and stays available without touching the latch.
+
 ## Not decided here
 
 No option is selected. A and F differ only in investment; D and E are additive
