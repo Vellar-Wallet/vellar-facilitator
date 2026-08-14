@@ -262,13 +262,17 @@ your 402 names your address, you take the binding back automatically
 (displacement). Changing the address on a binding that was already **verified**
 is not automatic and needs [runbook §1](./operator-runbook.md).
 
-**Do not rely on that recovery yet.** It works in tests, including against a
-binding restored from storage — and on 2026-08-14 it did **not** recover a real
-stale binding on the hosted instance. Two settlements naming the claimant landed
-on-chain and the catalog did not move. The cause is not yet established, and
-until it is, treat displacement as a mechanism that should work rather than one
-observed working in production. Detail, including everything ruled out:
-[`diagnosis-demo-listing.md`](./diagnosis-demo-listing.md).
+**Two caveats before you rely on that.** First, displacement has never been
+observed live — it works in tests, including against a binding restored from
+storage, but the one production case that looked like a test of it turned out
+not to be one (the binding was once-verified, so refusal was correct;
+[`diagnosis-demo-listing.md`](./diagnosis-demo-listing.md)). Second, and more
+important for you as a merchant: **displacement only ever moves an UNVERIFIED
+binding. If your binding was ever verified and you then rotate your `payTo`,
+there is no in-band recovery at all** — not settlements, not retries. The old
+proof is permanent by design (it is what stops a domain buyer stealing a
+verified binding), and the only path is [runbook §1](./operator-runbook.md).
+So rotate deliberately: verify with the address you intend to keep.
 
 The practical advice is unchanged and now matters more: **be first to settle for
 your own URL.**
