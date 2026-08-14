@@ -326,7 +326,12 @@ export async function buildServer(
       ...(q.offset !== undefined ? { offset: Number(q.offset) } : {}),
     });
     if (!trust) return response;
-    let items = await annotateTrust(response.items, trust, (url) => catalog.isVerifiedOwner(url));
+    let items = await annotateTrust(
+      response.items,
+      trust,
+      (url) => catalog.isVerifiedOwner(url),
+      (url) => catalog.isEverVerified(url),
+    );
     if (q.verified_only === "true") {
       const before = items.length;
       items = filterVerifiedOnly(items);
@@ -372,6 +377,7 @@ export async function buildServer(
       response.resources,
       trust,
       (url) => catalog.isVerifiedOwner(url),
+      (url) => catalog.isEverVerified(url),
     );
     resources = q.verified_only === "true"
       ? filterVerifiedOnly(resources)

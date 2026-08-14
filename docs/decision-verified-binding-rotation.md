@@ -94,6 +94,12 @@ account (a data entry or a marker payment), which needs no new API surface.
 
 ### E — Put the latch on the wire, honestly (orthogonal; combinable with any)
 
+> **Status: implemented 2026-08-14 as `trust.ownershipState`, scoped exactly to
+> honesty (O-18).** The rotation question remains open and this changed none of
+> it — the demo entry now *says* `"proven-unconfirmed"` instead of hiding it,
+> and still cannot move. The text below is kept as the option's original
+> weighing.
+
 Expose the durable state distinctly — e.g. `trust.ownershipProvenAt`
 (timestamp) alongside the ephemeral badge — so the state that governs
 displacement is readable rather than inferable only from a DB column or a log
