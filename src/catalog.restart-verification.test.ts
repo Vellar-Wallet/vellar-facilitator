@@ -124,6 +124,66 @@ describe("G-1 — verifiedOwner does not survive a restart, and never recovers",
     await appAfter.close();
   });
 
+  it("O-18: a latched entry serves ownershipState proven-unconfirmed after restart — and nothing expires it", async () => {
+    const file = `file:${join(tmpDir(), "catalog.json.db")}`;
+
+    // --- Run 1: proven through the PRODUCTION write path (reverify -> match),
+    // which sets the badge AND latches durably. Not setVerifiedOwner, which is
+    // the badge-only test seam.
+    const before = await BazaarCatalog.create(reopen(file));
+    await before.upsertFromPayment(disc(), reqs(PAY_OLD));
+    expect(await before.reverify(URL_X, PAY_OLD, async () => "match")).toBe("match");
+    await before.flush();
+
+    const appBefore = await serve(before);
+    const pre = trustOf((await appBefore.inject({ method: "GET", url: "/discovery/resources" })).json().items[0]);
+    expect(pre.ownerVerified, "precondition: badge earned").toBe(true);
+    expect(pre.ownershipState, "badge present -> verified, per the invariant").toBe("verified");
+    await appBefore.close();
+
+    // --- Run 2: the O-18 shape. Badge gone (RA-9), latch survived.
+    const after = await BazaarCatalog.create(reopen(file));
+    const appAfter = await serve(after);
+    const read = async () =>
+      trustOf((await appAfter.inject({ method: "GET", url: "/discovery/resources" })).json().items[0]);
+
+    const t = await read();
+    // CONSUMER BEFORE/AFTER, pinned: a boolean consumer sees exactly what it
+    // saw before this field existed — false — and verification stays clamped.
+    expect(t.ownerVerified, "boolean consumers: unchanged, still false").toBe(false);
+    expect(t.verification, "clamping: unchanged, still unknown").toBe("unknown");
+    // The new disclosure is the only difference: once-proven is now visible.
+    expect(t.ownershipState).toBe("proven-unconfirmed");
+
+    // verified_only is UNCHANGED by the new field: it filters on verification,
+    // which the badge clamps — a proven-unconfirmed entry does not pass.
+    const filtered = (await appAfter.inject({ method: "GET", url: "/discovery/resources?verified_only=true" })).json();
+    expect(filtered.items, "proven-unconfirmed does not satisfy verified_only").toHaveLength(0);
+
+    // --- NO EXPIRY PATH, asserted rather than assumed. The exposure is
+    // read-only: serving the state repeatedly, and a displacement attempt by a
+    // claimant whose endpoint would vouch for it, must change nothing.
+    // MUTATION: make the exposure clear or decay the latch (e.g. everVerified
+    // .delete on read, or a TTL) — the displacement below then succeeds and
+    // this goes red.
+    for (let i = 0; i < 5; i++) expect((await read()).ownershipState).toBe("proven-unconfirmed");
+    expect(
+      await after.tryDisplace(URL_X, PAY_NEW, reqs(PAY_NEW), disc(), async () => "match"),
+      "the latch still gates displacement with the state on the wire",
+    ).toBe("skipped");
+    expect(after.isEverVerified(URL_X), "latch intact after reads and a displacement attempt").toBe(true);
+    expect((await read()).ownershipState, "state unchanged after the attempt").toBe("proven-unconfirmed");
+    await appAfter.close();
+
+    // --- Run 3: still there. Durability holds THROUGH the new exposure.
+    const again = await BazaarCatalog.create(reopen(file));
+    expect(again.isEverVerified(URL_X), "second restart: latch still durable").toBe(true);
+    const appAgain = await serve(again);
+    const t3 = trustOf((await appAgain.inject({ method: "GET", url: "/discovery/resources" })).json().items[0]);
+    expect(t3.ownershipState).toBe("proven-unconfirmed");
+    await appAgain.close();
+  });
+
   it("verified_only=true serves an EMPTY catalog after restart", async () => {
     const file = `file:${join(tmpDir(), "catalog.json.db")}`;
     const before = await BazaarCatalog.create(reopen(file));

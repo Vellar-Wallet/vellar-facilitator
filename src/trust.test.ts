@@ -164,6 +164,69 @@ function makeContractDataEntry(hashHex: string) {
   };
 }
 
+describe("O-18 — ownershipState: the three-valued answer the boolean cannot give", () => {
+  const resolver = fixedResolver({});
+
+  it("derives all three states from badge x latch, badge checked first", async () => {
+    const cases: Array<[boolean, boolean, string]> = [
+      [true, true, "verified"], // the production shape: every badge write also latches
+      [false, true, "proven-unconfirmed"], // post-restart: latch survived, badge did not
+      [false, false, "unverified"], // never proven
+      // badge-without-latch is reachable only through test seams; badge-first
+      // derivation still reports "verified", keeping the invariant below.
+      [true, false, "verified"],
+    ];
+    for (const [badge, latch, want] of cases) {
+      const [a] = await annotateTrust([item("CX")], resolver, () => badge, () => latch);
+      expect(a!.trust!.ownershipState, `badge=${badge} latch=${latch}`).toBe(want);
+    }
+  });
+
+  it("INVARIANT: ownershipState is \"verified\" exactly when ownerVerified is true", async () => {
+    // The constraint that stops this field becoming a third mechanism reading
+    // the same fact its own way: a consumer comparing the two fields must never
+    // see them disagree. MUTATION: derive the state from the latch first —
+    // post-restart entries then read ownershipState:"verified" beside
+    // ownerVerified:false, and the two fields tell different stories.
+    for (const badge of [true, false]) {
+      for (const latch of [true, false]) {
+        const [a] = await annotateTrust([item("CX")], resolver, () => badge, () => latch);
+        expect(a!.trust!.ownershipState === "verified", `badge=${badge} latch=${latch}`).toBe(
+          a!.trust!.ownerVerified,
+        );
+      }
+    }
+  });
+
+  it("without an everVerifiedFn the state degrades, never upgrades", async () => {
+    // A caller that cannot read the latch cannot assert "proven-unconfirmed".
+    const [noFn] = await annotateTrust([item("CX")], resolver, () => false);
+    expect(noFn!.trust!.ownershipState).toBe("unverified");
+    const [badgeOnly] = await annotateTrust([item("CX")], resolver, () => true);
+    expect(badgeOnly!.trust!.ownershipState).toBe("verified");
+  });
+
+  it("the middle value cannot be promoted by a substring or truthiness check", async () => {
+    // Naming is load-bearing (O-18): anything currently checking for the word
+    // "verified" — or for truthiness — must not match the once-proven state.
+    // MUTATION: rename it "verified-stale" or "verified_pending"; this goes red.
+    const [a] = await annotateTrust([item("CX")], resolver, () => false, () => true);
+    const state = a!.trust!.ownershipState!;
+    expect(state).toBe("proven-unconfirmed");
+    expect(state.includes("verified"), "must not contain the word 'verified'").toBe(false);
+  });
+
+  it("is disclosure, not authority: verification stays clamped by the BADGE alone", async () => {
+    // proven-unconfirmed must not unclamp anything — a once-proven entry gets
+    // no verified verdicts back until the badge itself is re-earned.
+    const r = fixedResolver({ CV: "verified" });
+    const [a] = await annotateTrust([item("CV")], r, () => false, () => true);
+    expect(a!.trust!.ownershipState).toBe("proven-unconfirmed");
+    expect(a!.trust!.verification, "still clamped").toBe("unknown");
+    expect(a!.trust!.acceptsVerification).toEqual(["unknown"]);
+  });
+});
+
 describe("annotateTrust precedence", () => {
   it("all assets verified ⇒ verified; any unverified ⇒ unverified; else unknown", async () => {
     const resolver = fixedResolver({ CV: "verified", CU: "unverified", CX: "unknown" });
@@ -196,6 +259,9 @@ describe("annotateTrust precedence", () => {
       verification: "verified",
       acceptsVerification: ["verified"],
       ownerVerified: true,
+      // O-18: additive field; this exact-shape assertion is deliberately the
+      // place that notices any change to the trust block's wire surface.
+      ownershipState: "verified",
     });
   });
 });

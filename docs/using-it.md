@@ -287,13 +287,27 @@ your own URL.**
   "trust": {
     "settlements": 7, "uniquePayers": 3,
     "observedSettlements": 7, "statsSource": "observed",
-    "ownerVerified": true,
+    "ownerVerified": true, "ownershipState": "verified",
     "verification": "unknown", "acceptsVerification": ["unknown"]
   }
 }
 ```
 
 - **`ownerVerified`** — yours to control, per above.
+- **`ownershipState`** — the three-valued answer the boolean cannot give:
+  `"unverified"` (never proven), `"proven-unconfirmed"` (proven once — durably,
+  so the binding is not displaceable — but not re-confirmed since the process
+  last started), `"verified"` (proven and currently confirmed; appears exactly
+  when `ownerVerified` is `true`, never otherwise).
+
+  **If you already consume this API, nothing you read has changed.**
+  `ownerVerified` still means what it meant; the new field is additive. What
+  changed is what you can now *distinguish*: an entry reading
+  `ownerVerified: false` used to be unreadable as either "possible squat" or
+  "proven owner, facilitator restarted since" — two very different risk
+  postures for a buyer. `"proven-unconfirmed"` is the second one. Do not treat
+  it as verified — nothing does, including `verified_only` — but do not read
+  it as a squat either.
 - **`statsSource`** — where these numbers came from. `"observed"` means the entry
   was created by the running process, so it witnessed the whole history.
   `"persisted"` means the entry was loaded from storage: its baseline was

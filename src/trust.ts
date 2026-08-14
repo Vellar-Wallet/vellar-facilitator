@@ -46,6 +46,31 @@ export type TrustedDiscoveryResource = DiscoveryResource & {
     /** Whether the resource owner passed Layer 2 402-challenge verification. */
     ownerVerified?: boolean;
     /**
+     * O-18: the three-valued answer the `ownerVerified` boolean cannot give.
+     *
+     *   "unverified"          — never proven.
+     *   "proven-unconfirmed"  — proven once (durably latched, so NOT
+     *                           displaceable), but not re-confirmed since this
+     *                           process started. The badge above reads false.
+     *   "verified"            — proven and currently confirmed. By invariant,
+     *                           this value appears IFF `ownerVerified` is true,
+     *                           so the two fields can never tell different
+     *                           stories to a consumer comparing them.
+     *
+     * DISCLOSURE, NOT AUTHORITY. Nothing in this codebase reads this field:
+     * `verification` stays clamped by the badge, `verified_only` filters on
+     * `verification`, and displacement gates on the latch directly. A consumer
+     * checking the boolean sees exactly what they saw before this field
+     * existed. "proven-unconfirmed" deliberately does not contain the word
+     * "verified", so no substring or truthiness check can promote it.
+     *
+     * Why it exists: `ownerVerified: false` used to collapse "never proven"
+     * and "proven but not re-witnessed since restart" into one value — a
+     * misdiagnosis that cost three settlements to unwind (closing-state O-17/
+     * O-18) because the durable state was readable only in a DB column.
+     */
+    ownershipState?: "unverified" | "proven-unconfirmed" | "verified";
+    /**
      * Settlements this process actually witnessed. `settlements` may include a
      * base loaded from CATALOG_FILE, which has no independent source of truth
      * and is therefore unverifiable; this number cannot be forged by editing
@@ -308,10 +333,24 @@ export async function annotateTrust(
   items: TrustedDiscoveryResource[],
   resolver: TrustResolver,
   ownerVerifiedFn?: OwnerVerifiedFn,
+  /**
+   * O-18: the durable latch (`catalog.isEverVerified`). Optional and additive.
+   * When omitted, "proven-unconfirmed" cannot be asserted, so the state
+   * degrades to what the badge alone supports — never upward.
+   */
+  everVerifiedFn?: OwnerVerifiedFn,
 ): Promise<TrustedDiscoveryResource[]> {
   return Promise.all(
     items.map(async (item) => {
       const ownerVerified = ownerVerifiedFn ? ownerVerifiedFn(item.resource) : false;
+      // Derivation leans on a write-path invariant asserted by test: every path
+      // that sets the badge also latches (reverify match, displacement), so
+      // badge ⇒ latch and the three states are mutually exclusive. The badge is
+      // checked FIRST, which is what pins ownershipState === "verified" to
+      // ownerVerified === true — the two fields cannot disagree.
+      const everVerified = everVerifiedFn ? everVerifiedFn(item.resource) : false;
+      const ownershipState: NonNullable<NonNullable<TrustedDiscoveryResource["trust"]>["ownershipState"]> =
+        ownerVerified ? "verified" : everVerified ? "proven-unconfirmed" : "unverified";
 
       // Per-accepts asset verdicts, index-aligned with item.accepts, then clamped.
       const rawVerdicts = await Promise.all(
@@ -336,6 +375,7 @@ export async function annotateTrust(
           verification,
           acceptsVerification,
           ownerVerified,
+          ownershipState,
         },
       };
     }),

@@ -286,7 +286,7 @@ Three settlements were spent, in the most expensive order available:
 | --- | --- | --- |
 | `SELECT url, verified_at FROM ownership` on the Turso DB | one query, zero settlements | **The whole time.** The latch loads from `verified_at`; the durable truth sat in one column |
 | The #57 per-exit log line | one grep, zero settlements | After #57 deployed — and it is what actually resolved this |
-| A wire field distinguishing latch from badge | reading the API response | Does not exist — `ownerVerified` promises the latch's meaning and reports the badge |
+| A wire field distinguishing latch from badge | reading the API response | Did not exist then — `ownerVerified` promised the latch's meaning and reported the badge. **Added since as `trust.ownershipState` (O-18):** this diagnosis would now be `"proven-unconfirmed"` in one API call |
 | Live settlements | one payment + monitoring each | Used first, three times |
 
 The lesson for the register: when a diagnosis depends on server-side state,
