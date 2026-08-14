@@ -181,10 +181,20 @@ services:
       #
       # PAYTO is a new merchant holding a live USDC trustline. The catalog's URL
       # binding still points at the old GBJX3E4G… address, whose secret is not
-      # known to be held. That resolves itself WITHOUT operator involvement: the
-      # old binding was never verified, so the first settlement naming this
-      # address displaces it. Runbook §1 is only needed to move an
-      # already-verified binding.
+      # known to be held.
+      #
+      # CORRECTED 2026-08-14. This comment previously claimed the old binding
+      # "resolves itself WITHOUT operator involvement" because it was never
+      # verified. That prediction was tested and is FALSE: two settlements
+      # naming this address landed on-chain (bc7e4a15…, 2d1c3c78…) and the
+      # catalog did not move — same binding, same dead asset, settlements still
+      # 0. Displacement is a documented mechanism, it passes in tests including
+      # against a restored unverified binding, and it did not recover this one.
+      # Cause not yet established; see docs/diagnosis-demo-listing.md.
+      #
+      # Do not wait for a recovery that has not been observed. The demo is
+      # payable either way — the stale entry is a catalog-display problem, not
+      # a payment one.
       - key: PAYTO
         value: "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC"
       - key: ASSET

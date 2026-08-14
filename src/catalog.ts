@@ -761,30 +761,53 @@ export class BazaarCatalog {
   ): Promise<"match" | "mismatch" | "unverifiable" | "skipped"> {
     const key = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
     const entry = this.entries.get(key);
-    if (!entry) return "skipped";
+
+    /** Same contract as tryDisplace's: a silent skip is an undiagnosable one.
+     *  This is the path that flips `ownerVerified`, so "the badge did not
+     *  change and nothing said why" is the exact question an operator arrives
+     *  with. The two benign, per-settlement cases stay quiet — see below. */
+    const skip = (reason: string): "skipped" => {
+      console.warn(`[catalog] reverify skipped for ${key} (settler ${settlingPayTo || "<empty>"}): ${reason}`);
+      return "skipped";
+    };
+
+    if (!entry) return skip("no catalog entry for this key");
     // Already verified: nothing to re-establish, and re-probing a good entry is
     // pure outbound traffic. This is also what makes an existing verification
     // undowngradable — the verifier is never consulted again — so the
     // match-only write below can only ever act on an unverified entry.
+    //
+    // NOT LOGGED: fires on every settlement for every healthy entry, which is
+    // the steady state we want, and a line per payment would drown the rest.
     if (entry.verifiedOwner) return "skipped";
     // An entry that binds to nothing (bindLoadedEntry's empty-accepts branch)
     // has no claim to test — asking would read back a false mismatch. Checked
     // BEFORE the bound-owner gate: that gate would reject an empty binding too,
     // which would make this line dead code that merely looks load-bearing.
-    if (entry.boundPayTo.length === 0) return "skipped";
+    if (entry.boundPayTo.length === 0)
+      return skip("binding is empty — tampered or unbound state, nothing to test");
     // Only the bound owner's own settlement may trigger a probe. Note this is
     // 1:1, not zero: under TOFU the bound owner is the FIRST SETTLER, not
     // necessarily whoever controls the endpoint, so a stranger who bound a
     // victim's URL can still cause one probe per settlement. The cooldowns
     // below, not this gate, are the actual brake.
+    //
+    // NOT LOGGED: this is the mirror of tryDisplace's already-bound skip. An
+    // unbound settler lands here on every claim attempt, and tryDisplace
+    // already logs that same event with more detail.
     if (!settlingPayTo || !entry.boundPayTo.includes(settlingPayTo)) return "skipped";
     // A routeTemplate key is `origin + /quote/:symbol`; fetching it would GET a
     // literal `:symbol`. Structurally unverifiable, so never probe it.
-    if (isTemplatedKey(key)) return "skipped";
-    if (this.verifyInFlight.has(key)) return "skipped";
+    if (isTemplatedKey(key)) return skip("templated key — structurally unverifiable, never probed");
+    if (this.verifyInFlight.has(key)) return skip("a probe for this key is already in flight");
 
     const last = this.verifyState.get(key);
-    if (last && now - last.at < cooldownFor(last.verdict)) return "skipped";
+    if (last && now - last.at < cooldownFor(last.verdict)) {
+      const remainingMs = cooldownFor(last.verdict) - (now - last.at);
+      return skip(
+        `cooling down after a previous "${last.verdict}" verdict — ${Math.ceil(remainingMs / 1000)}s remaining`,
+      );
+    }
 
     this.verifyInFlight.add(key);
     try {
@@ -886,25 +909,57 @@ export class BazaarCatalog {
   ): Promise<"displaced" | "refused" | "skipped"> {
     const key = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
     const entry = this.entries.get(key);
+    /**
+     * EVERY EXIT SAYS WHY.
+     *
+     * Eight guards used to return a bare "skipped", which made a displacement
+     * that silently did not happen undiagnosable from outside the process. That
+     * is the same defect as `settle` collapsing every submission failure into
+     * one constant `errorReason` (docs/diagnosis-settle-failures.md) — and it
+     * bit us inside the control built to prevent squatting: two live
+     * settlements against a real stale binding recovered nothing, and every
+     * candidate cause had to be excluded by reading source rather than a log.
+     * See docs/diagnosis-demo-listing.md.
+     */
+    const outcome = (result: "skipped" | "refused", reason: string): "skipped" | "refused" => {
+      console.warn(
+        `[catalog] displacement ${result} for ${key} (claimant ${claimant || "<empty>"}): ${reason}`,
+      );
+      return result;
+    };
+
     // No entry: this is a first catalog, which TOFU handles. Nothing to displace.
-    if (!entry) return "skipped";
-    if (!claimant) return "skipped";
-    // Already bound: an ordinary settlement, not a claim.
+    if (!entry) return outcome("skipped", "no catalog entry for this key — first catalog, TOFU handles it");
+    if (!claimant) return outcome("skipped", "settlement carried no payTo to claim with");
+    // Already bound: an ordinary settlement, not a claim. DELIBERATELY NOT
+    // LOGGED — bazaar.ts calls this on every settle, so the bound owner's own
+    // payments arrive here every time. A line per payment would bury the
+    // outcomes that matter under the one that never does.
     if (entry.boundPayTo.includes(claimant)) return "skipped";
     // THE ONE-WAY GATE. Read from the durable latch, never from the badge.
-    if (this.everVerified.has(key)) return "skipped";
+    if (this.everVerified.has(key))
+      return outcome("skipped", "binding was PROVEN once and is permanently non-displaceable (one-way latch)");
     // An empty binding has no claimant to displace and no proof to weigh; it is
     // the tampered state bindLoadedEntry warns about, not a live URL.
-    if (entry.boundPayTo.length === 0) return "skipped";
+    if (entry.boundPayTo.length === 0)
+      return outcome("skipped", "binding is empty — tampered or unbound state, not a live URL");
     // A templated key would GET a literal `:symbol`. Never probe it.
-    if (isTemplatedKey(key)) return "skipped";
+    if (isTemplatedKey(key)) return outcome("skipped", "templated key — never probed");
     // A frozen catalog must not rebind anything.
-    if (this.frozen === "ownership-unreachable" || this.frozen === "ownership-invalid") return "skipped";
+    if (this.frozen === "ownership-unreachable" || this.frozen === "ownership-invalid")
+      return outcome("skipped", `catalog is frozen (${this.frozen}) — rebinding refused`);
 
     const cooldownKey = `${key}\u0000${claimant}`;
-    if (this.displaceInFlight.has(cooldownKey)) return "skipped";
+    if (this.displaceInFlight.has(cooldownKey))
+      return outcome("skipped", "a probe for this (url, claimant) is already in flight");
     const last = this.displaceState.get(cooldownKey);
-    if (last && now - last.at < cooldownFor(last.verdict)) return "skipped";
+    if (last && now - last.at < cooldownFor(last.verdict)) {
+      const remainingMs = cooldownFor(last.verdict) - (now - last.at);
+      return outcome(
+        "skipped",
+        `cooling down after a previous "${last.verdict}" verdict — ${Math.ceil(remainingMs / 1000)}s remaining`,
+      );
+    }
 
     this.displaceInFlight.add(cooldownKey);
     let verdict: OwnershipVerdict;
@@ -913,19 +968,27 @@ export class BazaarCatalog {
       // "does this endpoint name anyone we know", which a squatter's own
       // endpoint could answer yes to.
       verdict = await verify(key, [claimant]);
-    } catch {
+    } catch (err) {
       this.displaceState.set(cooldownKey, { verdict: "unverifiable", at: now });
-      return "refused";
+      return outcome(
+        "refused",
+        `the ownership probe threw — ${String((err as Error)?.message ?? err)}`,
+      );
     } finally {
       this.displaceInFlight.delete(cooldownKey);
     }
     this.displaceState.set(cooldownKey, { verdict, at: now });
-    if (verdict !== "match") return "refused";
+    if (verdict !== "match")
+      return outcome(
+        "refused",
+        `the resource's own 402 challenge did not name the claimant (verdict "${verdict}")`,
+      );
 
     // Re-check the latch: the probe was awaited, and a concurrent re-verify may
     // have proven the incumbent while we were off the CPU. Losing that race
     // would displace a binding that had become non-displaceable mid-flight.
-    if (this.everVerified.has(key)) return "skipped";
+    if (this.everVerified.has(key))
+      return outcome("skipped", "incumbent was proven by a concurrent re-verify while the probe was in flight");
 
     const displaced = [...entry.boundPayTo];
     if (this.store) {
@@ -1031,9 +1094,20 @@ export class BazaarCatalog {
     if (existing && !existing.boundPayTo.includes(requirements.payTo)) {
       // Unbound payTo for an already-established URL: reject the whole write.
       // Do not append accepts, do not overwrite metadata, do not touch stats.
+      // WORDING MATTERS HERE. This said "possible resource-URL hijack" alone,
+      // which is accurate about the mechanism and misleading about the
+      // situation: the same line fires for the LEGITIMATE owner, because the
+      // settle that triggers a displacement is refused by design while the
+      // rebinding lands behind it. An operator meeting this line first
+      // concludes they are under attack, when the real event may be that
+      // displacement did not run. Observed 2026-08-14 — this line appeared
+      // twice for the demo's own merchant.
       console.warn(
         `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} is not bound ` +
-          `(bound: ${existing.boundPayTo.join(", ")}) — possible resource-URL hijack (F11)`,
+          `(bound: ${existing.boundPayTo.join(", ")}). This is EXPECTED for the settle that ` +
+          `triggers a displacement, and is also what a hijack attempt looks like — the two are ` +
+          `indistinguishable here. Read the "[catalog] displacement …" line for this key to tell ` +
+          `them apart before treating it as an attack (F11)`,
       );
       return false;
     }
