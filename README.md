@@ -111,10 +111,12 @@ deployment, not the resources. `ownerVerified` is the field that works.
 stroops of simulation fee (the policy contract runs inside `__check_auth`);
 hosted facilitators defaulting to a 50k ceiling reject them. This facilitator
 defaults to **500,000** (`MAX_TX_FEE_STROOPS`) — the exact bug that motivated
-this project, fixed from day one. That default is sized from measured on-chain
-data, not guessed: the worst real settlement observed on this sponsor's history
-charged **127,808** stroops, so 500,000 clears it by ~3.9x while bounding
-worst-case sponsor drain per settle at 0.05 XLM.
+this project, fixed from day one. That default is sized from evidence that
+carries its provenance ([`docs/decision-fee-thresholds.md`](./docs/decision-fee-thresholds.md)):
+the most expensive verified reading is **140,331** stroops simulated for a
+freshly provisioned policy-governed wallet (28,711 is the worst hash-verifiable
+charge on-chain), so 500,000 clears it by ~3.6x while bounding worst-case
+sponsor drain per settle at 0.05 XLM.
 
 **Bazaar catalogs itself.** When a payment settles and its payload carries the
 official [`bazaar` discovery extension](https://www.npmjs.com/package/@x402/extensions),
