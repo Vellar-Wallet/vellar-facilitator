@@ -1,5 +1,10 @@
 # Vellar Facilitator — Build Plan
 
+> **HISTORICAL (as of 2026-08-15).** This was the build-phase tracker; the
+> system described here has been built, audited, and operated since. Current
+> truth lives in `README.md`, `technical-doc.md`, and `docs/closing-state.md`.
+> Kept for provenance, not guidance.
+
 Single source of progress for this repo. See `technical-doc.md` for the full
 spec this plan implements. An item is not done without tests, matching the
 standard set in the Vellar wallet repo.

@@ -26,13 +26,15 @@ free service down after 15 minutes without traffic and the container is
 replaced, not paused; measured cold start **44.76 seconds**. You pay it once —
 the service then stays warm for 15 minutes past your last request.
 
-There is a keep-alive workflow, and it does **not** deliver a warm window: it is
-a GitHub Actions cron, and scheduled workflows are best-effort. Asked for a ping
-every 5 minutes, it delivered **6 of 96** inside one 8-hour window, with a
-**47-minute shortest gap** and none under the 15-minute idle timeout. Warm hours
-were advertised here until 2026-08-12 and have been withdrawn; see
-[`using-it.md` § About the cold start](./docs/using-it.md#about-the-cold-start--there-is-no-warm-window).
-Making it real needs an external pinger, not a tighter cron.
+**Update 2026-08-15: the instance is configured always-on** (`render.yaml`
+`plan: starter`) — the cold start above is retired once that deploy is verified
+live; until then, assume it. The keep-alive cron era is over: re-enabled
+2026-08-11 against measured budget headroom, it still never delivered a warm
+window — GitHub's scheduler delivered pings 18–52 minutes apart against a
+15-minute idle timeout (measured again 2026-08-15) — so it spent pool hours on
+a coin flip. Paying for the instance ends the category; the workflow remains
+manual-dispatch only. History: [`using-it.md` § About the cold
+start](./docs/using-it.md#about-the-cold-start--there-is-no-warm-window).
 
 The catalog survives either way: it lives in libSQL/Turso rather than on the
 container, so your listings and ownership bindings are there when it wakes.
@@ -166,11 +168,12 @@ went with every spin-down, taking listings and ownership bindings. Since
 start with the binding intact. An empty catalog now means an empty catalog, not a
 restart — if yours is missing, something else is wrong.
 
-The keep-alive workflow that used to paper over this is **deliberately disabled**
-and stays that way. Free instance hours are pooled per Render *workspace*, and
-running this one warm would consume most of that pool — exhausting it suspends
-**every** free service in the workspace, including unrelated production ones.
-That was never worth it, and durable storage removed the reason to want it.
+The keep-alive workflow's full arc, honestly: disabled at first for workspace
+pool-budget reasons, **re-enabled 2026-08-11** against measured headroom, and
+**retired 2026-08-15** when measurement showed GitHub's cron delivery (18–52
+minute gaps) could never beat the 15-minute idle timeout — hours spent, warmth
+not delivered. The durable catalog had already removed half the reason to want
+it; the paid always-on instance removes the rest.
 
 **Resource-URL ownership is trust-on-first-use.** The first settlement for a
 canonical URL (`origin + pathname`) binds it to that payment's `payTo`; later

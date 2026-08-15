@@ -20,7 +20,14 @@ services:
   - type: web
     name: vellar-facilitator
     runtime: node
-    plan: free
+    # PAID TIER — approved 2026-08-15, deliberately. Free-tier spin-down gave the
+    # first request of every idle period a measured ~45s stall (O-15/O-16), made
+    # ownership verification of sleeping siblings structurally flaky, and the
+    # keepalive workaround burned pool hours without beating the 15-minute idle
+    # timeout (GitHub cron delivery: 18-52 minute gaps, measured 2026-08-15).
+    # $7/month ends the whole category for this service. The demo SELLER remains
+    # on free tier — its cold start is a separate, cheaper-to-tolerate exposure.
+    plan: starter
     buildCommand: "npm install --omit=dev && npm install -g tsx"
     startCommand: "tsx src/server.ts"
     healthCheckPath: /health
@@ -30,13 +37,9 @@ services:
     # findings that are dormant on an ephemeral filesystem (G-5, G-6, G-7), which
     # a real store closes instead. Read that document before enabling any of this.
     #
-    # If you do enable it: uncomment BOTH the `plan: starter` above (replacing `plan: free`) and the
-    # `disk:` block below, together. They are one change: Render only offers
-    # disks on paid instance types, so a disk block under `plan: free` fails to
-    # deploy.
-    #
-    # THIS STARTS BILLING on the next deploy. It is left commented so that
-    # merging this file is never itself the thing that starts charging.
+    # If you do enable it: the plan is already `starter` (2026-08-15), so only
+    # the `disk:` block below needs uncommenting — but read the rejection above
+    # first; Turso already provides durability without activating G-5/G-6/G-7.
     #
     # It fixes TWO independent causes of the empty catalog:
     #   1. no disk  — nothing survives any restart (the disk fixes this);
@@ -61,11 +64,13 @@ services:
         value: "testnet"
       - key: STELLAR_RPC_URL
         value: "https://soroban-testnet.stellar.org"
-      # Raised fee ceiling: policy-governed smart-account payments cost ~130k
-      # stroops; the @x402/stellar default (50k) rejects them. 500k is ~3.9x the
-      # worst REAL settlement measured from this sponsor's own history (127,808)
-      # and bounds worst-case drain per settle at 0.05 XLM. Raise if a heavier
-      # policy legitimately needs it — rejection is loud, not silent.
+      # Raised fee ceiling: policy-governed smart-account payments cost ~140k
+      # stroops of simulated fee; the @x402/stellar default (50k) rejects them.
+      # 500k is ~3.6x the most expensive verified reading (140,331 simulated,
+      # fresh policy wallet; 28,711 is the worst hash-verifiable on-chain charge
+      # — docs/decision-fee-thresholds.md) and bounds worst-case drain per
+      # settle at 0.05 XLM. Raise if a heavier policy legitimately needs it —
+      # rejection is loud, not silent.
       - key: MAX_TX_FEE_STROOPS
         value: "500000"
       # Bazaar catalog persistence — libSQL/Turso, NOT a file and NOT a disk.

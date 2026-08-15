@@ -14,7 +14,10 @@ item (§6) turned out to be actively wrong rather than merely missing.
 
 **One thing the site gets right — do not "fix" it.** It says the first request
 after idle "can take up to a minute (cold start)" and claims **no warm window**.
-That is correct. The facilitator's own docs claimed warm hours until 2026-08-12
+That was correct when written. **Update 2026-08-15: the facilitator moved to a
+paid always-on instance** (`render.yaml`, keepalive retired) — once verified
+live, the docs site should retire the facilitator cold-start warning too; the
+free-tier demo *seller* still sleeps. The facilitator's own docs claimed warm hours until 2026-08-12
 and the claim was withdrawn as false — the keep-alive delivered 6 of 96 pings,
 shortest gap 47 min against a 15-min idle timeout. Do not import a warm-window
 claim from anywhere. Every fact
