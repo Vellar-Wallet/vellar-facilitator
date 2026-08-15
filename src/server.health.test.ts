@@ -1,5 +1,5 @@
 import { Keypair } from "@stellar/stellar-sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it  } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
@@ -102,5 +102,41 @@ describe("/health surfaces structurally unverifiable entries", () => {
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
     expect("unverifiableEntries" in body, "a healthy catalog must not add noise").toBe(false);
     await app.close();
+  });
+});
+
+
+// P3 — boot-time sponsor preflight (unit; start() itself never runs in tests).
+import { assertSponsorFunded } from "./server.js";
+import { vi as vi2 } from "vitest";
+
+describe("assertSponsorFunded — fail fast, fail explaining itself", () => {
+  const G = "GBUCR6H22CZC5OYHBJIEUS2JFZBOB63AHEGTCV6UEPMD2TMLKG2ZMIW4";
+  afterEach(() => vi2.unstubAllGlobals());
+
+  it("a 404 dies naming the friendbot command", async () => {
+    vi2.stubGlobal("fetch", async () => ({ status: 404, ok: false }) as Response);
+    await expect(assertSponsorFunded("https://h.example", G)).rejects.toThrow(/friendbot.*addr=G/);
+  });
+
+  it("zero XLM dies naming the friendbot command", async () => {
+    vi2.stubGlobal("fetch", async () => ({
+      status: 200, ok: true,
+      json: async () => ({ balances: [{ asset_type: "native", balance: "0.0000000" }] }),
+    }) as unknown as Response);
+    await expect(assertSponsorFunded("https://h.example", G)).rejects.toThrow(/holds no XLM/);
+  });
+
+  it("an unreachable Horizon does NOT block boot — the polling guard owns that", async () => {
+    vi2.stubGlobal("fetch", async () => { throw new Error("ECONNREFUSED"); });
+    await expect(assertSponsorFunded("https://h.example", G)).resolves.toBeUndefined();
+  });
+
+  it("a funded sponsor passes silently", async () => {
+    vi2.stubGlobal("fetch", async () => ({
+      status: 200, ok: true,
+      json: async () => ({ balances: [{ asset_type: "native", balance: "9999.5" }] }),
+    }) as unknown as Response);
+    await expect(assertSponsorFunded("https://h.example", G)).resolves.toBeUndefined();
   });
 });

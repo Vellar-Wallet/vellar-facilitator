@@ -33,3 +33,5 @@ data/
 scratch/
 *-tmp.mjs
 *.tmp.mjs
+demo-facilitator.log
+demo-seller.log
