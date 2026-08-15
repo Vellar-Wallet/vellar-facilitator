@@ -450,12 +450,9 @@ Six things, in the order you will meet them.
 
 ### About the cold start — there is no warm window
 
-> **Update 2026-08-15:** the facilitator is configured **always-on**
-> (`render.yaml` `plan: starter`). Once that deploy is verified live, the cold
-> start below is history for the facilitator (the demo *seller* stays on free
-> tier and still sleeps). Until you observe a fast first request yourself,
-> assume the behaviour documented below — it is measured, and the always-on
-> claim is not yet.
+> **Status 2026-08-15:** still free tier — an always-on move was approved and
+> rescinded for budget the same day; `render.yaml` carries the ready one-line
+> change behind a billing warning. Everything below remains current behaviour.
 
 This page used to claim a keep-alive held the instance warm during
 `00:00–07:59` and `12:00–19:59 UTC`, and that inside those hours there was

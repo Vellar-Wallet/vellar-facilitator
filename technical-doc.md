@@ -224,10 +224,11 @@ Implemented, tested, and live:
 
 Hosted-demo caveats, stated plainly. **The catalog is durable** — libSQL/Turso
 since 2026-08-11, verified across a real spin-down with ownership bindings
-intact; an empty catalog means an empty catalog, not a restart. Historically
-the free tier slept when idle (~45 s cold start, measured); the instance is
-being moved to an always-on paid tier — until that deploy is verified live,
-assume the cold start. Roughly 1 settle in 3 fails at the testnet RPC with
+intact; an empty catalog means an empty catalog, not a restart. The free tier
+sleeps when idle (~45 s cold start, measured; no reliable warm window — the
+keepalive cron measurably cannot beat the idle timeout and is retired to
+manual). An always-on move is specified and priced in `render.yaml`, pending
+budget. Roughly 1 settle in 3 fails at the testnet RPC with
 nothing spent (`TRY_AGAIN_LATER`, diagnosed in
 `docs/diagnosis-settle-failures.md`); clients must retry, and error bodies
 carry the real RPC status. Third-party trust verdicts require

@@ -26,14 +26,14 @@ free service down after 15 minutes without traffic and the container is
 replaced, not paused; measured cold start **44.76 seconds**. You pay it once —
 the service then stays warm for 15 minutes past your last request.
 
-**Update 2026-08-15: the instance is configured always-on** (`render.yaml`
-`plan: starter`) — the cold start above is retired once that deploy is verified
-live; until then, assume it. The keep-alive cron era is over: re-enabled
-2026-08-11 against measured budget headroom, it still never delivered a warm
-window — GitHub's scheduler delivered pings 18–52 minutes apart against a
-15-minute idle timeout (measured again 2026-08-15) — so it spent pool hours on
-a coin flip. Paying for the instance ends the category; the workflow remains
-manual-dispatch only. History: [`using-it.md` § About the cold
+The keep-alive cron era is over: re-enabled 2026-08-11 against measured budget
+headroom, it never delivered a warm window — GitHub's scheduler delivered pings
+18–52 minutes apart against a 15-minute idle timeout (measured 2026-08-15) — so
+it spent pool hours on a coin flip and is retired to manual dispatch. **The
+instance remains on the free tier** (a paid always-on move was approved and
+rescinded for budget the same day; `render.yaml` carries the ready-to-apply
+config behind a loud billing warning). So: assume the ~45s cold start. History:
+[`using-it.md` § About the cold
 start](./docs/using-it.md#about-the-cold-start--there-is-no-warm-window).
 
 The catalog survives either way: it lives in libSQL/Turso rather than on the
@@ -173,7 +173,8 @@ pool-budget reasons, **re-enabled 2026-08-11** against measured headroom, and
 **retired 2026-08-15** when measurement showed GitHub's cron delivery (18–52
 minute gaps) could never beat the 15-minute idle timeout — hours spent, warmth
 not delivered. The durable catalog had already removed half the reason to want
-it; the paid always-on instance removes the rest.
+it; the rest waits on a paid always-on instance, which is budgeted-not-bought
+as of 2026-08-15 (`render.yaml` holds the one-line change and its price).
 
 **Resource-URL ownership is trust-on-first-use.** The first settlement for a
 canonical URL (`origin + pathname`) binds it to that payment's `payTo`; later

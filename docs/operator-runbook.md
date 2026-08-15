@@ -548,8 +548,10 @@ keep-alive.
 2026-08-15** after its full arc: initially unscheduled (the pool-budget
 reasoning below), re-enabled 2026-08-11 against measured headroom, then retired
 when delivery measurement (18–52 minute ping gaps vs a 15-minute idle timeout)
-showed it spent hours without delivering warmth. The facilitator now runs on a
-paid always-on instance instead. Free instance hours are pooled per **workspace** (750/month,
+showed it spent hours without delivering warmth. The durable fix is a paid
+always-on instance — approved then rescinded for budget on 2026-08-15, with the
+ready-to-apply (and billing-starting) config preserved in `render.yaml`. Until
+bought: free tier, ~45s cold start, keepalive manual-only. Free instance hours are pooled per **workspace** (750/month,
 shared by every free service), and exhausting the pool **suspends every free
 service in the workspace** — including services unrelated to this one. Keeping
 this facilitator warm 20 h/day would consume 83% of that pool; even 4 h/day is
