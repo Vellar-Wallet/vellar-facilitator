@@ -64,14 +64,13 @@ you can mint as much as you want. Correspondingly useless to anyone but you.
 cd examples && node provision-testnet.mjs
 ```
 
-**You cannot use the demo seller's token.** The `X402TST` asset (`CDYCX4PE…`)
-advertised by `vellar-seller-demo` was minted by an issuer keypair generated
-in-process by a throwaway script; that secret no longer exists anywhere. Nobody
-can mint more of it — not you, not us. Reading the contract id out of
-`/discovery/resources` will not help, because the problem is not knowing the id,
-it is that no one can obtain a balance. **A payment to that demo resource cannot
-be built by anyone except its original wallet.** Point your buyer at your own
-seller instead.
+**The demo seller now pays in canonical USDC and is payable by anyone** — it
+makes a fine first target for your buyer. (Historical note, kept because the
+lesson recurs: the demo previously advertised `X402TST`, whose throwaway issuer
+key was destroyed, making that resource permanently unpayable by everyone. Two
+demo assets died that way; USDC ends the pattern because its issuer is not ours
+to destroy. The stale catalog *entry* still shows the old binding — see
+[`diagnosis-demo-listing.md`](./diagnosis-demo-listing.md).)
 
 Making your own takes about two minutes on testnet:
 
@@ -450,6 +449,13 @@ Six things, in the order you will meet them.
 | **6** | **Your first settlement writes to a shared catalog, and the write is one-way** | Know this before you settle, not after — see below |
 
 ### About the cold start — there is no warm window
+
+> **Update 2026-08-15:** the facilitator is configured **always-on**
+> (`render.yaml` `plan: starter`). Once that deploy is verified live, the cold
+> start below is history for the facilitator (the demo *seller* stays on free
+> tier and still sleeps). Until you observe a fast first request yourself,
+> assume the behaviour documented below — it is measured, and the always-on
+> claim is not yet.
 
 This page used to claim a keep-alive held the instance warm during
 `00:00–07:59` and `12:00–19:59 UTC`, and that inside those hours there was

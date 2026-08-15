@@ -1,193 +1,27 @@
-## Keep-alive ping for the hosted testnet facilitator.
-##
-## WHY THIS EXISTS — and what it is NOT, since that changed.
-##
-## It used to be the *emptiness* fix: the catalog lived on the container's
-## filesystem, and spin-down destroyed it. That is no longer true. The catalog is
-## in libSQL/Turso and survives a container replacement — verified live across a
-## 42-second cold start with the ownership binding intact.
-##
-## So this is now purely a LATENCY fix, and should be judged as one. The first
-## request after 15 minutes idle takes ~50 seconds (42 s measured). Nothing is
-## lost by sleeping; a developer just waits.
-##
-## THE BUDGET, and why this is not 24/7 by default.
-##
-## Render grants 750 Free instance hours per WORKSPACE per calendar month —
-## workspace, not service. Exhausting it SUSPENDS EVERY Free web service in the
-## workspace until the 1st of the next month.
-##
-##   24/7 in a 31-day month = 744 h  ->  6 h of margin (<1%)
-##   20 h/day               = 620 h  ->  130 h of margin
-##
-## 24/7 fits arithmetically and only if this is the ONLY Free service in the
-## workspace. A second Free service, or one added later by anyone, blows the
-## budget and takes this one down with it. So the default below is 20 h/day.
-##
-## Outside the window the service sleeps as before: the first request takes
-## ~1 minute and the catalog comes back EMPTY, repopulating from the next
-## settled payment per resource.
-##
-## TO RUN 24/7 instead: change the cron to "*/10 * * * *" and first confirm this
-## is the only Free service in the workspace.
-##
-## RELIABILITY — MEASURED 2026-08-12. THIS DOES NOT HOLD A WARM WINDOW.
-##
-## This was written as a caveat ("mostly works, silent and intermittent"). It is
-## now a measurement, and the answer is worse than the caveat implied: the
-## workflow does not keep the service warm at all, and cannot be made to.
-##
-## From this workflow's own run history:
-##
-##   cron requested            */5  -> 12 runs/hour
-##   delivered 12:00-19:59 UTC on 2026-08-11:  6 runs out of 96   (6.2%)
-##   gaps between consecutive runs (10 samples):
-##     shortest 47.2 min | median 68.3 min | longest 1470 min
-##   gaps shorter than Render's 15-minute idle timeout:  0 of 10
-##
-## GitHub delivered roughly ONE run per hour regardless of the interval asked
-## for. Render sleeps after 15 minutes idle, so a ~60-minute gap leaves ~45
-## minutes of sleep inside every "warm" hour.
-##
-## TIGHTENING THE CRON CANNOT FIX THIS. */5 is already the tightest useful value
-## and it produced ~1 run/hour; the limit is delivery, not the schedule. A
-## measured consequence: a 44.76s cold start at 17:01 UTC — inside the window
-## below, between the 16:24 and 17:25 runs — with /health reporting
-## uptimeSeconds:48 straight after, i.e. the process started on that request.
-##
-## WHAT WOULD WORK: an external uptime monitor (UptimeRobot free tier: 50
-## monitors, 5-minute checks, ~5 minutes to set up, no code). Keep this workflow
-## as a backup and as the stale-deploy check, but do not describe it as a warm
-## window — the docs claimed one until 2026-08-12 and it was not real.
-##
-## BUDGET, IF YOU ADD ONE: a monitor left on 24/7 keeps the instance awake ~744
-## h/month against a 750 h per-WORKSPACE allowance, which would suspend every
-## Free service in the workspace. Give it a maintenance window matching the
-## hours below rather than leaving it always-on.
-##
-## BUDGET INTERACTION — the pinger schedule is not free to choose.
-## An external monitor checking every 5 minutes runs 24/7 by default, which keeps
-## the instance awake 24/7 = 744 h/month against a 750 h WORKSPACE allowance.
-## That silently overrides the 20 h/day decision below and leaves <1% margin. If
-## you add an external monitor, either configure its maintenance window to match
-## the gap here, or accept 24/7 and first confirm this is the only Free service
-## in the workspace.
-##
-## HOW TO TELL IF IT IS WORKING: /health reports `uptimeSeconds`. A value shorter
-## than the ping interval means the container was replaced since the last ping —
-## the step below warns on it. That is the data signal; do not wait for a
-## developer to report an empty catalog.
-##
-## GitHub also disables scheduled workflows on repositories with no activity for
-## 60 days.
-
 name: keepalive
 
-# DISABLED ON PURPOSE — no `schedule:` trigger. Manual only.
+# RETIRED 2026-08-15 — manual dispatch only. Full arc, kept honest:
 #
-# The workspace has EIGHT services sharing one 750-hour monthly pool, and
-# exhausting it suspends EVERY free service in the workspace — including
-# vellar-backend and the frontend, which do real work and have nothing to do
-# with this facilitator.
+#   1. Shipped unscheduled: workspace free-instance hours are pooled (750/mo
+#      across every free service) and exhausting the pool suspends ALL of them.
+#   2. Re-enabled 2026-08-11 on a 16 h/day split window, after billing showed
+#      actual usage at 2.6% of the pool — the budget was measured headroom, not
+#      a guess (closing-state §3.4e, §4b, and this file's git history for the
+#      full window arithmetic).
+#   3. Retired 2026-08-15 on DELIVERY measurement: GitHub's scheduler ran the
+#      */5 cron at 18-52 minute gaps — every gap past the 15-minute idle
+#      timeout — so the instance slept between pings while the hours burned.
+#      ~60% warm odds for a visitor was the product. Same failure the withdrawn
+#      warm-window claim documented in 2026-08-12; re-enabling did not change
+#      GitHub's delivery.
 #
-# What a keep-alive buys is a demo catalog that stays warm between deploys.
-# What it risks is taking down unrelated production services. Even a 4 h/day
-# window is 124 h/month of that exposure for a convenience. Off is the correct
-# default until the instance types are confirmed and the real divisor is known;
-# it can be re-enabled then with an informed number.
-#
-# TO RE-ENABLE, once you know how many free WEB services share the pool (static
-# sites and databases do NOT draw instance hours, so the divisor is likely
-# smaller than the service count): add back a `schedule:` block, e.g.
-#     schedule:
-#       - cron: "*/10 5-23 * * *"   # 20 h/day = 620 h  -> 83% of the pool
-#       - cron: "*/10 9-12 * * *"   #  4 h/day = 124 h  -> 17% of the pool
-# and re-do the arithmetic against the CURRENT number of free web services.
+# The fix was never a tighter cron: the facilitator now runs on a paid
+# always-on instance (render.yaml, plan: starter). A keepalive for a service
+# that does not sleep is pure spend. This stays for one purpose — manually
+# waking the FREE-TIER demo seller before a walkthrough.
+
 on:
   workflow_dispatch: {}
-  # ENABLED 2026-08-11, against MEASURED headroom rather than a divisor.
-  #
-  # Billing showed 19.37 h consumed 11 days into the cycle across NINE services
-  # — projecting to ~53 h/month, 7% of the pool. The 750-hour limit had been
-  # treated as a binding constraint for a day and a half of decisions; actual
-  # usage was 2.6% of it. See docs/closing-state.md §3.4e.
-  #
-  # THE ARITHMETIC (750 h/workspace/month, ~30.44 days):
-  #
-  #    8h/day ->  244 h   total  297 h   40% of pool   margin 453 h
-  #   12h/day ->  365 h   total  418 h   56%           margin 332 h
-  #   16h/day ->  487 h   total  540 h   72%           margin 210 h   <- chosen
-  #   20h/day ->  609 h   total  662 h   88%           margin  88 h
-  #   24h/day ->  731 h   total  784 h  105%           OVER BUDGET
-  #
-  # NOTE THE LAST ROW. Even with ~700 hours spare, a single always-on Free
-  # service does not fit: 24/7 is 731 h by itself, 97% of the pool before
-  # anything else runs. "We have plenty spare" and "we can leave it on" are
-  # different claims.
-  #
-  # 16h/day is chosen over 20h not on cost but on MARGIN. The projection is 11
-  # days of one cycle; 210 h absorbs being wrong about it, 88 h does not. The
-  # failure mode is not a slow demo — it suspends every Free service in the
-  # workspace, including unrelated production ones.
-  #
-  # ── THE WINDOW IS A KNOB, NOT A DECISION ─────────────────────────────────
-  #
-  # Every option below costs the SAME 16 h/day. Shifting the window is free —
-  # what changes is which region gets a warm service and which pays the ~50 s
-  # cold start. Pick against where evaluators actually are; nobody knows that
-  # yet, so this is written to be changed rather than defended.
-  #
-  # Local coverage (summer offsets: CEST +2, EDT -4, PDT -7, JST +9, SGT +8):
-  #
-  #   A. "*/5 8-23 * * *"          08:00-23:59 UTC   <- CURRENT
-  #        Europe      10:00-02:00   full working day, plus a dead evening
-  #        US East     04:00-20:00   full working day
-  #        US West     01:00-17:00   full working day
-  #        Japan       17:00-09:00   MISSES the working day entirely
-  #        Singapore   16:00-08:00   MISSES the working day entirely
-  #      Best for: the Americas. Wastes ~4 h on the European night.
-  #
-  #   B. "*/5 0-15 * * *"          00:00-15:59 UTC
-  #        Europe      02:00-18:00   full working day
-  #        US East     20:00-12:00   morning only, misses the afternoon
-  #        US West     17:00-09:00   MISSES the working day almost entirely
-  #        Japan       09:00-01:00   full working day
-  #        Singapore   08:00-00:00   full working day
-  #      Best for: Asia-Pacific + Europe. Trades the US afternoon away.
-  #
-  #   C. "*/5 0-7,12-19 * * *"     00:00-07:59 and 12:00-19:59 UTC  (split)
-  #        Europe      02:00-10:00 and 14:00-22:00   morning + afternoon
-  #        US East     20:00-04:00 and 08:00-16:00   full working day
-  #        US West     17:00-01:00 and 05:00-13:00   morning, misses afternoon
-  #        Japan       09:00-17:00 and 21:00-05:00   full working day
-  #        Singapore   08:00-16:00 and 20:00-04:00   full working day
-  #      Best OVERALL coverage: the only option where APAC, Europe and US East
-  #      all get their working day. Costs the same. The gap is US West
-  #      afternoons and a two-hour European lunch.
-  #
-  # WHAT YOU ARE TRADING, stated plainly: A gives the Americas everything and
-  # Asia-Pacific nothing. B reverses it. C spreads the same 16 hours to cover
-  # three regions' working days at the price of two holes.
-  #
-  # A is in force only because it was chosen before anyone asked where the
-  # traffic comes from. If the first real evaluators are in Asia-Pacific, B or C
-  # is strictly better and the change is one line.
-  #
-  # Winter shifts everything by an hour (CET +1, EST -5, PST -8); JST and SGT do
-  # not observe DST, so A and B get slightly better for APAC in winter and worse
-  # for the US.
-  #
-  # */5 rather than */10 because the ping is FREE: this repo is public, so
-  # GitHub Actions minutes are unmetered, and instance-hours accrue from the
-  # service being awake rather than from how often it is pinged. Scheduled
-  # workflows can be delayed under load, and a 15-minute idle timeout leaves no
-  # room for a 10-minute interval to slip. If this repo ever goes private,
-  # re-check: Actions minutes are then metered at 2,000/month free.
-  # OPTION C, chosen 2026-08-11. Not a compromise between A and B — strictly
-  # better than A at identical cost. A spent four hours a day on the European
-  # evening, when nobody is working, and gave Asia-Pacific nothing.
-  schedule:
-    - cron: "*/5 0-7,12-19 * * *"
 
 permissions:
   contents: read
@@ -199,54 +33,10 @@ concurrency:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
-      # Needed only so `git rev-parse` below has a repo to read: the stale-deploy
-      # check compares the deployed commit against this branch's HEAD. Without
-      # it the comparison silently never runs.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Ping /health
-        env:
-          # /health is exempt from the per-IP rate limit, so this cannot throttle
-          # real traffic no matter how often it runs.
-          URL: https://vellar-facilitator.onrender.com/health
+      - name: ping facilitator and demo seller
         run: |
-          set -uo pipefail
-          # A cold start takes ~1 minute, so allow for it rather than failing the
-          # very request that is doing the waking up.
-          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 120 --retry 2 --retry-delay 15 "$URL" || echo 000)
-          echo "HTTP $code"
-          cat /tmp/body || true
-          if [ "$code" != "200" ]; then
-            echo "::warning::keepalive ping did not return 200 (got $code) — the service may be suspended or down"
-            exit 0   # never fail the workflow: a red X here is noise, not signal
-          fi
-          # Surface a frozen catalog, which is invisible from the outside otherwise.
-          if grep -q 'catalogFrozen' /tmp/body; then
-            echo "::warning::/health reports catalogFrozen — see docs/operator-runbook.md §2 and §3"
-          fi
-
-          # Did it actually stay awake? /health reports process uptime, so a
-          # value shorter than the ping interval means the container was
-          # replaced since the last ping — i.e. it slept (or redeployed) and the
-          # catalog was wiped. This is how we find out from DATA rather than
-          # from a developer reporting an empty listing.
-          # Is the running build actually what is on this branch? /health reports
-          # the deployed commit, so a stale deploy is a string comparison rather
-          # than something discovered by probing for security headers.
-          deployed=$(sed -n 's/.*"commit":"\([0-9a-f]*\)".*/\1/p' /tmp/body)
-          expected=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
-          if [ -n "$deployed" ] && [ -n "$expected" ] && [ "$deployed" != "$expected" ]; then
-            echo "::warning::deployed commit is $deployed but this branch is at $expected — the running build is NOT current"
-          fi
-          echo "deployed=${deployed:-unknown} expected=${expected:-unknown}"
-
-          up=$(sed -n 's/.*"uptimeSeconds":\([0-9]*\).*/\1/p' /tmp/body)
-          size=$(sed -n 's/.*"catalogSize":\([0-9]*\).*/\1/p' /tmp/body)
-          echo "uptimeSeconds=${up:-?} catalogSize=${size:-?}"
-          if [ -n "$up" ] && [ "$up" -lt 900 ]; then
-            echo "::warning::instance uptime is ${up}s — it was replaced since the last ping, so the catalog was wiped. If this recurs outside deploy windows the keep-alive is not holding (GitHub cron delay); switch to an external 5-minute pinger."
-          fi
+          curl -fsS --max-time 90 https://vellar-facilitator.onrender.com/health || true
+          curl -fsS --max-time 90 -o /dev/null -w "seller: %{http_code} in %{time_total}s\n" \
+            https://vellar-seller-demo.onrender.com/whoami || true

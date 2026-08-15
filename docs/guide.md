@@ -26,9 +26,9 @@ roles, two scripts, both in `examples/`.
   The facilitator settles in whatever SEP-41 asset you name and ships none of
   its own. Minting one is right for this walkthrough; canonical testnet USDC
   (`CBIELTK6…`) is right when strangers need to transact in something they both
-  already hold. The demo seller's `X402TST` **cannot be acquired by anyone**:
-  its issuer secret no longer exists. See [`using-it.md` § First: bring your own
-  payment asset](./using-it.md#first-bring-your-own-payment-asset).
+  already hold — it is what the hosted demo seller itself now uses. See
+  [`using-it.md` § First: bring your own payment
+  asset](./using-it.md#first-bring-your-own-payment-asset).
 
 - A **payer signer**: a plain classic keypair (`buyer-classic.mjs`) or a Vellar
   smart account with an ed25519 session key (`buyer.mjs`, the "agent with a

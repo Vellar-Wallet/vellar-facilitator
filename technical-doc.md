@@ -47,10 +47,12 @@ policy-approved payment refused for being a smart account with programmable
 spending controls. We reproduced it, confirmed it is a facilitator constructor
 option (not a protocol limit), and settled the same payment through a
 facilitator with the ceiling raised. **This facilitator ships with that fixed:
-`MAX_TX_FEE_STROOPS` defaults to 2,000,000.** Measured live: a stacked
-double-policy payment charges 53,535 stroops of fee — above the 50,000 ceiling
-other facilitators sponsor, which is why that class of payment settles here and
-not there.
+`MAX_TX_FEE_STROOPS` defaults to 500,000** — sized from evidence rather than
+picked (a fresh policy-governed wallet simulates at 140,331 stroops; the worst
+hash-verifiable on-chain charge is 28,711 — see
+`docs/decision-fee-thresholds.md`), clearing the policy-payment class by ~3.6x
+while bounding worst-case sponsor drain per settle at 0.05 XLM. Payments above
+the 50,000 ceiling other facilitators sponsor settle here and not there.
 
 **V1 vs. V2 (CAP-0071-02) credential handling.** We confirmed empirically that
 both deployed facilitators we tested accept type-1 (`sorobanCredentialsAddress`)
@@ -135,9 +137,22 @@ ground truth rather than self-reported data:
   verification (a time-of-check/time-of-use guard). Verdict: verified /
   unverified / unknown. A verification-API outage degrades to "unknown" and
   never blocks discovery.
+- **Ownership verification (the anti-squat layer).** The first settlement for a
+  canonical URL binds it to that payment's `payTo` (trust-on-first-use); the
+  facilitator then fetches the resource's own 402 challenge over a hardened,
+  DNS-pinned, SSRF-guarded prober and confirms the challenge names the bound
+  address. A claimant who proves ownership displaces an unverified binding; a
+  once-proven binding is permanently non-displaceable (the takeover guard). The
+  wire reports the full state honestly: `ownerVerified` (currently confirmed),
+  `ownershipState` (`unverified` / `proven-unconfirmed` / `verified`), and
+  `statsSource` disclosing whether settlement counts were witnessed by the
+  running process or inherited from storage. No other Stellar x402
+  implementation, shipped or proposed, verifies listing ownership at the origin.
 - **Ranking + filter.** Search ranks verified results first (stably, within
-  relevance bands); `verified_only=true` hard-filters, on both HTTP and the MCP
-  tools.
+  relevance bands). `verified_only=true` hard-filters — and on a deployment
+  with no verdict source configured it is **refused with an explicit
+  `400 verified_only_unavailable`** rather than answered with a silent empty
+  list; the MCP tools annotate the equivalent condition as data for the model.
 
 Companion on-chain enforcement (an attestation registry and a
 verified-recipient policy that rejects unverified-contract interactions inside
@@ -190,25 +205,35 @@ Implemented, tested, and live:
   auth entries. Wire-conformance tested against unmodified canonical clients.
 - **Bazaar:** `/discovery/resources`, `/discovery/search`, auto-cataloging on
   settle, route-template safety guard, catalog persistence.
-- **Trust layer:** settlement stats, verification annotation with the live
-  wasm-hash TOCTOU check, verified-first ranking, `verified_only` filter.
+- **Trust layer:** settlement stats with provenance disclosure
+  (`statsSource`, `observedSettlements`), TOFU ownership binding with
+  origin-fetch verification and displacement, `ownershipState` tri-state on the
+  wire, verification annotation with the live wasm-hash TOCTOU check,
+  verified-first ranking, honest `verified_only` refusal when unanswerable.
 - **MCP discovery server** (stdio): `x402_list_resources`,
-  `x402_search_resources`, `verified_only` support.
-- **Developer guide + two runnable end-to-end examples** (seller + buyer).
-  Both default to the hosted facilitator and a funded demo merchant, so they
-  run with zero required configuration.
+  `x402_search_resources`, seller text fenced against prompt injection with a
+  per-block nonce (format shared with the Vellar payer-side MCP server).
+- **Developer guide + three runnable end-to-end examples** (seller, classic
+  buyer on the official x402 client at ~12 lines of payment logic, smart-account
+  buyer). One command provisions a merchant, a funded payer, and — with
+  `USE_USDC=1` — canonical testnet USDC acquired from the DEX with no faucet.
+  The seller refuses at boot to write unverifiable entries into shared state,
+  and the hosted demo resource is itself payable in USDC by any stranger.
 - **Deployed:** `https://vellar-facilitator.onrender.com`, dedicated funded
   sponsor account, `render.yaml` blueprint.
 
-Hosted-demo caveats, stated plainly. The instance runs on a free tier that
-sleeps when idle (~1 min cold start on first request). The Bazaar catalog is
-the documented single-instance JSON file store on ephemeral disk — a restart
-or redeploy clears it, so `/discovery/*` can legitimately return an empty
-catalog until the next settled payment re-seeds it (running the bundled
-examples end to end does this). Trust verdicts require `VERIFICATION_API_URL`
-to be configured on the instance; unset, every result reads `unknown` — the
-documented degrade mode (§6), not a fault. The DB-backed catalog and the real
-uptime bar are precisely the funded milestone-1 work (§9).
+Hosted-demo caveats, stated plainly. **The catalog is durable** — libSQL/Turso
+since 2026-08-11, verified across a real spin-down with ownership bindings
+intact; an empty catalog means an empty catalog, not a restart. Historically
+the free tier slept when idle (~45 s cold start, measured); the instance is
+being moved to an always-on paid tier — until that deploy is verified live,
+assume the cold start. Roughly 1 settle in 3 fails at the testnet RPC with
+nothing spent (`TRY_AGAIN_LATER`, diagnosed in
+`docs/diagnosis-settle-failures.md`); clients must retry, and error bodies
+carry the real RPC status. Third-party trust verdicts require
+`VERIFICATION_API_URL`; unset, every verdict reads `unknown` — the documented
+degrade mode (§6), not a fault — and `verified_only` refuses loudly rather
+than serving a misleading empty list.
 
 Proof (Stellar testnet):
 
@@ -222,16 +247,25 @@ Proof (Stellar testnet):
   loop is proven: with the contract attested the agent payment settles; after
   revoke the identical payment is rejected inside `__check_auth` and no funds
   move.
+- Canonical testnet USDC end to end, no faucet: provisioning buys USDC on the
+  DEX from friendbot XLM, and a full x402 payment settles in it — tx
+  `f9b743c5c7bceb0a…` (ledger 4106526), later `cda3cbaa9b4025e7…` (ledger
+  4137813) against the hosted instance, merchant balances reconciling exactly
+  to price × settlements across every attempt, including failed ones.
+- Two upstream defects in `@x402/stellar` found, reproduced, and filed:
+  x402-foundation/x402 #3125 (settle discards the RPC's submission status) and
+  #3158 (the client scheme cannot sign for a Soroban smart account).
 
 ## 9. Path to Mainnet (what the Build Award funds)
 
 The testnet system exists; the grant funds productionization and mainnet
 launch. Three milestones (final = mainnet, per SCF):
 
-1. **Production hardening.** DB-backed Bazaar catalog (replacing the file store,
-   multi-instance ready); operational telemetry + public status dashboard
-   toward the 99%+ target; load-hardening + sequence-number management under
-   concurrent settlement using the fee-bump path.
+1. **Production hardening.** ~~DB-backed Bazaar catalog~~ — **delivered ahead
+   of funding** (libSQL/Turso, live since 2026-08-11, restart-verified).
+   Remaining: operational telemetry + public status dashboard toward the 99%+
+   target; load-hardening + sequence-number management under concurrent
+   settlement using the fee-bump path (channel accounts).
 2. **Upstream + provenance.** `scheme_upto_stellar.md` (the "upto" metered
    scheme spec + implementation) contributed upstream; V2 (CAP-0071-02)
    credential support so passkey-signed x402 payments settle; the provenance
