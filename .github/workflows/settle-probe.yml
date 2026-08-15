@@ -1,0 +1,92 @@
+name: settle probe
+
+# Measures OUR settlement failure rate on neutral infrastructure, before and
+# after reliability changes — the instrument ships BEFORE the retry so the
+# retry's improvement is a before/after from the same tool (a baseline cannot
+# be taken retroactively).
+#
+# Self-funding: every account is created by the run via friendbot. No secrets.
+# Any fork reproduces the evidence. Spends testnet XLM only.
+#
+# Cron slots deliberately spread across the clock — the failure under study
+# (RPC TRY_AGAIN_LATER) tracks the public Soroban RPC pool's health, which
+# varies through the day; probing one fixed hour would keep sampling one
+# condition. Offset minutes avoid GitHub's on-the-hour congestion.
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: "Settle attempts (burst)"
+        required: false
+        default: "10"
+  schedule:
+    - cron: "17 2 * * *"
+    - cron: "43 9 * * *"
+    - cron: "11 15 * * *"
+    - cron: "29 21 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: settle-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+      - name: install
+        run: npm ci && cd examples && npm ci
+      - name: provision (friendbot-funded, throwaway token — self-contained, no DEX dependency)
+        id: provision
+        run: |
+          cd examples
+          node provision-testnet.mjs | tee provision.out
+          # The env block is printed for humans; extract the three values the probe needs.
+          grep -E '^(PAYTO|ASSET|PAYER_SECRET)=' provision.out >> "$GITHUB_OUTPUT"
+          # Fresh sponsor for the facilitator, also friendbot-funded by this run.
+          node -e '
+            const {Keypair}=require("@stellar/stellar-sdk");
+            const kp=Keypair.random();
+            console.log("SPONSOR_SECRET="+kp.secret());
+            console.log("SPONSOR_PUBLIC="+kp.publicKey());
+          ' >> "$GITHUB_OUTPUT"
+      - name: fund sponsor
+        run: |
+          curl -fsS "https://friendbot.stellar.org/?addr=${{ steps.provision.outputs.SPONSOR_PUBLIC }}" > /dev/null
+      - name: boot stack
+        run: |
+          mkdir -p data
+          SPONSOR_SECRET_KEY='${{ steps.provision.outputs.SPONSOR_SECRET }}' PORT=4100 \
+            CATALOG_DB_URL=file:./data/catalog.db npm start > facilitator.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://localhost:4100/health >/dev/null 2>&1 && break; sleep 2; done
+          cd examples
+          FACILITATOR_URL=http://localhost:4100 SELLER_PORT=4031 \
+            PAYTO='${{ steps.provision.outputs.PAYTO }}' ASSET='${{ steps.provision.outputs.ASSET }}' \
+            node seller.mjs > ../seller.log 2>&1 &
+          for i in $(seq 1 90); do curl -fsS http://localhost:4031/whoami >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://localhost:4100/health && curl -fsS http://localhost:4031/whoami
+      - name: probe (burst)
+        run: |
+          cd examples
+          FACILITATOR_URL=http://localhost:4100 RESOURCE_URL=http://127.0.0.1:4031/quote \
+            PAYER_SECRET='${{ steps.provision.outputs.PAYER_SECRET }}' \
+            ATTEMPTS='${{ inputs.attempts || 10 }}' MODE=burst \
+            node ../scripts/probe-settle.mjs | tee ../probe-results.jsonl
+      - name: surface summary
+        run: grep '"probe":"summary"' probe-results.jsonl || tail -1 probe-results.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ github.run_id }}
+          path: |
+            probe-results.jsonl
+            facilitator.log
+            seller.log
+          retention-days: 90
