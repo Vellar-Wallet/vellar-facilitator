@@ -5,6 +5,7 @@ import {
   installRpcStatusCapture,
   withRpcStatusCapture,
   __resetRpcStatusCaptureForTest,
+  __setRpcRetryDelayForTest,
 } from "./rpcstatus.js";
 
 // ============================================================================
@@ -28,16 +29,23 @@ import {
 /** Install over a stub so the tests never touch a network. */
 function withStubbedSend(
   impl: (tx: unknown) => Promise<Record<string, unknown>>,
-): { restore: () => void } {
+): { logs: string[]; restore: () => void } {
   const proto = rpc.Server.prototype as unknown as Record<string, unknown>;
   const original = proto.sendTransaction;
   proto.sendTransaction = impl;
+  const logs: string[] = [];
   __resetRpcStatusCaptureForTest();
-  installRpcStatusCapture(() => {});
+  installRpcStatusCapture((m) => logs.push(m));
+  // The submission retry's 6s spacing is real time; tests run it at zero. The
+  // retry BEHAVIOUR (counts, scoping, falsifier) is asserted below — only the
+  // wall-clock is stubbed.
+  __setRpcRetryDelayForTest(async () => {});
   return {
+    logs,
     restore: () => {
       proto.sendTransaction = original;
       __resetRpcStatusCaptureForTest();
+      __setRpcRetryDelayForTest();
     },
   };
 }
@@ -254,5 +262,61 @@ describe("the patch announces itself", () => {
     expect(lines[0], "names what it wraps").toMatch(/sendTransaction/);
     expect(lines[0], "names why").toMatch(/single constant|indistinguishable/);
     expect(lines[0], "names the guard, so a reader can check it still works").toMatch(/rpcstatus\.test/);
+  });
+});
+
+
+describe("submission retry — TRY_AGAIN_LATER only, bounded, falsifier-logged", () => {
+  function seqStub(seq: Array<Record<string, unknown>>) {
+    let n = 0;
+    const calls = () => n;
+    const h = withStubbedSend(async () => seq[Math.min(n++, seq.length - 1)]!);
+    return { h, calls };
+  }
+  const send = () =>
+    withRpcStatusCapture(async () => server().sendTransaction({} as never));
+
+  it("retries TRY_AGAIN_LATER and succeeds when the RPC recovers", async () => {
+    const { h, calls } = seqStub([{ status: "TRY_AGAIN_LATER" }, { status: "PENDING", hash: "h" }]);
+    try {
+      const { value, rpcStatus } = await send();
+      expect((value as { status: string }).status).toBe("PENDING");
+      expect(calls(), "one attempt + one retry").toBe(2);
+      expect(rpcStatus, "a recovered submission records no failure").toBeUndefined();
+    } finally { h.restore(); }
+  });
+
+  it("gives up after a FIXED retry count — never a loop", async () => {
+    // MUTATION: loop while status is TRY_AGAIN_LATER — an RPC that never
+    // recovers then probes forever inside one settle.
+    const { h, calls } = seqStub([{ status: "TRY_AGAIN_LATER" }]);
+    try {
+      const { value, rpcStatus } = await send();
+      expect((value as { status: string }).status).toBe("TRY_AGAIN_LATER");
+      expect(calls(), "1 + SUBMIT_RETRY_MAX(2)").toBe(3);
+      expect(rpcStatus?.status, "final status still captured for the error body").toBe("TRY_AGAIN_LATER");
+    } finally { h.restore(); }
+  });
+
+  it("never retries ERROR — a stale payload cannot become fresh", async () => {
+    const { h, calls } = seqStub([{ status: "ERROR" }]);
+    try {
+      await send();
+      expect(calls()).toBe(1);
+    } finally { h.restore(); }
+  });
+
+  it("DUPLICATE on a retry is the falsifier: logged loudly, passed through unchanged", async () => {
+    // The safety argument says TRY_AGAIN_LATER = not forwarded. DUPLICATE on
+    // the retry contradicts that; the observation must be loud and behaviour
+    // must degrade to exactly pre-retry behaviour (fail; nothing spent twice).
+    const { h, calls } = seqStub([{ status: "TRY_AGAIN_LATER" }, { status: "DUPLICATE" }]);
+    try {
+      const { value, rpcStatus } = await send();
+      expect((value as { status: string }).status).toBe("DUPLICATE");
+      expect(calls(), "stops immediately on DUPLICATE").toBe(2);
+      expect(rpcStatus?.status).toBe("DUPLICATE");
+      expect(h.logs.some((l) => l.includes("RETRY RETURNED DUPLICATE")), "loud").toBe(true);
+    } finally { h.restore(); }
   });
 });

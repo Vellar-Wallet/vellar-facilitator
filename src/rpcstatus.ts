@@ -57,6 +57,46 @@ export interface CapturedRpcStatus {
 const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus }>();
 
 /**
+ * Submission retry — TRY_AGAIN_LATER only, twice, six seconds apart.
+ *
+ * THE EVIDENCE (docs/diagnosis-settle-failures.md, measured): 9 of 10 observed
+ * submission failures were TRY_AGAIN_LATER — the RPC declining to FORWARD the
+ * transaction. No errorResult, no ledger entry, nothing spent; merchant
+ * balances reconciled exactly to successes x price across every failed
+ * attempt. The one terminal failure class (txBadSeq) arrives as ERROR and is
+ * never retried here.
+ *
+ * WHY RESUBMITTING THE SAME ENVELOPE IS SAFE. Not-forwarded means there is
+ * nothing on the network to duplicate. The falsifier is OBSERVABLE: if a retry
+ * ever returns DUPLICATE, the first attempt WAS forwarded despite the status —
+ * evidence against the diagnosis, worth more than the payment. It is logged
+ * loudly and passed through unchanged, so behaviour on that path is exactly
+ * pre-retry behaviour: the settle fails, nothing is spent twice, we learn.
+ *
+ * WHY SIX SECONDS. Adapted from Turnpike's measured lesson on the same RPC
+ * fleet (Apache-2.0, credited): sub-ledger spacing re-samples the same
+ * degraded state — their 750ms retries all landed inside one window and lost a
+ * payment anyway. State changes at ledger close (~5s); 6s clears one.
+ *
+ * WHY TWO. Budget arithmetic: 2 x 6s + three submission round-trips ~ 15s
+ * worst case — under the 30s facilitator-client timeout a seller holds open,
+ * far inside signature expiry (current+12 ledgers ~ 60s in our examples;
+ * upstream clients derive from maxTimeoutSeconds, typically 120s).
+ *
+ * WHY HERE. Upstream discards the sendTransaction response before any caller
+ * can see it (#3125), so this wrapper is the only place that can distinguish
+ * retryable from terminal. When upstream fixes #3125, this moves there.
+ */
+const SUBMIT_RETRY_MAX = 2;
+const SUBMIT_RETRY_DELAY_MS = 6_000;
+
+let delayFn = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** TEST SEAM — replace the inter-attempt delay so retry tests run in ms. */
+export function __setRpcRetryDelayForTest(fn?: (ms: number) => Promise<void>): void {
+  delayFn = fn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+}
+
+/**
  * Run `fn` with a fresh capture slot and return BOTH its value and whatever the
  * RPC reported inside it.
  *
@@ -125,7 +165,26 @@ export function installRpcStatusCapture(log: (msg: string) => void = console.war
     return;
   }
   proto.sendTransaction = async function patched(this: unknown, tx: unknown) {
-    const result = await original.call(this, tx);
+    let result = await original.call(this, tx);
+
+    for (let attempt = 1; attempt <= SUBMIT_RETRY_MAX && result?.status === "TRY_AGAIN_LATER"; attempt++) {
+      log(
+        `[rpcstatus] submission TRY_AGAIN_LATER (not forwarded, nothing spent) — ` +
+          `retry ${attempt}/${SUBMIT_RETRY_MAX} after ${SUBMIT_RETRY_DELAY_MS}ms`,
+      );
+      await delayFn(SUBMIT_RETRY_DELAY_MS);
+      result = await original.call(this, tx);
+      if (result?.status === "DUPLICATE") {
+        // The retry safety argument's falsifier — see the block comment above.
+        log(
+          "[rpcstatus] RETRY RETURNED DUPLICATE: the TRY_AGAIN_LATER attempt WAS forwarded. " +
+            "This contradicts docs/diagnosis-settle-failures.md and is the observation that " +
+            "decides whether this retry is safe. Record it. Passing through unchanged.",
+        );
+        break;
+      }
+    }
+
     try {
       const status = result?.status;
       if (typeof status === "string" && status !== "PENDING") {

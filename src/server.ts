@@ -8,6 +8,7 @@ import { loadConfig } from "./config.js";
 import { buildFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
+import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
 import { registerBazaar } from "./bazaar.js";
 import {
@@ -163,7 +164,11 @@ export async function buildServer(
         }),
       );
     }
-    return facilitator.verify(paymentPayload, paymentRequirements);
+    return withSkewRetry(
+      () => facilitator.verify(paymentPayload, paymentRequirements),
+      (r) => (r as { invalidReason?: string }).invalidReason,
+      (m) => request.log.warn(m),
+    );
   });
 
   app.post<{ Body: FacilitatorRequestBody }>("/settle", async (request, reply) => {
@@ -259,8 +264,10 @@ export async function buildServer(
       // The capture slot must wrap the settle call itself: the RPC response we
       // want is produced deep inside @x402/stellar, which discards it before
       // returning. See src/rpcstatus.ts.
-      const captured = await withRpcStatusCapture(() =>
-        facilitator.settle(paymentPayload, paymentRequirements),
+      const captured = await withSkewRetry(
+        () => withRpcStatusCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
+        (c) => (c.value as { errorReason?: string }).errorReason,
+        (m) => request.log.warn(m),
       );
       result = captured.value;
       rpcStatus = captured.rpcStatus;
@@ -512,10 +519,56 @@ if (isDirectRun) {
     balanceGuard,
     config.network,
   );
+  // P3 — sponsor funding asserted AT BOOT, with the fix in the error. The
+  // polling balance guard exists for drain DURING operation; this exists for
+  // the setup mistake, which otherwise surfaces mid-payment as an
+  // "Unexpected settlement error: Account not found" that reads like a code
+  // defect (it cost this repo a diagnosis round on 2026-08-12). Pattern from
+  // Turnpike's boot preflight, Apache-2.0, credited. Fail fast, fail
+  // explaining itself.
+  try {
+    await assertSponsorFunded(horizonUrl, sponsorPub);
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
   app.listen({ port: config.port, host: config.host }).catch((err) => {
     app.log.error(err);
     process.exit(1);
   });
+}
+
+/** Boot-time sponsor preflight. Exported for tests; never called by buildServer
+ *  (hundreds of test servers must not touch Horizon). */
+export async function assertSponsorFunded(horizonUrl: string, publicKey: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${horizonUrl}/accounts/${publicKey}`);
+  } catch (err) {
+    // Horizon unreachable is NOT a config error — warn and let the polling
+    // guard take over, same fail-open stance it has always had.
+    console.warn(`[boot] sponsor preflight skipped — Horizon unreachable: ${String(err)}`);
+    return;
+  }
+  if (res.status === 404) {
+    throw new Error(
+      `Sponsor account ${publicKey} does not exist on this network, so it cannot sponsor settlement fees.\n` +
+        `  Fund it:  curl "https://friendbot.stellar.org/?addr=${publicKey}"\n` +
+        `  (testnet only — on pubnet, fund it from a real account)`,
+    );
+  }
+  if (!res.ok) {
+    console.warn(`[boot] sponsor preflight inconclusive (Horizon HTTP ${res.status}) — polling guard will retry`);
+    return;
+  }
+  const body = (await res.json()) as { balances?: Array<{ asset_type?: string; balance?: string }> };
+  const native = body.balances?.find((b) => b.asset_type === "native");
+  if (!native || Number(native.balance) <= 0) {
+    throw new Error(
+      `Sponsor account ${publicKey} holds no XLM, so it cannot pay settlement fees.\n` +
+        `  Fund it:  curl "https://friendbot.stellar.org/?addr=${publicKey}"`,
+    );
+  }
 }
 
 /** Fetch the account's native (XLM) balance from Horizon, in stroops. Throws on
