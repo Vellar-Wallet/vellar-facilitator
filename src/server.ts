@@ -569,6 +569,13 @@ export async function assertSponsorFunded(horizonUrl: string, publicKey: string)
         `  Fund it:  curl "https://friendbot.stellar.org/?addr=${publicKey}"`,
     );
   }
+  // The happy path SAYS SO. A check silent on success reads identically to a
+  // check that did not run — the operator's exact observation on the first
+  // production boot after this control merged (compounded that day by the
+  // running build predating the merge, so silence truly meant absent). One
+  // line makes silent-pass, loud-fail, and not-deployed three different
+  // states. Same lesson as every silent skip in the register.
+  console.warn(`[boot] sponsor preflight ok — ${publicKey.slice(0, 8)}… holds ${native.balance} XLM`);
 }
 
 /** Fetch the account's native (XLM) balance from Horizon, in stroops. Throws on
