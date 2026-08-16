@@ -87,7 +87,11 @@ const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus }>();
  * can see it (#3125), so this wrapper is the only place that can distinguish
  * retryable from terminal. When upstream fixes #3125, this moves there.
  */
-const SUBMIT_RETRY_MAX = 2;
+// Env-tunable ONLY for the probe's control arm (SUBMIT_RETRY_MAX=0 boots a
+// facilitator with pre-retry behaviour, so the A/B runs both arms on the same
+// crons and infrastructure). Production default unchanged; clamped 0-2 so the
+// knob cannot widen the budget, only close it.
+const SUBMIT_RETRY_MAX = Math.min(2, Math.max(0, Number(process.env.SUBMIT_RETRY_MAX ?? 2) || 0));
 const SUBMIT_RETRY_DELAY_MS = 6_000;
 
 let delayFn = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

@@ -27,6 +27,23 @@ for (const run of runs.filter((r) => r.conclusion === "success")) {
     }
   } catch { /* expired or empty artifact */ }
 }
+// Group by variant: "retries-on" vs "retries-off" is the controlled A/B.
+const variants = {};
+for (const a of all) (variants[a.variant ?? "default"] ??= []).push(a);
+const table = {};
+for (const [v, rows] of Object.entries(variants)) {
+  const okV = rows.filter((r) => r.ok).length;
+  const br = {};
+  for (const r of rows.filter((r) => !r.ok)) {
+    const k = `${r.stage}:${r.reason}${r.rpcStatus ? ":" + r.rpcStatus : ""}`;
+    br[k] = (br[k] ?? 0) + 1;
+  }
+  const lv = rows.filter((r) => r.ok).map((r) => r.ms).sort((x, y) => x - y);
+  const pv = (p) => (lv.length ? lv[Math.min(lv.length - 1, Math.floor((p / 100) * lv.length))] : null);
+  table[v] = { attempts: rows.length, settled: okV, failed: rows.length - okV,
+    failureRate: rows.length ? +((rows.length - okV) / rows.length).toFixed(3) : null,
+    byReason: br, latencyMs: { min: lv[0] ?? null, p50: pv(50), p95: pv(95), max: lv[lv.length - 1] ?? null } };
+}
 const ok = all.filter((a) => a.ok).length;
 const byReason = {};
 for (const a of all.filter((a) => !a.ok)) {
@@ -36,6 +53,13 @@ for (const a of all.filter((a) => !a.ok)) {
 const lat = all.filter((a) => a.ok).map((a) => a.ms).sort((x, y) => x - y);
 const pct = (p) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor((p / 100) * lat.length))] : null);
 console.log(JSON.stringify({
+  provenance:
+    "Single-instrument A/B: retries-on vs retries-off run CONCURRENTLY each cycle on the same " +
+    "crons and RPC conditions, retries-off being pre-retry behaviour (the true 'before'). Any " +
+    "earlier figures (docs/diagnosis-settle-failures.md, the '1 in 3') are a DIFFERENT " +
+    "instrument on different infrastructure — one machine, burst access. Acceptable baseline, " +
+    "not a controlled comparison; only the variants table below is.",
+  byVariant: table,
   runsSampled: runs.length, attempts: all.length, settled: ok, failed: all.length - ok,
   failureRate: all.length ? +((all.length - ok) / all.length).toFixed(3) : null,
   byReason, latencyMs: { min: lat[0] ?? null, p50: pct(50), p95: pct(95), max: lat[lat.length - 1] ?? null },
