@@ -36,6 +36,18 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The controlled A/B: both arms every cycle, same clock, same RPC
+        # conditions. retries-off boots the facilitator with the retry knobs at
+        # zero — pre-retry behaviour, the true "before" — so no waiting period
+        # is needed to compare.
+        variant: [retries-on, retries-off]
+    env:
+      PROBE_VARIANT: ${{ matrix.variant }}
+      SUBMIT_RETRY_MAX: ${{ matrix.variant == 'retries-off' && '0' || '2' }}
+      SKEW_RETRY_MAX: ${{ matrix.variant == 'retries-off' && '0' || '1' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -84,7 +96,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: probe-${{ github.run_id }}
+          name: probe-${{ github.run_id }}-${{ matrix.variant }}
           path: |
             probe-results.jsonl
             facilitator.log

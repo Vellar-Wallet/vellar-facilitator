@@ -48,7 +48,7 @@ const out = (o) => console.log(JSON.stringify(o));
 const results = [];
 
 for (let i = 1; i <= ATTEMPTS; i++) {
-  const rec = { probe: "settle", i, mode: MODE, t: new Date().toISOString() };
+  const rec = { probe: "settle", i, mode: MODE, variant: process.env.PROBE_VARIANT ?? "default", t: new Date().toISOString() };
   const t0 = Date.now();
   try {
     const unpaid = await fetch(RESOURCE_URL);
@@ -86,7 +86,7 @@ const okCount = results.filter((r) => r.ok).length;
 const lat = results.filter((r) => r.ok).map((r) => r.ms).sort((a, b) => a - b);
 const pct = (p) => lat.length ? lat[Math.min(lat.length - 1, Math.floor((p / 100) * lat.length))] : null;
 out({
-  probe: "summary", mode: MODE, attempts: ATTEMPTS, ok: okCount, failed: ATTEMPTS - okCount,
+  probe: "summary", mode: MODE, variant: process.env.PROBE_VARIANT ?? "default", attempts: ATTEMPTS, ok: okCount, failed: ATTEMPTS - okCount,
   byReason: results.filter((r) => !r.ok).reduce((m, r) => ((m[`${r.stage}:${r.reason}${r.rpcStatus ? ":" + r.rpcStatus : ""}`] = (m[`${r.stage}:${r.reason}${r.rpcStatus ? ":" + r.rpcStatus : ""}`] ?? 0) + 1), m), {}),
   latencyMs: { min: lat[0] ?? null, p50: pct(50), max: lat[lat.length - 1] ?? null },
 });

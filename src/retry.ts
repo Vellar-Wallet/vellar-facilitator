@@ -21,7 +21,8 @@
 // retry to share the budget with.
 
 export const LEDGER_SKEW_REASON = "invalid_exact_stellar_signature_expiration_too_far";
-export const SKEW_RETRY_MAX = 1;
+// Env-tunable only for the probe's control arm — see rpcstatus.ts. Clamped 0-1.
+export const SKEW_RETRY_MAX = Math.min(1, Math.max(0, Number(process.env.SKEW_RETRY_MAX ?? 1) || 0));
 export const SKEW_RETRY_DELAY_MS = 6_000;
 
 let delayFn = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
