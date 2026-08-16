@@ -20,14 +20,17 @@ services:
   - type: web
     name: vellar-facilitator
     runtime: node
-    # PAID TIER — approved 2026-08-15, deliberately. Free-tier spin-down gave the
-    # first request of every idle period a measured ~45s stall (O-15/O-16), made
-    # ownership verification of sleeping siblings structurally flaky, and the
-    # keepalive workaround burned pool hours without beating the 15-minute idle
-    # timeout (GitHub cron delivery: 18-52 minute gaps, measured 2026-08-15).
-    # $7/month ends the whole category for this service. The demo SELLER remains
-    # on free tier — its cold start is a separate, cheaper-to-tolerate exposure.
-    plan: starter
+    # ── PLAN: FREE — DELIBERATELY, FOR BUDGET, 2026-08-15 ────────────────────
+    # A move to `starter` was approved and then RESCINDED the same day: the $7
+    # is not currently in the budget. The analysis stands (free-tier spin-down
+    # = ~45s cold start, O-15/O-16; the keepalive cron cannot beat the
+    # 15-minute idle timeout — 18-52 minute delivery gaps measured), so the
+    # moment budget exists, the change below is the whole fix.
+    #
+    #   ⚠ CHANGING THE LINE BELOW TO `plan: starter` STARTS BILLING (~$7/mo)
+    #   ⚠ ON THE NEXT BLUEPRINT SYNC. Do not apply it casually; do not let a
+    #   ⚠ routine sync be the thing that starts a charge.
+    plan: free
     buildCommand: "npm install --omit=dev && npm install -g tsx"
     startCommand: "tsx src/server.ts"
     healthCheckPath: /health

@@ -15,10 +15,11 @@ name: keepalive
 #      warm-window claim documented in 2026-08-12; re-enabling did not change
 #      GitHub's delivery.
 #
-# The fix was never a tighter cron: the facilitator now runs on a paid
-# always-on instance (render.yaml, plan: starter). A keepalive for a service
-# that does not sleep is pure spend. This stays for one purpose — manually
-# waking the FREE-TIER demo seller before a walkthrough.
+# The fix was never a tighter cron. The durable fix is a paid always-on
+# instance — approved then RESCINDED for budget 2026-08-15; render.yaml holds
+# the one-line change and its billing warning. Retirement stands on the
+# delivery measurement alone. This stays for one purpose — manually waking the
+# free-tier services before a walkthrough or review.
 
 on:
   workflow_dispatch: {}
