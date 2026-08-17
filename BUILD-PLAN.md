@@ -137,3 +137,31 @@ HTTP history API + public RPC — no cross-repo code dependency._
 - No claims beyond what's actually tested and running — this project exists
   because a hosted facilitator overclaimed compatibility it didn't have
   (technical-doc.md §2); do not repeat that mistake here.
+
+## Phase 6 — Voluntary rotation for verified bindings (proposed 2026-08-17)
+
+_Added after the HISTORICAL freeze at the top of this file — this section is
+live planning, not archive. Closes half of O-17
+(`docs/closing-state.md`): a legitimate merchant who still holds their old
+signing key gets an in-band path to rotate a verified binding. The other
+half — the key is lost — has no in-band answer; confirmed independently by
+auditing an alternative design in a competing implementation
+(`docs/competitor-study-rail402.md` §2.1, corrected) as well as by our own
+one-way latch. That half stays an operator procedure, tracked separately and
+not yet written up as its own proposal._
+
+Full design and implementation plan: `docs/proposal-voluntary-rotation.md`.
+
+- [ ] `rotation_authorization` table + store methods (record / lookup /
+      consume), alongside the existing `ownership` table
+- [ ] `BazaarCatalog` in-memory tracking + the one-line bypass in
+      `tryDisplace`, with mutation-guarded tests (expired, already-consumed,
+      and wrong-owner markers must all still be refused)
+- [ ] Settle-time hook in `bazaar.ts`, gated on the three-way match
+      (authenticated `result.payer` == claimed `oldPayTo` == current
+      `entry.ownerPayTo`) — the one place a shortcut becomes a
+      vulnerability, so its own dedicated test
+- [ ] `examples/rotate-classic.mjs` — proves the mechanism needs no new
+      client code for a classic old-owner
+- [ ] `operator-runbook.md` addition distinguishing this self-service path
+      from §1, which stays the lost-key/emergency procedure

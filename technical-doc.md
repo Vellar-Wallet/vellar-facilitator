@@ -142,8 +142,16 @@ ground truth rather than self-reported data:
   facilitator then fetches the resource's own 402 challenge over a hardened,
   DNS-pinned, SSRF-guarded prober and confirms the challenge names the bound
   address. A claimant who proves ownership displaces an unverified binding; a
-  once-proven binding is permanently non-displaceable (the takeover guard). The
-  wire reports the full state honestly: `ownerVerified` (currently confirmed),
+  once-proven binding is permanently non-displaceable (the takeover guard).
+  **Planned, not yet built:** a self-service rotation path for a merchant who
+  still holds their old signing key (design: `docs/proposal-voluntary-rotation.md`
+  — a marker settlement through the existing verify/settle path, requiring no
+  new signing code for classic accounts and reusing the same smart-account
+  workaround already used elsewhere in this repo). The permanence above stays
+  absolute for the case where the key is lost — that case has no safe in-band
+  answer, confirmed independently against an alternative design in a
+  competing implementation, and remains an operator procedure. The wire
+  reports the full state honestly: `ownerVerified` (currently confirmed),
   `ownershipState` (`unverified` / `proven-unconfirmed` / `verified`), and
   `statsSource` disclosing whether settlement counts were witnessed by the
   running process or inherited from storage. No other Stellar x402
@@ -266,7 +274,9 @@ launch. Three milestones (final = mainnet, per SCF):
    of funding** (libSQL/Turso, live since 2026-08-11, restart-verified).
    Remaining: operational telemetry + public status dashboard toward the 99%+
    target; load-hardening + sequence-number management under concurrent
-   settlement using the fee-bump path (channel accounts).
+   settlement using the fee-bump path (channel accounts); **voluntary
+   rotation for verified bindings** — proposed design at
+   `docs/proposal-voluntary-rotation.md`, not yet implemented.
 2. **Upstream + provenance.** `scheme_upto_stellar.md` (the "upto" metered
    scheme spec + implementation) contributed upstream; V2 (CAP-0071-02)
    credential support so passkey-signed x402 payments settle; the provenance
