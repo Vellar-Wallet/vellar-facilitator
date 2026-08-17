@@ -276,7 +276,11 @@ launch. Three milestones (final = mainnet, per SCF):
    target; load-hardening + sequence-number management under concurrent
    settlement using the fee-bump path (channel accounts); **voluntary
    rotation for verified bindings** — proposed design at
-   `docs/proposal-voluntary-rotation.md`, not yet implemented.
+   `docs/proposal-voluntary-rotation.md`, not yet implemented; **a public
+   transaction explorer** — proposed design at
+   `docs/proposal-ecosystem-explorer.md` (own settlements first, then
+   ecosystem-wide attribution across any Stellar facilitator), not yet
+   implemented.
 2. **Upstream + provenance.** `scheme_upto_stellar.md` (the "upto" metered
    scheme spec + implementation) contributed upstream; V2 (CAP-0071-02)
    credential support so passkey-signed x402 payments settle; the provenance

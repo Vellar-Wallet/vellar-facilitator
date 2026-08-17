@@ -165,3 +165,30 @@ Full design and implementation plan: `docs/proposal-voluntary-rotation.md`.
       client code for a classic old-owner
 - [ ] `operator-runbook.md` addition distinguishing this self-service path
       from §1, which stays the lost-key/emergency procedure
+
+## Phase 7 — Ecosystem transaction explorer (proposed 2026-08-17)
+
+_Public visibility into x402 settlements — "people can see transactions
+done." Scoped ecosystem-wide (any Stellar facilitator's traffic, not just
+ours); a comparable public explorer at `tolgayayci/rail402/apps/explorer`
+was studied source-level for engineering reference (RPC event-polling,
+attribution-from-signer-set, fee-sponsorship heuristics), but the
+architecture and phasing below are our own. Full design, architecture
+mapping onto this repo's stack, and cost/risk analysis:
+`docs/proposal-ecosystem-explorer.md`. New service, own hosting — nothing
+here authorizes provisioning or spend; that stays a separate decision._
+
+- [ ] Phase 1 — our own settlements only: a settle-time hook (same
+      fire-and-forget shape as `tryDisplace`/`reverify` in `bazaar.ts`)
+      writes a row with zero classification uncertainty; `/feed`,
+      `/tx/:hash`, `/stats` on a new service, `@libsql/client`-backed
+- [ ] Phase 2 — live-tail ingestion (`getEvents` poll) + a structural
+      classifier (exact/upto pattern match) on testnet, registered against
+      our own `/supported` only, as an independent corroboration of Phase 1
+- [ ] Phase 3 — full attribution registry (seed rail402, x402.org; re-probe
+      `/supported` on an interval), `/facilitators`, `/sellers`, enrichment
+      against our own Bazaar catalog (including verification status —
+      rail402's enrichment has no equivalent)
+- [ ] Phase 4 — Horizon backfill, `/ecosystem` + `/ecosystem/timeseries`,
+      pubnet (RPC provider selection + SAC filtering required at pubnet
+      volume, per rail402's measured `getEvents` load)
