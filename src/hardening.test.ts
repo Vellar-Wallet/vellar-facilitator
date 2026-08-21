@@ -19,6 +19,8 @@ const testConfig = {
   maxTransactionFeeStroops: 2_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
+  bondEscrowContractId: undefined,
+  bondEscrowAdminSecretKey: undefined,
   catalogDbAuthToken: undefined,
   verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 100, unboundPoolMax: 10 },
