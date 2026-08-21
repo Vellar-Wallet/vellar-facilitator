@@ -14,6 +14,8 @@ const testConfig = {
   sponsorSecretKey: Keypair.random().secret(), maxTransactionFeeStroops: 500_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
+  bondEscrowContractId: undefined,
+  bondEscrowAdminSecretKey: undefined,
   catalogDbAuthToken: undefined, verificationApiUrl: undefined,
   spend: { rateWindowMs: 60_000, ceilingStroops: 50_000_000, windowMs: 60_000, perUrlMax: 10, perPayToMax: 50, unboundPoolMax: 10 },
   balance: { softFloorStroops: 250_000_000, hardFloorStroops: 100_000_000, intervalMs: 60_000 },

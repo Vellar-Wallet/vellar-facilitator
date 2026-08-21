@@ -10,6 +10,22 @@ export interface FacilitatorConfig {
    *  pinned source — contracts/upto-stellar/PROVENANCE.md; deployment record
    *  and wasm hash in docs/upto-deployment.md. */
   uptoContractId: string | undefined;
+  /** Our deployed `bond-escrow` contract (C…). Set ⇒ a settled payment is
+   *  registered with it (giving the payer standing to dispute) as part of
+   *  /settle. Unset ⇒ bonding is entirely inactive; settlement behaves
+   *  exactly as it does today. Original work, not vendored — deployment
+   *  record and wasm hash in docs/bond-escrow-deployment.md. Must be set
+   *  together with bondEscrowAdminSecretKey or not at all — see loadConfig. */
+  bondEscrowContractId: string | undefined;
+  /** The dedicated Stellar secret (S…) that signs `register_settlement`
+   *  calls against bondEscrowContractId — deliberately NOT sponsorSecretKey.
+   *  See contracts/bond-escrow/src/lib.rs, initialize's doc-comment ("Which
+   *  key: a dedicated admin key, not the facilitator's payment sponsor
+   *  key") for why: compromising this key lets an attacker forge dispute
+   *  standing and drain bonded funds, a different blast radius than
+   *  compromising the payment-sponsor key, and the two must be rotatable
+   *  independently. */
+  bondEscrowAdminSecretKey: string | undefined;
   /** Optional JSON file path for Bazaar catalog persistence across restarts. */
   /** libSQL/Turso URL. `file:…` locally, `libsql://…` in production. Unset means
    *  in-memory only: the catalog works but nothing survives a restart. */
@@ -215,6 +231,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     );
   }
 
+  const bondEscrowContractId = parseBondEscrowContractId(env.BOND_ESCROW_CONTRACT_ID);
+  const bondEscrowAdminSecretKey = parseBondEscrowAdminSecretKey(env.BOND_ESCROW_ADMIN_SECRET_KEY);
+  // Half-configured bonding is a broken state, not a partial feature: register_settlement
+  // cannot be called without both the contract to call and the key to sign with. Catching
+  // this at boot, loudly, is cheaper than discovering it the first time a settlement tries
+  // to register and silently can't — same "the operator set it on purpose, fail don't
+  // degrade" posture as parseUptoContractId's own comment below.
+  if ((bondEscrowContractId === undefined) !== (bondEscrowAdminSecretKey === undefined)) {
+    throw new Error(
+      "[config] BOND_ESCROW_CONTRACT_ID and BOND_ESCROW_ADMIN_SECRET_KEY must be set together or not " +
+        "at all — one is set without the other, which would leave bonding half-enabled: a contract to " +
+        "register settlements against with no key to sign the call, or a signing key with nothing to " +
+        "call. Set both to enable bonding, or unset both to leave it off.",
+    );
+  }
+
   return {
     port: Number(env.PORT ?? 4100),
     host: env.HOST ?? "0.0.0.0",
@@ -223,6 +255,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     sponsorSecretKey,
     maxTransactionFeeStroops,
     uptoContractId: parseUptoContractId(env.UPTO_CONTRACT_ID),
+    bondEscrowContractId,
+    bondEscrowAdminSecretKey,
     catalogDbUrl: env.CATALOG_DB_URL,
     catalogDbAuthToken: env.CATALOG_DB_AUTH_TOKEN,
     verificationApiUrl: env.VERIFICATION_API_URL,
@@ -238,6 +272,33 @@ function parseUptoContractId(raw: string | undefined): string | undefined {
   if (!/^C[A-Z2-7]{55}$/.test(raw)) {
     throw new Error(
       `[config] UPTO_CONTRACT_ID is set but is not a valid contract address (C…, 56 chars): ${raw}`,
+    );
+  }
+  return raw;
+}
+
+/** Same shape as parseUptoContractId, same reasoning: fail the boot rather than silently
+ *  leave bonding disabled when the operator plainly meant to turn it on. */
+function parseBondEscrowContractId(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^C[A-Z2-7]{55}$/.test(raw)) {
+    throw new Error(
+      `[config] BOND_ESCROW_CONTRACT_ID is set but is not a valid contract address (C…, 56 chars): ${raw}`,
+    );
+  }
+  return raw;
+}
+
+/** A Stellar classic secret key (S…, 56 chars). Deliberately validated by shape here,
+ *  at config-parse time, rather than deferred to whenever bond.ts first calls
+ *  Keypair.fromSecret on it — a malformed value should fail the boot immediately, the
+ *  same standard the contract ID above is held to, not surface later as a confusing
+ *  failure the first time a settlement tries to register. */
+function parseBondEscrowAdminSecretKey(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^S[A-Z2-7]{55}$/.test(raw)) {
+    throw new Error(
+      "[config] BOND_ESCROW_ADMIN_SECRET_KEY is set but is not a valid Stellar secret key (S…, 56 chars)",
     );
   }
   return raw;

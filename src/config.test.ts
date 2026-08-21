@@ -1,7 +1,11 @@
+import { Keypair } from "@stellar/stellar-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 
 const SECRET = "SBJP6HHFTABK2GXVVFAKY6C4B7DDNB5PIEQXKUNL2ZAOBPWFOUOSTLVNMA";
+// A real, publicly-documented testnet contract address (docs/upto-deployment.md) — used
+// here only as a syntactically valid C… value, not to imply this config points at it.
+const VALID_CONTRACT_ID = "CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S";
 
 describe("loadConfig", () => {
   it("throws without SPONSOR_SECRET_KEY", async () => {
@@ -125,5 +129,90 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ SPONSOR_SECRET_KEY: SECRET, MAX_TX_FEE_STROOPS: "-5" })).toThrow(
       /MAX_TX_FEE_STROOPS/,
     );
+  });
+
+  describe("bond-escrow", () => {
+    const ADMIN_SECRET = Keypair.random().secret();
+
+    it("defaults both to undefined when unset — bonding entirely inactive", async () => {
+      const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET });
+      expect(config.bondEscrowContractId).toBeUndefined();
+      expect(config.bondEscrowAdminSecretKey).toBeUndefined();
+    });
+
+    it("accepts both set together", async () => {
+      const config = loadConfig({
+        SPONSOR_SECRET_KEY: SECRET,
+        BOND_ESCROW_CONTRACT_ID: VALID_CONTRACT_ID,
+        BOND_ESCROW_ADMIN_SECRET_KEY: ADMIN_SECRET,
+      });
+      expect(config.bondEscrowContractId).toBe(VALID_CONTRACT_ID);
+      expect(config.bondEscrowAdminSecretKey).toBe(ADMIN_SECRET);
+    });
+
+    it("rejects a malformed contract ID — wrong prefix, wrong length, and garbage", async () => {
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          BOND_ESCROW_CONTRACT_ID: "not-a-contract-id",
+          BOND_ESCROW_ADMIN_SECRET_KEY: ADMIN_SECRET,
+        }),
+      ).toThrow(/BOND_ESCROW_CONTRACT_ID/);
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          // A valid-looking secret key in the contract-ID slot — wrong prefix (S, not C).
+          BOND_ESCROW_CONTRACT_ID: ADMIN_SECRET,
+          BOND_ESCROW_ADMIN_SECRET_KEY: ADMIN_SECRET,
+        }),
+      ).toThrow(/BOND_ESCROW_CONTRACT_ID/);
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          BOND_ESCROW_CONTRACT_ID: VALID_CONTRACT_ID.slice(0, -1), // one char short
+          BOND_ESCROW_ADMIN_SECRET_KEY: ADMIN_SECRET,
+        }),
+      ).toThrow(/BOND_ESCROW_CONTRACT_ID/);
+    });
+
+    it("rejects a malformed admin secret key — wrong prefix and wrong length", async () => {
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          BOND_ESCROW_CONTRACT_ID: VALID_CONTRACT_ID,
+          BOND_ESCROW_ADMIN_SECRET_KEY: "not-a-secret-key",
+        }),
+      ).toThrow(/BOND_ESCROW_ADMIN_SECRET_KEY/);
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          BOND_ESCROW_CONTRACT_ID: VALID_CONTRACT_ID,
+          // A valid-looking contract ID in the secret-key slot — wrong prefix (C, not S).
+          BOND_ESCROW_ADMIN_SECRET_KEY: VALID_CONTRACT_ID,
+        }),
+      ).toThrow(/BOND_ESCROW_ADMIN_SECRET_KEY/);
+    });
+
+    it("rejects the contract ID set without the admin key", async () => {
+      expect(() =>
+        loadConfig({ SPONSOR_SECRET_KEY: SECRET, BOND_ESCROW_CONTRACT_ID: VALID_CONTRACT_ID }),
+      ).toThrow(/BOND_ESCROW_CONTRACT_ID.*BOND_ESCROW_ADMIN_SECRET_KEY|must be set together/);
+    });
+
+    it("rejects the admin key set without the contract ID", async () => {
+      expect(() =>
+        loadConfig({ SPONSOR_SECRET_KEY: SECRET, BOND_ESCROW_ADMIN_SECRET_KEY: ADMIN_SECRET }),
+      ).toThrow(/BOND_ESCROW_CONTRACT_ID.*BOND_ESCROW_ADMIN_SECRET_KEY|must be set together/);
+    });
+
+    it("treats an empty string the same as unset for both", async () => {
+      const config = loadConfig({
+        SPONSOR_SECRET_KEY: SECRET,
+        BOND_ESCROW_CONTRACT_ID: "",
+        BOND_ESCROW_ADMIN_SECRET_KEY: "",
+      });
+      expect(config.bondEscrowContractId).toBeUndefined();
+      expect(config.bondEscrowAdminSecretKey).toBeUndefined();
+    });
   });
 });
