@@ -5,11 +5,37 @@ Support." This document governs this repo (`vellar-facilitator`). It is
 separate infrastructure from the Vellar wallet product; the two share x402
 domain expertise, not code.
 
-**Status: built and live on testnet.** The facilitator, Bazaar discovery, the
-MCP server, and the provenance/trust layer are implemented, tested, and
-deployed at `https://vellar-facilitator.onrender.com`, with on-chain
-settlements to show for it (§8). This document describes the working
+**Status: built and live on testnet; pre-mainnet security review complete.**
+The facilitator, Bazaar discovery, the MCP server, and the trust layer are
+implemented, tested, and deployed at `https://vellar-facilitator.onrender.com`,
+with on-chain settlements to show for it (§8). The pre-mainnet security review
+is complete with every finding tracked to closure (`docs/security-audit.md`;
+final statuses in `docs/closing-state.md`). One qualifier, stated here rather
+than discovered later: the trust layer's *reputation* half (third-party
+verification verdicts) is inert on the hosted deployment — every verdict
+degrades to `unknown` until a verdict source is stood up (§6, §8) — while its
+*ownership* half is live and enforced. This document describes the working
 architecture and the path to mainnet that the SCF Build Award funds.
+
+## Evidence at a Glance
+
+Every load-bearing claim in this document, re-verified in one sweep on
+2026-08-21. Each row names where to check it without trusting this table:
+
+| Claim | Verified | Check it yourself |
+| --- | --- | --- |
+| The full loop works today from a clean run | `./demo.sh` during the sweep settled tx `c5ad0d7b…7f93` (ledger 4249010) and auto-cataloged the resource | `./demo.sh` — one command, no secrets, friendbot-funded |
+| Payments settle on-chain; the sponsor pays the fee | tx `1da6f9e6…e039` Horizon-confirmed successful, `fee_account` = this facilitator's sponsor | hashes in §8, stellar.expert or Horizon |
+| Provenance gating works both ways | tx `8bde387b…6faf` settled while attested; the identical payment post-revoke was rejected inside `__check_auth` | §8 |
+| Canonical testnet USDC end to end, no faucet | tx `f9b743c5…8c98` (ledger 4106526) and `cda3cbaa…50ea` (ledger 4137813) | §8 |
+| Hosted instance live; catalog survives restart | `/health` answered in 42.8 s from cold (the documented ~45 s), non-empty catalog at 19 s uptime | `curl https://vellar-facilitator.onrender.com/health` |
+| `verified_only` refuses honestly rather than serving a misleading empty list | live `400 verified_only_unavailable` with the reason and a pointer to the field that does work | `curl '…/discovery/resources?verified_only=true'` |
+| Tests and types | 379 passed, 4 skipped; `tsc --noEmit` clean | `npm test`, `npm run typecheck` |
+| Pre-mainnet security review complete | every finding carries a final status | `docs/security-audit.md`, `docs/closing-state.md` |
+| Reliability is measured, not asserted | the scheduled settle probe is green on its cron (five runs/day observed), each run settling real payments with a no-retry control arm beside the retry | the repo's Actions tab, `settle-probe.yml` |
+| Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
+
+The table is an index; the sections behind it carry the methodology.
 
 ## 1. What This Is
 
@@ -156,6 +182,19 @@ ground truth rather than self-reported data:
   `statsSource` disclosing whether settlement counts were witnessed by the
   running process or inherited from storage. No other Stellar x402
   implementation, shipped or proposed, verifies listing ownership at the origin.
+- **Under evaluation, not yet committed: SEP-1 domain verification as an
+  additive second tier.** A seller who controls a domain can publish the
+  Stellar-standard `/.well-known/stellar.toml` naming their `payTo`; a
+  periodically re-checked (not latched) TOML tier would let a listing's
+  verification follow a legitimate key rotation without an operator — a
+  standards-based instance of the rotation anchor weighed in
+  `docs/decision-verified-binding-rotation.md`. One competing implementation
+  has built this pattern; whether it actually self-heals on a real rotation is
+  unconfirmed, and confirming that is precisely what the evaluation must do
+  before this becomes a commitment. If adopted it supplements, never replaces,
+  the zero-setup 402-challenge verification above: SEP-1 requires a custom
+  domain most demo and hackathon sellers do not have, and a listing clearing
+  both checks is strictly more trustworthy than one clearing either alone.
 - **Ranking + filter.** Search ranks verified results first (stably, within
   relevance bands). `verified_only=true` hard-filters — and on a deployment
   with no verdict source configured it is **refused with an explicit
@@ -185,11 +224,14 @@ it, all encountered firsthand:
   resource fee — §2) both work.
 - **Trustlines** for classic accounts holding non-native SEP-41 assets — a
   concept with no EVM analogue.
-- **Sequence-number contention under bursty agent traffic.** A facilitator
-  sponsoring and submitting many concurrent payments needs real sequence-number
-  management; the composed scheme supports a fee-bump signer that decouples fee
-  payment from sequence numbers. Load-hardening this path is a funded
-  deliverable.
+- **Sequence-number contention under bursty agent traffic.** Stellar
+  serializes transactions per source account, which caps one account near one
+  transaction per ledger. The composed scheme supports a fee-bump signer that
+  decouples fee payment from sequence numbers — but fee-bump alone raises
+  throughput by nothing, since the sequence still comes from the inner source
+  account. The throughput mechanism is a pool of channel accounts supplying
+  independent sequence lanes; building that pool is the load-hardening
+  deliverable in §9.
 
 ## 8. What's Built (verified on testnet)
 
@@ -211,6 +253,27 @@ Implemented, tested, and live:
   default), classic keypairs and Soroban smart accounts, sponsored fees, raised
   fee ceiling for policy-governed payments, replay resistance via ledger-bounded
   auth entries. Wire-conformance tested against unmodified canonical clients.
+- **Sponsor defense (audit finding F12):** the audit showed sponsor drain is
+  *not* self-limiting — a self-dealer minting their own SEP-41 token settles
+  self→self at zero cost to themselves while the sponsor pays every network
+  fee. Shipped response: four spend budgets (per-URL, per-payTo, an
+  unbound-merchant pool, and a global rolling XLM ceiling as the fail-closed
+  backstop) plus a polling balance guard with floors, thresholds sized from the
+  measured worst-case simulation fee rather than picked. Log-only on testnet,
+  enforced on pubnet; a refused `/settle` returns `503 settlement_refused`
+  with a machine-readable reason. Operational hardening alongside it: 60
+  req/min per-IP rate limit and a 32 KiB body cap on every route.
+- **Reliability engine:** a boot-time sponsor preflight that refuses to start
+  unfunded and prints the exact fix; a ledger-skew retry scoped to the single
+  rejection code that retrying can help (`src/retry.ts` — pattern adapted,
+  with credit, from Turnpike's Apache-2.0 implementation and their published
+  measurement of the load-balanced testnet RPC's node divergence); and a
+  `TRY_AGAIN_LATER`
+  submission retry (2 × 6 s, terminal statuses untouched) whose safety
+  argument and observable falsifier are documented in `src/rpcstatus.ts`. A
+  scheduled CI settle probe runs a concurrent no-retry control arm beside the
+  retrying facilitator, so the improvement is measured against a true baseline
+  instead of asserted.
 - **Bazaar:** `/discovery/resources`, `/discovery/search`, auto-cataloging on
   settle, route-template safety guard, catalog persistence.
 - **Trust layer:** settlement stats with provenance disclosure
@@ -219,27 +282,61 @@ Implemented, tested, and live:
   wire, verification annotation with the live wasm-hash TOCTOU check,
   verified-first ranking, honest `verified_only` refusal when unanswerable.
 - **MCP discovery server** (stdio): `x402_list_resources`,
-  `x402_search_resources`, seller text fenced against prompt injection with a
-  per-block nonce (format shared with the Vellar payer-side MCP server).
+  `x402_search_resources`. One design point deserves emphasis, because it
+  addresses what is arguably the least-examined attack surface in this field:
+  a discovery service that faithfully stores and serves seller-authored text
+  is a delivery mechanism for prompt injection against every agent that
+  trusts its catalog — the attack targets the facilitator's *users through*
+  the facilitator, and conventional service hardening does nothing to stop
+  it. Here, untrusted seller text is fenced with a per-block nonce before it
+  enters an agent's context (format shared with the Vellar payer-side MCP
+  server), so listing content can never occupy an instruction position.
+  Shipped, not proposed.
 - **Developer guide + three runnable end-to-end examples** (seller, classic
   buyer on the official x402 client at ~12 lines of payment logic, smart-account
   buyer). One command provisions a merchant, a funded payer, and — with
   `USE_USDC=1` — canonical testnet USDC acquired from the DEX with no faucet.
   The seller refuses at boot to write unverifiable entries into shared state,
   and the hosted demo resource is itself payable in USDC by any stranger.
+  `demo.sh` walks a clean clone to a settled transaction hash in one command,
+  with preflight checks that each name the real failure they prevent.
+- **Test suite and security review:** 379 tests (`vitest run`), including
+  mutation-named guards and the wire-conformance suites above; a completed
+  pre-mainnet security review with every finding tracked to closure
+  (`docs/security-audit.md`, `docs/closing-state.md`) — the F12 sponsor-drain
+  finding and its shipped defense above are one product of it.
 - **Deployed:** `https://vellar-facilitator.onrender.com`, dedicated funded
   sponsor account, `render.yaml` blueprint.
+
+**Security posture: four trust boundaries, each with shipped controls.** Every
+facilitator in this design space has these four boundaries; what differs is
+whether the controls at each one are built or promised. Here, every row is
+code in this repo today:
+
+| Boundary | Adversary | Shipped controls |
+| --- | --- | --- |
+| Buyer/agent → facilitator | Hostile payer; fee drain via expensive `__check_auth`; replay | Re-simulation verify (the payer's policy runs for real); ledger-bounded auth entries; evidence-sized fee ceiling; four spend budgets + balance guard (F12); 60 req/min rate limit; 32 KiB body cap |
+| Seller metadata → catalog | Listing/price spoofing, catalog poisoning, URL squatting | Catalog-on-settle only (no free write path exists); validation/sanitization via the official extractor; TOFU ownership binding with displacement rules; SSRF-hardened, DNS-pinned ownership prober |
+| Catalog/search → agent | Prompt injection through listing text the facilitator faithfully serves | Seller-authored text is nonce-fenced before it reaches an agent's context (see the MCP bullet above) |
+| Facilitator → Stellar RPC | Lost or ambiguous responses; degraded, load-balanced nodes | Real submission status captured per request (upstream discards it — #3125); retry only the one status that provably was not forwarded, terminal statuses untouched; ledger-skew retry at verify/settle |
+
+The completed security review walks these boundaries
+(`docs/security-audit.md`); `docs/closing-state.md` holds each finding's
+final status.
 
 Hosted-demo caveats, stated plainly. **The catalog is durable** — libSQL/Turso
 since 2026-08-11, verified across a real spin-down with ownership bindings
 intact; an empty catalog means an empty catalog, not a restart. The free tier
-sleeps when idle (~45 s cold start, measured; no reliable warm window — the
-keepalive cron measurably cannot beat the idle timeout and is retired to
-manual). An always-on move is specified and priced in `render.yaml`, pending
-budget. Roughly 1 settle in 3 fails at the testnet RPC with
-nothing spent (`TRY_AGAIN_LATER`, diagnosed in
-`docs/diagnosis-settle-failures.md`); clients must retry, and error bodies
-carry the real RPC status. Third-party trust verdicts require
+sleeps when idle (~45 s cold start, measured; a best-effort keep-warm cron
+pings every 10 minutes during 08:00–20:00 UTC weekdays — margin against the
+idle timeout, not a guarantee, since GitHub's scheduler measurably slips). An
+always-on move is specified and priced in `render.yaml`, pending budget. Under burst access the testnet RPC declined to forward roughly 1
+settle in 3, with nothing spent (`TRY_AGAIN_LATER`, diagnosed in
+`docs/diagnosis-settle-failures.md`); the facilitator now retries that status
+itself (§8, Reliability engine), error bodies still carry the real RPC status
+when a settle ultimately fails, and the scheduled settle probe — its no-retry
+control arm running beside the retry — is the instrument measuring the
+post-retry failure rate rather than asserting one. Third-party trust verdicts require
 `VERIFICATION_API_URL`; unset, every verdict reads `unknown` — the documented
 degrade mode (§6), not a fault — and `verified_only` refuses loudly rather
 than serving a misleading empty list.
@@ -258,7 +355,9 @@ Proof (Stellar testnet):
   move.
 - Canonical testnet USDC end to end, no faucet: provisioning buys USDC on the
   DEX from friendbot XLM, and a full x402 payment settles in it — tx
-  `f9b743c5c7bceb0a…` (ledger 4106526), later `cda3cbaa9b4025e7…` (ledger
+  `f9b743c5c7bceb0a6cf381c983bfd307db1b5f3877b5ad11db5fb04617de8c98` (ledger
+  4106526), later
+  `cda3cbaa9b4025e7413a20bb85c981beb64a862c931e18a7213b51fe689d50ea` (ledger
   4137813) against the hosted instance, merchant balances reconciling exactly
   to price × settlements across every attempt, including failed ones.
 - Two upstream defects in `@x402/stellar` found, reproduced, and filed:
@@ -273,21 +372,48 @@ launch. Three milestones (final = mainnet, per SCF):
 1. **Production hardening.** ~~DB-backed Bazaar catalog~~ — **delivered ahead
    of funding** (libSQL/Turso, live since 2026-08-11, restart-verified).
    Remaining: operational telemetry + public status dashboard toward the 99%+
-   target; load-hardening + sequence-number management under concurrent
-   settlement using the fee-bump path (channel accounts); **voluntary
+   target (the scheduled settle probe, already delivered, is the first
+   instrument feeding it); load-hardening + sequence-number management under
+   concurrent settlement using the fee-bump path (channel accounts); **a live
+   trustline/payability check on every discovery entry** — read-time
+   confirmation that the listed `payTo` currently holds a trustline for the
+   priced asset, so a buyer is warned before attempting a settlement that
+   would fail on-chain (ownership verification answers "is this listing
+   theirs"; this answers "can they be paid right now"); **voluntary
    rotation for verified bindings** — proposed design at
    `docs/proposal-voluntary-rotation.md`, not yet implemented; **a public
    transaction explorer** — proposed design at
    `docs/proposal-ecosystem-explorer.md` (own settlements first, then
    ecosystem-wide attribution across any Stellar facilitator), not yet
    implemented.
-2. **Upstream + provenance.** `scheme_upto_stellar.md` (the "upto" metered
-   scheme spec + implementation) contributed upstream; V2 (CAP-0071-02)
-   credential support so passkey-signed x402 payments settle; the provenance
-   attestor and agent-key mint/revoke UX productionized.
+2. **Upstream + provenance.** The `upto` metered scheme for Stellar
+   (`scheme_upto_stellar.md`): specification plus implementation, contributed
+   upstream. `upto` lets a buyer authorize a spending ceiling and pay only for
+   what is actually consumed — the billing model real API businesses run on
+   (per-token, per-byte, per-compute) and the most-cited gap in the RFP's own
+   framing. The design is materially de-risked since this document was first
+   written: open-source Stellar `upto` implementations now exist to study,
+   including one with a deployed Soroban contract that solves the hard
+   correctness property (authorize at the ceiling, settle at actual usage,
+   release the difference — including its interaction with on-chain spending
+   policies, which matters here given §2's policy-governed payers). This
+   deliverable builds on that observed prior art, under the same
+   audit-and-evidence discipline as the `exact` path, rather than designing in
+   the dark. The design position going in, stated now so the result can be
+   held against it: a minimal settlement contract with no admin key, no
+   upgrade path, and no custody — the bounded-draw shape (authorize a
+   ceiling, draw exactly the actual amount, never move the remainder) rather
+   than pull-and-refund, so "never holds funds" is structural rather than an
+   atomicity claim — with the scheme's invariants stated normatively in the
+   contributed spec and covered by property-based tests, not only worked
+   examples. Also in this milestone: V2 (CAP-0071-02) credential support so
+   passkey-signed x402 payments settle; the provenance attestor and agent-key
+   mint/revoke UX productionized.
 3. **Mainnet launch.** Facilitator + its three provenance contracts (attestation
    registry, verified-recipient policy, spending-limit policy) deployed to
-   pubnet after a security audit (SCF audit credits) with findings remediated;
+   pubnet after an external security audit (SCF audit credits) with findings
+   remediated — a second, independent review on top of the already-completed
+   pre-mainnet review (§8), not the first look;
    proven uptime; mainnet USDC / multi-asset support; professional user testing.
 
 Mainnet-specific engineering: pubnet RPC + real USDC SAC configuration
