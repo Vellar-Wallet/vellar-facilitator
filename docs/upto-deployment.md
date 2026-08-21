@@ -58,3 +58,40 @@ the ceiling). Unset, the facilitator is exact-only.
 
 `examples/upto-buyer.mjs` is the end-to-end client: authorize a ceiling with
 one signature, settle for the metered actual.
+
+## Verified independently — not just by this repo
+
+[`explorer.vellar.xyz`](https://explorer.vellar.xyz) is a separate,
+independently operated service (`Vellar-Wallet/vellar-explorer`) that
+classifies real Stellar ledger data directly — it does not read anything
+this facilitator reports about itself. Three settlements against the hosted
+instance on 2026-08-21, each independently confirmed successful on Horizon
+before being checked there:
+
+| Tx | Ceiling → actual (stroops) | Explorer shows |
+| --- | --- | --- |
+| `0e5fffea1794800fd46a77919fe183bc4639d7dd5ffaf90ad7c2f336cf2e3f1e` | 2000000 → 730000 | not indexed — settled before the explorer's classifier recognized `upto` (below) |
+| `be72877332bbd7f8d38511cccf00620fb20869cfedbc7530588ca856ac646d9a` | 1500000 → 555000 | `scheme: upto`, `settled by: vellar`, `0.0555 USDC` |
+| `f558307ef7366be7d70967d1bd2acb65da19f24627a0f91cd62b95cf70c9693e` | 800000 → 312000 | `scheme: upto`, `settled by: vellar`, `0.0312 USDC` |
+| `12f0fa5c720d6791018d30261fa88b5d0934bb8a2dc141cd28b6ded3e432d21a` | 1200000 → 417000 | `scheme: upto`, `settled by: vellar`, `0.0417 USDC` |
+
+**One real gap found and fixed along the way.** The first settlement above
+(`0e5fffea…`) did not appear on the explorer at all — not lag, a genuine
+classifier gap: its heuristic only recognized a top-level `transfer(from, to,
+amount)` call directly on the watched USDC SAC (the `exact`-scheme shape).
+An `upto` settlement invokes a different contract's `settle(...)`; the actual
+token movement happens as a nested sub-invocation the classifier never
+inspected. Root-caused by reading `vellar-explorer`'s own `classify.ts`, then
+fixed there: the classifier now recognizes an `upto`-contract invocation by
+shape and reads the *actual* settled amount from the token's own emitted
+`transfer` event, since the signed ceiling and the facilitator-supplied
+actual in the envelope's args are not ground truth for what the chain moved
+— the event is. The three later transactions above are the proof the fix
+holds, run after the fix deployed.
+
+As of this writing, per the explorer's own "Who settled it" breakdown: **6
+of 4,799** payments indexed across the whole visible testnet ecosystem carry
+a known, identified facilitator, and all six are ours — the rest is
+unattributed traffic. A small, testnet-scale number, not a market-share
+claim, but a true and independently-checkable one: right now, this is
+essentially the only identifiable facilitator among that traffic.

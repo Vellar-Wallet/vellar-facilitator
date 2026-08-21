@@ -105,6 +105,18 @@ See docs/decisions.md._
       callee surface), verify simulates at the ceiling. Client:
       `examples/upto-buyer.mjs`. Wire shape is EXPERIMENTAL pending
       x402-foundation/x402 PR #3134.
+- [x] `upto` verified independently 2026-08-21: three hosted-instance
+      settlements each show correctly on the separately-operated
+      `explorer.vellar.xyz` (`scheme: upto`, `settled by: vellar`, the
+      metered actual displayed, not the ceiling — full tx table in
+      `docs/upto-deployment.md`). Found and fixed a real gap along the way:
+      the explorer's own classifier only recognized the `exact`-scheme
+      direct-transfer shape and never saw an `upto` settlement's contract
+      invocation at all — root-caused by reading its `classify.ts`, fixed
+      there to read the actual settled amount from the token's own emitted
+      transfer event. Per the explorer's own attribution breakdown at time
+      of writing, 6 of 4,799 indexed testnet payments carry a known
+      facilitator, and all six are ours.
 - [ ] Upstream contribution to PR #3134 — paused by user direction
       2026-08-21: independent-implementor review findings (signed-vs-
       unsigned hook, custody-window economics per LumenGate's measured

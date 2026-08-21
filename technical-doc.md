@@ -34,6 +34,7 @@ Every load-bearing claim in this document, re-verified in one sweep on
 | Pre-mainnet security review complete | every finding carries a final status | `docs/security-audit.md`, `docs/closing-state.md` |
 | Reliability is measured, not asserted | the scheduled settle probe is green on its cron (five runs/day observed), each run settling real payments with a no-retry control arm beside the retry | the repo's Actions tab, `settle-probe.yml` |
 | Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
+| `upto` settles for the metered actual, not the signed ceiling, and an independent service says so | three settlements against the hosted instance — actual/ceiling pairs 555000/1500000, 312000/800000, 417000/1200000 — each shows on `explorer.vellar.xyz` with `scheme: upto` and `settled by: vellar`, verified by neither this repo nor its author | `curl https://vellar-explorer.onrender.com/payments/<hash>`, or the feed at `explorer.vellar.xyz` |
 
 The table is an index; the sections behind it carry the methodology.
 
@@ -381,34 +382,45 @@ launch. Three milestones (final = mainnet, per SCF):
    would fail on-chain (ownership verification answers "is this listing
    theirs"; this answers "can they be paid right now"); **voluntary
    rotation for verified bindings** — proposed design at
-   `docs/proposal-voluntary-rotation.md`, not yet implemented; **a public
-   transaction explorer** — proposed design at
-   `docs/proposal-ecosystem-explorer.md` (own settlements first, then
-   ecosystem-wide attribution across any Stellar facilitator), not yet
-   implemented.
-2. **Upstream + provenance.** The `upto` metered scheme for Stellar
-   (`scheme_upto_stellar.md`): specification plus implementation, contributed
-   upstream. `upto` lets a buyer authorize a spending ceiling and pay only for
-   what is actually consumed — the billing model real API businesses run on
+   `docs/proposal-voluntary-rotation.md`, not yet implemented. **A public
+   transaction explorer is live** at
+   [`explorer.vellar.xyz`](https://explorer.vellar.xyz) — a separate repo
+   (`Vellar-Wallet/vellar-explorer`), independently built and operated,
+   classifying real settlements straight off the Stellar ledger rather than
+   from anything this facilitator reports about itself. Own-settlement
+   attribution is live today; the ecosystem-wide, any-facilitator scope from
+   `docs/proposal-ecosystem-explorer.md` remains future work.
+2. **Upstream + provenance.** The `upto` metered scheme for Stellar is
+   **built and deployed**, ahead of this milestone's original schedule.
+   `upto` lets a buyer authorize a spending ceiling and pay only for what is
+   actually consumed — the billing model real API businesses run on
    (per-token, per-byte, per-compute) and the most-cited gap in the RFP's own
-   framing. The design is materially de-risked since this document was first
-   written: open-source Stellar `upto` implementations now exist to study,
-   including one with a deployed Soroban contract that solves the hard
-   correctness property (authorize at the ceiling, settle at actual usage,
-   release the difference — including its interaction with on-chain spending
-   policies, which matters here given §2's policy-governed payers). This
-   deliverable builds on that observed prior art, under the same
-   audit-and-evidence discipline as the `exact` path, rather than designing in
-   the dark. The design position going in, stated now so the result can be
-   held against it: a minimal settlement contract with no admin key, no
-   upgrade path, and no custody — the bounded-draw shape (authorize a
-   ceiling, draw exactly the actual amount, never move the remainder) rather
-   than pull-and-refund, so "never holds funds" is structural rather than an
-   atomicity claim — with the scheme's invariants stated normatively in the
-   contributed spec and covered by property-based tests, not only worked
-   examples. Also in this milestone: V2 (CAP-0071-02) credential support so
-   passkey-signed x402 payments settle; the provenance attestor and agent-key
-   mint/revoke UX productionized.
+   framing. Rather than design one from scratch, an open-source Stellar
+   `upto` contract was reviewed line-by-line against a six-implementation
+   comparison across the wider SCF cohort, endorsed, and **deployed as our
+   own build from pinned, reviewed source** — never a third party's running
+   instance, whose wasm hash we have not independently verified:
+
+   | | |
+   | --- | --- |
+   | Contract (testnet) | `CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S` |
+   | Wasm hash | `c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9` — reproducible from source, steps in `docs/upto-deployment.md` |
+   | Contract properties | no admin key, no upgrade path, no custody — the bounded-draw shape (authorize a ceiling, draw exactly the actual amount, never move the remainder), so "never holds funds" is structural, not an atomicity claim |
+
+   `/supported` on the hosted instance advertises both `exact` and `upto`
+   today. **Verified independently, not just by this repo**: three
+   settlements against the hosted instance — actual amounts 555000, 312000,
+   and 417000 stroops against signed ceilings of 1500000, 800000, and
+   1200000 — each shows on the separately-operated
+   [`explorer.vellar.xyz`](https://explorer.vellar.xyz) with `scheme: upto`
+   and `settled by: vellar`, the metered actual displayed rather than the
+   ceiling. An upstream contribution to x402-foundation/x402 PR #3134 (open,
+   competing with #3098) — carrying the review findings on hook safety,
+   custody-window economics, and a nonce-TTL replay fix found during the
+   review — is identified and ready to write, currently paused by choice
+   rather than blocked on anything. Also in this milestone: V2 (CAP-0071-02)
+   credential support so passkey-signed x402 payments settle; the provenance
+   attestor and agent-key mint/revoke UX productionized.
 3. **Mainnet launch.** Facilitator + its three provenance contracts (attestation
    registry, verified-recipient policy, spending-limit policy) deployed to
    pubnet after an external security audit (SCF audit credits) with findings
