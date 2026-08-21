@@ -1,0 +1,52 @@
+name: keep-warm
+
+# Free-tier workaround: keep both hosted services warm during reviewer hours
+# (08:00–20:00 UTC, weekdays) by pinging them every 10 minutes.
+#
+# Stated plainly, because this repo already measured the failure mode once
+# (keepalive.yml, retired 2026-08-15): GitHub's scheduler is BEST-EFFORT and
+# can slip — the retired */5 cron was delivered at 18–52 minute gaps. A
+# 10-minute schedule against Render's 15-minute idle timeout gives margin,
+# not a guarantee; if a ping slips past 15 minutes the instance spins down
+# anyway and the next ping eats the ~45 s cold start. The permanent fix is
+# the $7 paid always-on tier (render.yaml holds the one-line change). This
+# workflow narrows the gamble to the hours a reviewer is likely to look —
+# it does not remove it.
+#
+# Differences from the retired keepalive.yml (which stays, manual-dispatch
+# only, as the pre-walkthrough wake button): this one is scheduled, scoped to
+# reviewer hours, and pings /quote on the seller (HEAD) so the warmed path is
+# the one a reviewer actually exercises.
+#
+# Both pings run in the same job, sequentially, and are independent: a failed
+# facilitator ping must not skip the seller ping, and a non-200 from either
+# must not fail the job — a waking instance can briefly answer 5xx, and that
+# is the situation this workflow exists to smooth over, not an error.
+
+on:
+  schedule:
+    - cron: "*/10 8-20 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: ping facilitator (GET /health)
+        run: |
+          curl -sS --max-time 90 -o /dev/null \
+            -w "facilitator: HTTP %{http_code} in %{time_total}s\n" \
+            https://vellar-facilitator.onrender.com/health || true
+      - name: ping demo seller (HEAD /quote)
+        run: |
+          curl -sS --head --max-time 90 -o /dev/null \
+            -w "seller: HTTP %{http_code} in %{time_total}s\n" \
+            https://vellar-seller-demo.onrender.com/quote || true

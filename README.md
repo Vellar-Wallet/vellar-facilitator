@@ -26,14 +26,18 @@ free service down after 15 minutes without traffic and the container is
 replaced, not paused; measured cold start **44.76 seconds**. You pay it once —
 the service then stays warm for 15 minutes past your last request.
 
-The keep-alive cron era is over: re-enabled 2026-08-11 against measured budget
-headroom, it never delivered a warm window — GitHub's scheduler delivered pings
-18–52 minutes apart against a 15-minute idle timeout (measured 2026-08-15) — so
-it spent pool hours on a coin flip and is retired to manual dispatch. **The
-instance remains on the free tier** (a paid always-on move was approved and
-rescinded for budget the same day; `render.yaml` carries the ready-to-apply
-config behind a loud billing warning). So: assume the ~45s cold start. History:
-[`using-it.md` § About the cold
+The warm-window story, honestly: the original */5 keep-alive cron was retired
+2026-08-15 on delivery measurement — GitHub's scheduler ran it at 18–52 minute
+gaps against a 15-minute idle timeout, so it spent pool hours on a coin flip.
+Since 2026-08-21 a narrower **best-effort keep-warm cron**
+(`.github/workflows/keep-warm.yml`) pings every 10 minutes during reviewer
+hours only (08:00–20:00 UTC, weekdays) — margin against the timeout, **not a
+guarantee**, for exactly the measured reason above; outside those hours, and
+whenever a ping slips, the cold start applies. **The instance remains on the
+free tier** (a paid always-on move was approved and rescinded for budget the
+same day; `render.yaml` carries the ready-to-apply config behind a loud billing
+warning). So: still assume the ~45s cold start unless you are inside the
+warmed window. History: [`using-it.md` § About the cold
 start](./docs/using-it.md#about-the-cold-start--there-is-no-warm-window).
 
 The catalog survives either way: it lives in libSQL/Turso rather than on the
@@ -169,12 +173,16 @@ start with the binding intact. An empty catalog now means an empty catalog, not 
 restart — if yours is missing, something else is wrong.
 
 The keep-alive workflow's full arc, honestly: disabled at first for workspace
-pool-budget reasons, **re-enabled 2026-08-11** against measured headroom, and
+pool-budget reasons, **re-enabled 2026-08-11** against measured headroom,
 **retired 2026-08-15** when measurement showed GitHub's cron delivery (18–52
 minute gaps) could never beat the 15-minute idle timeout — hours spent, warmth
-not delivered. The durable catalog had already removed half the reason to want
-it; the rest waits on a paid always-on instance, which is budgeted-not-bought
-as of 2026-08-15 (`render.yaml` holds the one-line change and its price).
+not delivered — and **partially revived 2026-08-21** as `keep-warm.yml`: every
+10 minutes, reviewer hours only, documented as best-effort margin rather than
+a warm-window promise, since GitHub's delivery is the same scheduler that
+failed the measurement. The durable catalog had already removed half the
+reason to want it; the real fix remains a paid always-on instance, which is
+budgeted-not-bought as of 2026-08-15 (`render.yaml` holds the one-line change
+and its price).
 
 **Resource-URL ownership is trust-on-first-use.** The first settlement for a
 canonical URL (`origin + pathname`) binds it to that payment's `payTo`; later
