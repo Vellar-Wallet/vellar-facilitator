@@ -20,6 +20,7 @@ import {
 } from "./trust.js";
 import { createSpendPolicy, type SpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
+import { registerSettlement, type BondEscrowOptions } from "./bond.js";
 
 interface FacilitatorRequestBody {
   x402Version?: number;
@@ -75,6 +76,10 @@ export async function buildServer(
    *  marks it Required). The production call site passes config.network; the
    *  default keeps the many test call sites terse and is asserted to match. */
   network: string = "stellar:testnet",
+  /** Set only when config.bondEscrowContractId is configured — undefined means
+   *  bonding is entirely inactive and /settle behaves exactly as it did before this
+   *  existed. See the bond-registration block in /settle for the full behavior. */
+  bondEscrow?: BondEscrowOptions,
 ) {
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
@@ -211,6 +216,14 @@ export async function buildServer(
         }),
       );
     }
+    // Canonical resource URL — hoisted above the spend-policy block so bond
+    // registration (below) can reuse the same derivation rather than recomputing
+    // it independently, which is exactly how a resource-key canonicalization bug
+    // gets a second, silently-drifting copy. Cheap and pure (URL parsing only),
+    // so computing it unconditionally costs nothing when neither consumer needs it.
+    const rawResourceUrl =
+      (paymentPayload as unknown as { resource?: { url?: string } }).resource?.url ?? "";
+    const resourceUrl = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
     // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
     // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
     // testnet it logs what would have tripped and proceeds (fail-open).
@@ -230,9 +243,6 @@ export async function buildServer(
       // `/quote?symbol=AAPL` reads as unbound on every settle and lands in the
       // shared unbound pool — and the per-URL budget could be multiplied by
       // simply varying the query string.
-      const rawResourceUrl =
-        (paymentPayload as unknown as { resource?: { url?: string } }).resource?.url ?? "";
-      const resourceUrl = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
       const verdict = policy.checkSettle({
         resourceUrl,
         payTo: payToKey,
@@ -298,6 +308,112 @@ export async function buildServer(
     if (result.success === false && rpcStatus) {
       request.log.warn({ rpcStatus }, "[settle] submission refused by the RPC");
       return { ...result, rpcStatus };
+    }
+    // Bond registration — synchronous, awaited, BEFORE /settle reports success.
+    // docs/proposal-provider-bond.md, Section 6: this is the one call that gives a
+    // payer standing to dispute a bond, so a settlement that succeeds without it
+    // is a settlement no buyer can ever get recourse for — exactly the gap this
+    // whole system exists to close. Only reached when bondEscrow is configured
+    // (both-or-neither with the admin key, enforced in config.ts) and the
+    // settlement itself actually succeeded — nothing to register standing
+    // against for a failed settle.
+    if (bondEscrow && result.success === true) {
+      try {
+        const seller = BazaarCatalog.canonicalPayTo(paymentRequirements.payTo);
+        // Both of these SHOULD be impossible on a successful settlement — a real
+        // payment cannot have settled without a real payer and a real payTo — but
+        // "should be impossible" is exactly the case this system's own posture
+        // (name it, don't hide it) says to handle explicitly rather than assume.
+        if (!seller || !result.payer) {
+          request.log.error(
+            { transaction: result.transaction, payer: result.payer, payTo: paymentRequirements.payTo },
+            "[bond] settlement succeeded but is missing a payer or seller address — cannot register",
+          );
+          return reply.status(503).send(
+            settleError(network, "bond_registration_unavailable", {
+              error: "bond_registration_failed",
+              reason: "missing_payer_or_seller",
+              // The real settlement outcome, not hidden behind the 503 — money
+              // moved even though this response reports failure.
+              transaction: result.transaction,
+            }),
+          );
+        }
+        const registration = await registerSettlement(bondEscrow, {
+          // A Stellar transaction hash is already exactly 32 bytes and already
+          // unique per settlement — a ready-made payment_id, per bond.ts's own
+          // doc-comment on the field.
+          paymentId: result.transaction,
+          // Not run through canonicalPayTo, unlike seller below: SDK-derived from parsed
+          // transaction XDR, not a merchant-typed string, so it shouldn't carry the
+          // whitespace/casing exposure that canonicalization exists for. If that
+          // assumption ever breaks, bond.ts's own address validation throws -> 503, a
+          // loud failure, not a silent wrong-value bug.
+          payer: result.payer,
+          seller,
+          resourceKey: resourceUrl,
+          amount: result.amount ?? paymentRequirements.amount,
+        });
+
+        if (registration.outcome === "infrastructure_error") {
+          request.log.error(
+            { transaction: result.transaction, detail: registration.detail },
+            "[bond] registration failed (infrastructure) — refusing to report settle success without it",
+          );
+          return reply.status(503).send(
+            settleError(network, "bond_registration_unavailable", {
+              error: "bond_registration_failed",
+              reason: registration.detail,
+              transaction: result.transaction,
+            }),
+          );
+        }
+        if (registration.outcome === "rejected") {
+          if (registration.contractErrorCode === 3 /* SettlementAlreadyRegistered */) {
+            // Unexpected, but not fatal: dispute standing already exists for this
+            // paymentId (a prior registration attempt must have succeeded even
+            // though this request didn't observe it — e.g. a retried settle, or a
+            // submission that landed after we'd already stopped waiting on a prior
+            // attempt). The outcome this call cares about — standing exists — is
+            // already true. Logged loudly because it is still worth an operator's
+            // attention, not because the settle needs to fail over it.
+            request.log.warn(
+              { transaction: result.transaction },
+              "[bond] SettlementAlreadyRegistered — standing already exists for this paymentId, letting settle succeed",
+            );
+          } else {
+            request.log.error(
+              { transaction: result.transaction, detail: registration.detail, code: registration.contractErrorCode },
+              "[bond] registration rejected by the contract — unexpected, refusing to report settle success",
+            );
+            return reply.status(500).send(
+              settleError(network, "bond_registration_rejected", {
+                error: "bond_registration_failed",
+                reason: registration.detail,
+                contractErrorCode: registration.contractErrorCode,
+                transaction: result.transaction,
+              }),
+            );
+          }
+        }
+      } catch (err) {
+        // Anything thrown here (including bond.ts's own caller-bug validation,
+        // which should be unreachable given the guards above, but "should be
+        // unreachable" is not a substitute for handling it) is treated the same
+        // as an infrastructure failure: fail loud, never let it crash the
+        // request uncaught, never silently report success without registration.
+        request.log.error(
+          { transaction: result.transaction, err: err instanceof Error ? err.message : err },
+          "[bond] registration threw — refusing to report settle success without it",
+        );
+        return reply.status(503).send(
+          settleError(network, "bond_registration_unavailable", {
+            error: "bond_registration_failed",
+            reason: err instanceof Error ? err.message : String(err),
+            transaction: result.transaction,
+          }),
+        );
+      }
     }
     return result;
   });
@@ -517,6 +633,27 @@ if (isDirectRun) {
   });
   balanceGuard.start();
 
+  // Bond registration is opt-in by contract ID, same convention as uptoContractId
+  // above — unset means bonding is entirely inactive, /settle unchanged. The
+  // both-or-neither invariant already enforced in config.ts guarantees the admin
+  // key is present whenever the contract ID is.
+  const bondEscrow: BondEscrowOptions | undefined = config.bondEscrowContractId
+    ? {
+        contractId: config.bondEscrowContractId,
+        adminSecretKey: config.bondEscrowAdminSecretKey!,
+        network: config.network,
+        rpcUrl: config.rpcUrl,
+        maxTransactionFeeStroops: config.maxTransactionFeeStroops,
+      }
+    : undefined;
+  if (!bondEscrow) {
+    console.warn(
+      "[bond] BOND_ESCROW_CONTRACT_ID is not set — settlements will NOT be registered with the bond " +
+        "contract. No payer gets dispute standing for any settlement. This is expected until the bond " +
+        "system is deployed and configured; see docs/bond-escrow-deployment.md.",
+    );
+  }
+
   const app = await buildServer(
     buildFacilitator(config),
     catalog,
@@ -525,6 +662,7 @@ if (isDirectRun) {
     {},
     balanceGuard,
     config.network,
+    bondEscrow,
   );
   // P3 — sponsor funding asserted AT BOOT, with the fix in the error. The
   // polling balance guard exists for drain DURING operation; this exists for
