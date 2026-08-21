@@ -31,6 +31,11 @@ describe("/health carries enough to detect a spin-down", () => {
     expect(body.uptimeSeconds).toBeGreaterThanOrEqual(0);
     // The consequence a developer actually feels.
     expect(body.catalogSize, "catalogSize must be present").toBe(0);
+    // ALWAYS present, zero included: after a restart a latched entry serves
+    // proven-unconfirmed until its boot re-proof resolves, and a reader must
+    // be able to distinguish "probe in flight, check back" (n > 0) from "this
+    // is the settled state" (0) without reading source.
+    expect(body.reverifyPending, "reverifyPending must be present even at zero").toBe(0);
     await app.close();
   });
 
@@ -137,6 +142,29 @@ describe("assertSponsorFunded — fail fast, fail explaining itself", () => {
       status: 200, ok: true,
       json: async () => ({ balances: [{ asset_type: "native", balance: "9999.5" }] }),
     }) as unknown as Response);
+    await expect(assertSponsorFunded("https://h.example", G)).resolves.toBeUndefined();
+  });
+
+  it("the fetch is bounded by an abort signal — a black-holing Horizon cannot stall boot", async () => {
+    // Errors were always caught and fail-open, but a hang is not an error until
+    // something bounds it. Assert the bound exists rather than waiting out a
+    // real 5s timeout.
+    let seenSignal: unknown;
+    vi2.stubGlobal("fetch", async (_url: unknown, init?: { signal?: unknown }) => {
+      seenSignal = init?.signal;
+      return {
+        status: 200, ok: true,
+        json: async () => ({ balances: [{ asset_type: "native", balance: "1.0" }] }),
+      } as unknown as Response;
+    });
+    await assertSponsorFunded("https://h.example", G);
+    expect(seenSignal, "preflight fetch must carry an AbortSignal").toBeInstanceOf(AbortSignal);
+  });
+
+  it("an aborted (timed-out) fetch fails open like any other unreachable Horizon", async () => {
+    vi2.stubGlobal("fetch", async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
     await expect(assertSponsorFunded("https://h.example", G)).resolves.toBeUndefined();
   });
 });

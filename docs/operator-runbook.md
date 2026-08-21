@@ -62,6 +62,35 @@ This is **G-2**: a resource URL's `payTo` is bound on first use.
 > exactly for that, and the squatter's binding is unverified by construction —
 > they cannot serve a 402 naming themselves from a domain they do not control.
 
+> ### Standing caveat — the badge resets on every restart
+>
+> `ownerVerified` is per-process **by design** (`src/store.ts` — the durable
+> `verified_at` row yields only `everVerified`), so after ANY restart a latched
+> entry serves `ownershipState: "proven-unconfirmed"` — not `"verified"` —
+> until its owner's next settlement re-proves it in-process. On the free tier
+> that means **every spin-down (15 idle minutes) turns the badge gray**, and
+> the scheduled settle probe does not help: it runs against a CI-local stack,
+> never this instance.
+>
+> **Since 2026-08-21 a boot-time re-proof pass closes this automatically**
+> (`reverifyLatchedAtBoot`, fired unawaited after listen()): every entry with
+> the durable latch but no badge is re-probed through the same SSRF-guarded
+> prober, and the badge is restored on a match. Its progress is observable as
+> `reverifyPending` on `/health` — a gray badge with `reverifyPending > 0`
+> means "probe in flight, check back shortly"; with `reverifyPending: 0` the
+> gray state is settled (the probe mismatched, timed out against a sleeping
+> seller's full retry ladder, or found the resource unverifiable).
+>
+> What remains manual: if the boot pass could not re-prove (seller slept
+> through the whole ladder, ~3 minutes), either warm the seller and wait for
+> the next facilitator restart, or settle one payment to the listing — the
+> settle-path probe matches immediately once the seller answers. The pass
+> re-displays earned proof only; it never grants verification to an entry that
+> was not already proven by a settlement (the settle-triggered-only decision
+> stands — see catalog.reverify.test.ts).
+>
+> Rediscovered 2026-08-21 during the demo-listing rotation.
+
 ### Symptom
 
 A merchant reports one or more of:

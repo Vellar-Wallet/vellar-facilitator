@@ -24,6 +24,11 @@ import type { OwnershipVerdict } from "./ownership.js";
 //    on current domain control with no contemporaneous payment — the same
 //    inference refused for automated rotation (runbook procedure 1). The price
 //    is that a zero-traffic resource stays unverified; that is the correct price.
+//    ONE LATER, NARROWER EXCEPTION (2026-08-21): reverifyLatchedAtBoot re-probes
+//    entries whose proof was ALREADY earned by a settlement-triggered probe (the
+//    durable everVerified latch is its admission criterion). It re-displays an
+//    earned proof after a restart; it cannot grant one — the refusal above is
+//    about granting, and stands. See catalog.bootreverify.test.ts.
 //  - Verification state is in-memory ONLY: never persisted (RA-9 stays closed)
 //    and never on the wire (no attacker-forceable signal for consumers).
 //  - mismatch is a DEFINITE answer, unverifiable an UNCERTAIN one, so they do

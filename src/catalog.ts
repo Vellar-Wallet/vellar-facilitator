@@ -858,6 +858,102 @@ export class BazaarCatalog {
     }
   }
 
+  /** Boot-time re-proof probes still unresolved. Surfaced on /health so the
+   *  post-restart proven-unconfirmed window is observable rather than
+   *  mysterious — a reviewer who sees a gray badge and checks /health can see
+   *  a probe is in flight instead of wondering what is broken. 0 whenever no
+   *  boot pass is running. */
+  private bootReverifyPending = 0;
+
+  get reverifyPending(): number {
+    return this.bootReverifyPending;
+  }
+
+  /**
+   * Boot-time re-proof of durable latches.
+   *
+   * The badge (`verifiedOwner`) is per-process BY DESIGN and rebuilds as false
+   * on every restart; only the latch (`everVerified`) is durable. On the free
+   * tier that turned every spin-down into a gray badge until the owner's next
+   * settlement (runbook §1, "Standing caveat — the badge resets on every
+   * restart"). This pass runs the SAME probe reverify() runs — same SSRF
+   * guards, same ownership.ts path — for every entry that HAS the durable
+   * latch but not the badge, and flips the badge on a match.
+   *
+   * Relationship to "settle-triggered ONLY, no prober" (the design recorded in
+   * catalog.reverify.test.ts): that decision refuses to GRANT verification
+   * without a contemporaneous payment, and it stands untouched — this pass
+   * cannot verify anything for the first time, because `everVerified` is only
+   * ever set by a settlement-triggered proof. It re-establishes the DISPLAY of
+   * a proof that was already earned, and the resource can still refuse it (a
+   * mismatch leaves the honest proven-unconfirmed state). RA-9 also stands:
+   * nothing here trusts a stored badge — the probe re-fetches the live 402.
+   *
+   * Deliberately NOT awaited by boot: the prober's cold-start retry ladder can
+   * run minutes against a sleeping seller, and a reviewer's first request must
+   * never wait on it — which is the whole reason this fires after listen().
+   * The durable re-latch is SKIPPED on match: `everVerified` already holds for
+   * every candidate (it is the admission criterion), so the write would be a
+   * pointless store update on every restart.
+   */
+  async reverifyLatchedAtBoot(
+    verify: (url: string, payTos: string[]) => Promise<OwnershipVerdict>,
+    concurrency = 3,
+    nowFn: () => number = Date.now,
+  ): Promise<void> {
+    const candidates: string[] = [];
+    for (const [key, entry] of this.entries) {
+      if (!this.everVerified.has(key)) continue; // never proven — out of scope, see above
+      if (entry.verifiedOwner) continue; // badge already up in this process
+      if (entry.boundPayTo.length === 0) continue; // nothing to test
+      if (isTemplatedKey(key)) continue; // would GET a literal `:param`
+      if (this.verifyInFlight.has(key)) continue;
+      candidates.push(key);
+    }
+    if (candidates.length === 0) return;
+    this.bootReverifyPending = candidates.length;
+    console.warn(
+      `[boot] re-proving ${candidates.length} latched binding(s) — the badge is per-process, the latch is durable`,
+    );
+
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const i = next++;
+        if (i >= candidates.length) return;
+        const key = candidates[i]!;
+        try {
+          const entry = this.entries.get(key);
+          if (!entry || entry.verifiedOwner || this.verifyInFlight.has(key)) continue;
+          this.verifyInFlight.add(key);
+          try {
+            const verdict = await verify(key, [...entry.boundPayTo]);
+            this.verifyState.set(key, { verdict, at: nowFn() });
+            if (verdict === "match") {
+              this.setVerifiedOwner(key, true);
+              console.warn(`[boot] re-proved ${key} — badge restored to verified`);
+            } else {
+              console.warn(
+                `[boot] re-proof for ${key} returned "${verdict}" — left proven-unconfirmed (honest)`,
+              );
+            }
+          } finally {
+            this.verifyInFlight.delete(key);
+          }
+        } catch (err) {
+          console.warn(
+            `[boot] re-proof for ${key} failed: ${String((err as Error)?.message ?? err)} — left proven-unconfirmed`,
+          );
+        } finally {
+          this.bootReverifyPending--;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.max(1, Math.min(concurrency, candidates.length)) }, worker),
+    );
+  }
+
   /** Whether the resource's own 402 challenge has confirmed its bound owner
    * (Fix 0 Layer 2). Consumers should treat an entry's accepts as authoritative
    * only when this is true. */

@@ -11,6 +11,7 @@ import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
 import { registerBazaar } from "./bazaar.js";
+import { verifyResourceOwnership } from "./ownership.js";
 import {
   annotateTrust,
   filterVerifiedOnly,
@@ -120,6 +121,12 @@ export async function buildServer(
     // catalogSize is already derivable from /discovery/resources.
     uptimeSeconds: Math.round(process.uptime()),
     catalogSize: catalog.size,
+    // Boot-time re-proof probes still in flight. ALWAYS present, zero included:
+    // after a restart a latched entry serves proven-unconfirmed until its probe
+    // resolves, and a reader who sees the gray badge needs to distinguish "a
+    // probe is running, check back shortly" (n > 0) from "nothing is coming,
+    // this is the settled state" (0) without reading source.
+    reverifyPending: catalog.reverifyPending,
     // Non-zero means those sellers advertise an address the facilitator cannot
     // fetch, so their entries are permanently unverified — distinct from "not
     // verified yet", which every entry reads as while VERIFICATION_API_URL is
@@ -536,6 +543,16 @@ if (isDirectRun) {
     app.log.error(err);
     process.exit(1);
   });
+  // Boot-time re-proof, UNAWAITED and after listen() on purpose: the badge is
+  // per-process while the latch is durable, so every restart serves
+  // proven-unconfirmed for entries that were verified — until this pass
+  // re-fetches each one's live 402 through the same SSRF-guarded prober the
+  // settle path uses. The prober's cold-start retry ladder can run minutes
+  // against a sleeping seller, and a reviewer's first request must never wait
+  // on it. Progress is observable as `reverifyPending` on /health. See
+  // reverifyLatchedAtBoot for why this cannot GRANT verification, only
+  // re-display it.
+  void catalog.reverifyLatchedAtBoot(verifyResourceOwnership);
 }
 
 /** Boot-time sponsor preflight. Exported for tests; never called by buildServer
@@ -543,7 +560,13 @@ if (isDirectRun) {
 export async function assertSponsorFunded(horizonUrl: string, publicKey: string): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${horizonUrl}/accounts/${publicKey}`);
+    // Bounded: errors were always caught and fail-open, but a black-holing
+    // Horizon HANGS rather than errors, and an unbounded fetch here stalls
+    // boot indefinitely. 5s is generous for one account GET; on abort the
+    // TimeoutError lands in the same catch and the same fail-open applies.
+    res = await fetch(`${horizonUrl}/accounts/${publicKey}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
   } catch (err) {
     // Horizon unreachable is NOT a config error — warn and let the polling
     // guard take over, same fail-open stance it has always had.
