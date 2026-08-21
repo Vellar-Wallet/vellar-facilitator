@@ -1,17 +1,28 @@
 name: keep-warm
 
 # Free-tier workaround: keep both hosted services warm during reviewer hours
-# (08:00–20:00 UTC, weekdays) by pinging them every 10 minutes.
+# (07:00–21:00 UTC, weekdays) by pinging them every 10 minutes.
 #
-# Stated plainly, because this repo already measured the failure mode once
-# (keepalive.yml, retired 2026-08-15): GitHub's scheduler is BEST-EFFORT and
-# can slip — the retired */5 cron was delivered at 18–52 minute gaps. A
+# The window is 14h/day, not wider, for a MEASURED reason. This pings TWO
+# services (facilitator + demo seller), so every hour of warmth costs the
+# shared 750h/month workspace pool twice — the single-service table in
+# docs/closing-state.md §4b does not transfer directly. Recomputed for two
+# services, weekdays-only: 14h/day ≈ 662h/month combined (88% of the pool,
+# ~88h margin). 16h/day already lands at ~100% with effectively no margin.
+# True 24/7 for two services is ~195% of the pool by itself and was rejected
+# for exactly that reason (2026-08-21) — exhausting the pool suspends EVERY
+# free service in the workspace, not just these two (keepalive.yml's
+# documented failure mode). This is the widest safe window on the free tier.
+#
+# Stated plainly, because this repo already measured a related failure mode
+# once (keepalive.yml, retired 2026-08-15): GitHub's scheduler is BEST-EFFORT
+# and can slip — the retired */5 cron was delivered at 18–52 minute gaps. A
 # 10-minute schedule against Render's 15-minute idle timeout gives margin,
 # not a guarantee; if a ping slips past 15 minutes the instance spins down
-# anyway and the next ping eats the ~45 s cold start. The permanent fix is
-# the $7 paid always-on tier (render.yaml holds the one-line change). This
-# workflow narrows the gamble to the hours a reviewer is likely to look —
-# it does not remove it.
+# anyway and the next ping eats the ~45 s cold start. The permanent fix that
+# sidesteps the shared pool entirely is the $7 paid always-on tier
+# (render.yaml holds the one-line change) — this workflow is the free-tier
+# ceiling, not a substitute for it.
 #
 # Differences from the retired keepalive.yml (which stays, manual-dispatch
 # only, as the pre-walkthrough wake button): this one is scheduled, scoped to
@@ -25,7 +36,7 @@ name: keep-warm
 
 on:
   schedule:
-    - cron: "*/10 8-20 * * 1-5"
+    - cron: "*/10 7-20 * * 1-5"
   workflow_dispatch: {}
 
 permissions:

@@ -31,7 +31,9 @@ The warm-window story, honestly: the original */5 keep-alive cron was retired
 gaps against a 15-minute idle timeout, so it spent pool hours on a coin flip.
 Since 2026-08-21 a narrower **best-effort keep-warm cron**
 (`.github/workflows/keep-warm.yml`) pings every 10 minutes during reviewer
-hours only (08:00–20:00 UTC, weekdays) — margin against the timeout, **not a
+hours only (07:00–21:00 UTC, weekdays — the widest window that fits the
+shared free-tier pool for two services with real margin, see the workflow's
+own header for the math) — margin against the timeout, **not a
 guarantee**, for exactly the measured reason above; outside those hours, and
 whenever a ping slips, the cold start applies. **The instance remains on the
 free tier** (a paid always-on move was approved and rescinded for budget the

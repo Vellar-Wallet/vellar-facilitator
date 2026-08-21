@@ -328,7 +328,7 @@ Hosted-demo caveats, stated plainly. **The catalog is durable** — libSQL/Turso
 since 2026-08-11, verified across a real spin-down with ownership bindings
 intact; an empty catalog means an empty catalog, not a restart. The free tier
 sleeps when idle (~45 s cold start, measured; a best-effort keep-warm cron
-pings every 10 minutes during 08:00–20:00 UTC weekdays — margin against the
+pings every 10 minutes during 07:00–21:00 UTC weekdays — margin against the
 idle timeout, not a guarantee, since GitHub's scheduler measurably slips). An
 always-on move is specified and priced in `render.yaml`, pending budget. Under burst access the testnet RPC declined to forward roughly 1
 settle in 3, with nothing spent (`TRY_AGAIN_LATER`, diagnosed in

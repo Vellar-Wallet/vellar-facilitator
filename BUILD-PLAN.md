@@ -88,7 +88,29 @@ See docs/decisions.md._
 - [x] Developer guide (`docs/guide.md`) with two end-to-end integration
       examples (`examples/seller.mjs` + `examples/buyer.mjs`) — both
       live-verified on testnet 2026-07-31
-- [ ] Upstream contribution: `scheme_upto_stellar.md`
+- [x] `upto` scheme BUILT and DEPLOYED 2026-08-21: endorsed rail402's contract
+      after a line-by-line review and a six-implementation comparison across
+      the SCF cohort (bleu/SDF-aligned, Rialto, LumenGate, openx402, Veridex),
+      vendored verbatim at a pinned commit (`contracts/upto-stellar/`,
+      Apache-2.0, credited — never rail402's own deployed instance, whose
+      wasm hash is unverified), and deployed as OUR OWN build:
+      contract `CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S`,
+      wasm hash `c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9`
+      — reproducible from source, verified against the fetched-back on-chain
+      wasm (`docs/upto-deployment.md`). `/supported` advertises exact + upto
+      on the hosted instance; live-proven with a partial settlement (actual
+      250,000 under a signed 1,000,000 ceiling, tx `8b412ca6…`, Horizon-
+      confirmed). Two review findings enforced in the scheme, not just
+      documented: the settlement hook is refused (sponsor-facing hostile-
+      callee surface), verify simulates at the ceiling. Client:
+      `examples/upto-buyer.mjs`. Wire shape is EXPERIMENTAL pending
+      x402-foundation/x402 PR #3134.
+- [ ] Upstream contribution to PR #3134 — paused by user direction
+      2026-08-21: independent-implementor review findings (signed-vs-
+      unsigned hook, custody-window economics per LumenGate's measured
+      escrow-vs-allowance benchmark, the auto-revoke tree-shape interop gap,
+      rail402's nonce-TTL replay fix as a spec test vector) ready to draft
+      whenever resumed
 
 ## Phase 5 — Trust layer — BUILT 2026-08-01 (gate overridden user-directed, same day as design)
 
