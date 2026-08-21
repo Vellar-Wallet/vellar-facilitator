@@ -170,4 +170,45 @@ describe("Fix 0 Layer 1 — TOFU enforcement at load() (CATALOG_FILE cannot bypa
       expect(item.accepts.some((a) => a.payTo === "GATTACKER_B")).toBe(false);
     }
   });
+
+  it("a ROTATED merchant's accepts survives load — the whole bound set counts, not just [0]", async () => {
+    // The live regression, pinned: runbook §1 rotation APPENDS a second
+    // ownership row, and after the rotated merchant's settlement the entry's
+    // only accept carries the NEW address. Filtering load to boundPayTo[0]
+    // (the OLD address) quarantined that accept on every restart — the listing
+    // served accepts: [] until the owner settled again, while the write path
+    // had accepted the same payTo. Found live 2026-08-21, first restart after
+    // the demo-listing rotation. The attacker case above must stay dropped.
+    const { store, url } = tmpStore();
+    tmpFiles.push(url.slice(5));
+    await seedRows(url, {
+      ownership: [
+        { key: URL_X, payTo: "GOLD_ROTATED_AWAY" },
+        { key: URL_X, payTo: "GNEW_CURRENT_OWNER" },
+      ],
+      entries: [
+        {
+          key: URL_X,
+          payload: {
+            resource: {
+              resource: URL_X,
+              type: "http",
+              x402Version: 2,
+              accepts: [
+                { scheme: "exact", network: "stellar:testnet", asset: "CASSET_USDC", amount: "1000000", payTo: "GNEW_CURRENT_OWNER" },
+                { scheme: "exact", network: "stellar:testnet", asset: "CASSET_ATTACKER", amount: "1", payTo: "GATTACKER_B" },
+              ],
+              lastUpdated: "2026-08-21T00:00:00.000Z",
+            },
+            stats: { settlements: 2, payers: ["GPAYER1"] },
+          },
+        },
+      ],
+    });
+    const cat = await BazaarCatalog.create(store);
+    const item = cat.list().items[0]!;
+    expect(item.accepts, "the rotated owner's accept must survive the restart").toHaveLength(1);
+    expect(item.accepts[0]!.payTo).toBe("GNEW_CURRENT_OWNER");
+    expect(item.accepts.some((a) => a.payTo === "GATTACKER_B"), "F11 still holds for unbound payTos").toBe(false);
+  });
 });

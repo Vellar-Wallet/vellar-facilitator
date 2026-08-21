@@ -170,9 +170,13 @@ see the box above), displacement cannot touch it and there is no race at all.
    > interchangeable and are not.
    >
    > Ownership is **one row per bound payTo**. Rows load ordered by `bound_at`,
-   > and **`boundPayTo[0]` is treated as the owner everywhere downstream** — it
-   > is the address the entry's `accepts` is filtered against, and the address
-   > ownership verification is run for.
+   > and **`boundPayTo[0]` is the recorded owner** — the TOFU winner and the
+   > address displacement history is anchored to. The entry's `accepts` is
+   > filtered against the **whole bound set** (an appended rotation address's
+   > accepts survives a restart — fixed 2026-08-21 after the load path was
+   > found filtering to `[0]` alone, serving `accepts: []` for a rotated
+   > merchant until their next settlement), and ownership verification probes
+   > the whole set too (G-1).
    >
    > - `INSERT` **adds** a second acceptable address. The original stays first,
    >   so it stays the owner. The merchant can be paid at the new address, and

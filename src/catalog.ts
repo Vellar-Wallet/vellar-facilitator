@@ -1510,12 +1510,17 @@ export class BazaarCatalog {
   }
 
   /**
-   * Fix 0 Layer 1 enforcement at load time: a crafted CATALOG_FILE must not be
-   * able to plant a hijacked entry the ingestion path would have rejected. The
-   * owner is the payTo of the FIRST accepts entry (the TOFU winner); any later
-   * accepts entry whose payTo differs is quarantined (dropped) rather than
-   * served as authoritative. `boundPayTo` is re-derived from the surviving
-   * accepts, never trusted from the file.
+   * Fix 0 Layer 1 enforcement at load time: a crafted store must not be able
+   * to plant a hijacked entry the ingestion path would have rejected. An
+   * accepts entry survives load only when its payTo is in the OWNERSHIP
+   * TABLE's bound set for the URL — the same rule upsertFromPayment enforces
+   * on the write path. The whole set, not just `[0]`: the operator rotation
+   * (runbook §1) APPENDS a second bound address, and filtering load to the
+   * first address alone quarantined the rotated merchant's only real payment
+   * option on every restart while the write path had accepted it — a listing
+   * that served `accepts: []` until the owner's next settlement. Found live
+   * 2026-08-21, first restart after the demo rotation. An unbound payTo is
+   * still dropped (F11 holds).
    */
   private bindLoadedEntry(stored: StoredEntry, key = stored.resource.resource): StoredEntry {
     const accepts = stored.resource.accepts ?? [];
@@ -1541,12 +1546,13 @@ export class BazaarCatalog {
         verifiedOwner: false,
       };
     }
-    const ownerPayTo = authoritative[0]!;
-    const kept = accepts.filter((a) => a.payTo === ownerPayTo);
+    // The WHOLE bound set, matching upsertFromPayment — see the doc comment.
+    const kept = accepts.filter((a) => authoritative.includes(a.payTo));
     if (kept.length !== accepts.length) {
       console.warn(
         `[catalog] load: quarantined ${accepts.length - kept.length} accepts entry(ies) for ` +
-          `${stored.resource.resource} with a payTo other than the bound owner ${ownerPayTo} (F11)`,
+          `${stored.resource.resource} with a payTo outside the bound owner set ` +
+          `[${authoritative.join(", ")}] (F11)`,
       );
     }
     return {
