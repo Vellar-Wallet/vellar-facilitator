@@ -35,3 +35,4 @@ scratch/
 *.tmp.mjs
 demo-facilitator.log
 demo-seller.log
+contracts/upto-stellar/target/

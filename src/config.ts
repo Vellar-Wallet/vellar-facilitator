@@ -5,6 +5,11 @@ export interface FacilitatorConfig {
   rpcUrl: string | undefined;
   sponsorSecretKey: string;
   maxTransactionFeeStroops: number;
+  /** Our deployed `upto` settlement contract (C…). Set ⇒ the upto scheme is
+   *  registered and advertised on /supported. Unset ⇒ exact only. Built from
+   *  pinned source — contracts/upto-stellar/PROVENANCE.md; deployment record
+   *  and wasm hash in docs/upto-deployment.md. */
+  uptoContractId: string | undefined;
   /** Optional JSON file path for Bazaar catalog persistence across restarts. */
   /** libSQL/Turso URL. `file:…` locally, `libsql://…` in production. Unset means
    *  in-memory only: the catalog works but nothing survives a restart. */
@@ -217,12 +222,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     rpcUrl: env.STELLAR_RPC_URL,
     sponsorSecretKey,
     maxTransactionFeeStroops,
+    uptoContractId: parseUptoContractId(env.UPTO_CONTRACT_ID),
     catalogDbUrl: env.CATALOG_DB_URL,
     catalogDbAuthToken: env.CATALOG_DB_AUTH_TOKEN,
     verificationApiUrl: env.VERIFICATION_API_URL,
     spend,
     balance,
   };
+}
+
+/** A present-but-malformed contract ID must fail the boot, not silently
+ *  disable the scheme it configures — the operator set it on purpose. */
+function parseUptoContractId(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^C[A-Z2-7]{55}$/.test(raw)) {
+    throw new Error(
+      `[config] UPTO_CONTRACT_ID is set but is not a valid contract address (C…, 56 chars): ${raw}`,
+    );
+  }
+  return raw;
 }
 
 /** Parse a positive-integer env var, falling back to `fallback` when unset.
