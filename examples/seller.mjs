@@ -28,6 +28,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 // Auto-load examples/.env.recording so you never have to `source` it. Existing
 // shell env vars still win (loadEnvFile does not override). No-op if absent.
@@ -89,10 +90,52 @@ const PAYTO = process.env.PAYTO || "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI
 const ASSET = process.env.ASSET || "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
 
+// USDC on Stellar has 7 decimal places (confirmed by this repo's own
+// atomic/decimal convention — see provision-testnet.mjs and the sibling
+// vellar-playground's lib/usdc.ts `USDC_DECIMALS = 7`), so 1 USDC = 10,000,000
+// atomic. `/quote`'s PRICE_ATOMIC default of "1000000" is therefore 0.1 USDC,
+// NOT 0.01 — a decimal place off the naive reading. The seven new endpoints
+// below are priced independently of PRICE_ATOMIC (which stays /quote's own
+// knob): 0.01 USDC = 100,000 atomic for six of them, and 0.02 USDC = 200,000
+// atomic for /inspect, which does real Horizon work three calls deep.
+const PRICE_ATOMIC_001_USDC = "100000";
+const PRICE_ATOMIC_002_USDC = "200000";
+
 // Used only by the boot-time merchant preflight below — never on the payment
 // path, which goes through the facilitator.
 const RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
 const PASSPHRASE = Networks.TESTNET;
+
+// Horizon testnet — used by /inspect (balances + recent txs) and /timestamp
+// (ledger sequence number only). These are the only two of the seven new
+// routes below that touch an external API; the other five (/stroops, /hash,
+// /base64, /word-count, /uuid) are pure local computation. Both Horizon calls
+// carry an explicit 10s timeout and fail with a clear JSON error rather than
+// hanging or crashing — see fetchHorizon().
+const HORIZON_URL = "https://horizon-testnet.stellar.org";
+const HORIZON_TIMEOUT_MS = 10_000;
+
+/**
+ * GET a Horizon testnet path with an explicit timeout, returning a
+ * discriminated result rather than throwing — every caller needs to turn a
+ * timeout/network failure into a clean 4xx/502 JSON body, never a crash or an
+ * unbounded hang.
+ */
+async function fetchHorizon(path) {
+  try {
+    const res = await fetch(`${HORIZON_URL}${path}`, { signal: AbortSignal.timeout(HORIZON_TIMEOUT_MS) });
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      body = undefined;
+    }
+    return { ok: res.ok, status: res.status, body };
+  } catch (err) {
+    const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
+    return { ok: false, status: 0, timedOut, error: String(err?.message || err) };
+  }
+}
 
 /**
  * Where a value came from — shell, the env file, or the built-in default.
@@ -178,6 +221,47 @@ const coreServer = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACIL
   .register("stellar:testnet", new ExactStellarScheme())
   .registerExtension(bazaarResourceServerExtension);
 
+// USDC/Stellar atomic scale: 10,000,000 (7 decimal places) — same constant
+// documented above and in the sibling vellar-playground's lib/usdc.ts.
+const USDC_DECIMALS = 7;
+const ATOMIC_SCALE = 10n ** BigInt(USDC_DECIMALS);
+
+/**
+ * Parse a USDC decimal-amount string (e.g. "1.5", "0.0000001", "12") into its
+ * exact stroop value, as a BigInt — no floating point anywhere, since a
+ * float64 cannot represent every 7-decimal value exactly (0.1 + 0.2 territory)
+ * and this is money math. Mirrors the *inverse* of vellar-playground's
+ * lib/usdc.ts `atomicToDecimalString` (decimal string -> atomic there;
+ * atomic -> decimal string here), reimplemented from scratch in this repo.
+ *
+ * Splits the decimal string into whole and fractional parts, scales each by
+ * hand with BigInt arithmetic, and combines them:
+ *   whole part  * 10_000_000
+ * + fractional part, right-padded/truncated to 7 digits
+ *
+ * Returns `null` (never throws) for anything that isn't a plain non-negative
+ * decimal number, so the route can turn that into a clean 400 rather than a
+ * crash or a silently wrong answer.
+ */
+function usdcToStroops(input) {
+  if (typeof input !== "string" || input.length === 0) return null;
+  // Whole, or whole.fraction — no sign, no exponent, no thousands separators.
+  // Signed/scientific input is exactly the "malformed" case the spec calls
+  // out to reject with a 400, not coerce.
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(input);
+  if (!match) return null;
+  const [, wholeStr, fracStr = ""] = match;
+  if (fracStr.length > USDC_DECIMALS) {
+    // More precision than USDC supports (7 decimals) — reject rather than
+    // silently truncating a value the caller thought they specified exactly.
+    return null;
+  }
+  const whole = BigInt(wholeStr);
+  const fracPadded = fracStr.padEnd(USDC_DECIMALS, "0");
+  const frac = fracPadded.length > 0 ? BigInt(fracPadded) : 0n;
+  return whole * ATOMIC_SCALE + frac;
+}
+
 const routes = {
   "GET /quote": {
     accepts: {
@@ -197,6 +281,186 @@ const routes = {
       input: { topic: "perseverance" },
       inputSchema: { properties: { topic: { type: "string" } } },
       output: { example: { quote: "Ships are safe in harbor, but that's not what ships are for." } },
+    }),
+  },
+
+  // ── SEVEN NEW PAID ROUTES ────────────────────────────────────────────────
+  // Same conventions as /quote above: `accepts` names the price, `description`
+  // + `serviceName` (a dedicated RouteConfig field — see @x402/core's
+  // RouteConfig type — used here rather than folding a name into
+  // `description`, since it exists for exactly this and flows into the
+  // catalog's resourceInfo/discovery metadata) name the resource for Bazaar
+  // discovery, and `extensions: declareDiscoveryExtension(...)` describes the
+  // real input/output shape so a discovering agent knows how to call it.
+  "GET /inspect/:address": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_002_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Stellar Address Inspector",
+    description:
+      "Give it any Stellar testnet address, get back its XLM balance, USDC balance, and recent transactions.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      pathParams: { address: "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC" },
+      pathParamsSchema: {
+        properties: { address: { type: "string", description: "A Stellar G... account address" } },
+        required: ["address"],
+      },
+      output: {
+        example: {
+          address: "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC",
+          xlmBalance: "9999.9999900",
+          usdcBalance: "10.5664000",
+          recentTransactionHashes: ["ef3f8e67...", "4dfbdff5...", "a35959b5..."],
+        },
+      },
+    }),
+  },
+
+  "GET /stroops": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Stroop Converter",
+    description: "Give it a USDC amount, get back the exact stroop value. Useful for building x402 payment payloads.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { usdc: "1.5" },
+      inputSchema: {
+        properties: { usdc: { type: "string", description: "A USDC decimal amount, e.g. \"1.5\"" } },
+        required: ["usdc"],
+      },
+      output: { example: { usdc: "1.5", stroops: "15000000" } },
+    }),
+  },
+
+  "GET /hash": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Text Hasher",
+    description: "Give it any text, get back SHA-256 and MD5 hashes. Results are independently verifiable.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { input: "hello world" },
+      inputSchema: {
+        properties: { input: { type: "string", description: "Text to hash, max 500 characters" } },
+        required: ["input"],
+      },
+      output: {
+        example: {
+          input: "hello world",
+          sha256: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde",
+          md5: "5eb63bbbe01eeed093cb22bb8f5acdc3",
+        },
+      },
+    }),
+  },
+
+  "GET /timestamp": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Trusted Timestamp",
+    description:
+      "Returns the current time anchored to the Stellar ledger sequence number — a verifiable timestamp from the chain.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: {},
+      inputSchema: { properties: {} },
+      output: {
+        example: {
+          iso8601: "2026-08-23T06:54:51.000Z",
+          unixSeconds: 1787036091,
+          stellarLedgerSequence: 4289052,
+        },
+      },
+    }),
+  },
+
+  "GET /base64": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Base64 Encoder/Decoder",
+    description: "Encode or decode base64. Useful for reading raw x402 payment headers.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { input: "hello world", mode: "encode" },
+      inputSchema: {
+        properties: {
+          input: { type: "string", description: "Text to encode, or base64 to decode. Max 1000 characters" },
+          mode: { type: "string", enum: ["encode", "decode"] },
+        },
+        required: ["input", "mode"],
+      },
+      output: { example: { mode: "encode", input: "hello world", output: "aGVsbG8gd29ybGQ=" } },
+    }),
+  },
+
+  "GET /word-count": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Text Analyzer",
+    description: "Give it any text, get back word count, character count, sentence count, and reading time.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { text: "Ships are safe in harbor. But that's not what ships are for!" },
+      inputSchema: {
+        properties: { text: { type: "string", description: "Text to analyze, max 2000 characters" } },
+        required: ["text"],
+      },
+      output: {
+        example: { words: 11, characters: 62, sentences: 2, estimatedReadingTimeSeconds: 3 },
+      },
+    }),
+  },
+
+  "GET /uuid": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "UUID Generator",
+    description: "Returns a fresh UUID v4 with a SHA-256 fingerprint. Each call is unique and independently verifiable.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: {},
+      inputSchema: { properties: {} },
+      output: {
+        example: {
+          uuid: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          fingerprint: "1155d132ea7a2addad9a75277e...",
+        },
+      },
     }),
   },
 };
@@ -545,75 +809,401 @@ function relayFailure(res, stage, status, headers, body, extra = {}) {
   return res.status(status).json(payload);
 }
 
-app.get("/quote", async (req, res) => {
-  const paymentHeader = req.get("PAYMENT-SIGNATURE") || req.get("X-PAYMENT") || undefined;
-  const presentedPayment = Boolean(paymentHeader);
-  let result;
-  try {
-    result = await httpServer.processHTTPRequest({
-      adapter: adapter(req),
-      path: req.path,
-      method: req.method,
-      paymentHeader,
-      routePattern: "GET /quote",
-    });
-  } catch (err) {
-    return res.status(500).json({ error: "resource server error", detail: String(err?.message || err) });
+/**
+ * Thrown by a route's `validate(req)` to reject malformed/missing/out-of-range
+ * input with a specific status (always a 4xx) and a human-readable message.
+ * Caught by `handlePaidRoute` BEFORE the payment gate runs, so a request that
+ * was never going to produce a valid result never makes it as far as a 402
+ * challenge or a real charge — an agent shouldn't have to pay to learn its
+ * input was malformed.
+ */
+class InputError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
   }
+}
 
-  if (result.type === "payment-error") {
-    const { status, headers, body } = result.response;
-    // NOT every payment-error is a failure. A request that presented NO payment
-    // gets the 402 CHALLENGE, and that is the protocol working — its body is
-    // empty by design because the requirements travel in the `payment-required`
-    // HEADER. Logging it as a failure (and filling the empty body) would make
-    // every unpaid first request look broken, which is the same class of
-    // misleading diagnostic this block exists to remove.
-    if (!presentedPayment) {
-      for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
-      return res.status(status).json(body ?? {});
+/**
+ * Shared payment-gating flow for every paid GET route in this file: validate
+ * input up front, run the request through `processHTTPRequest`, forward a 402
+ * challenge or a verify failure exactly as `/quote` already did, settle
+ * through the facilitator on success, and only then call `buildResult(req)`
+ * for the route's own payload.
+ *
+ * Factored out of `/quote`'s original inline handler (this is the ONLY place
+ * that pattern is now written) so the seven new routes below reuse the exact
+ * same gating instead of eight near-identical copies drifting apart. `/quote`
+ * itself now calls this too — its behavior is unchanged, byte-for-byte, from
+ * before this refactor (it passes no `validate`, so that step is a no-op).
+ *
+ * `validate(req)` runs FIRST, before any payment processing, and must throw
+ * `InputError` (never anything else) to reject a request — this keeps a
+ * malformed/unpaid request from ever reaching the 402 challenge, so nobody is
+ * asked to pay for a request that could never succeed.
+ *
+ * `buildResult(req)` runs AFTER settlement and must be synchronous-or-async;
+ * if it throws (a bug, or an external dependency like Horizon failing in a
+ * way `validate` couldn't have caught up front — e.g. Horizon timing out on a
+ * well-formed address), that is a 502, logged, with payment already settled —
+ * same tradeoff `/quote`'s original handler body always had.
+ */
+function handlePaidRoute(routePattern, buildResult, validate) {
+  return async (req, res) => {
+    if (validate) {
+      try {
+        await validate(req);
+      } catch (err) {
+        if (err instanceof InputError) {
+          return res.status(err.status).json({ error: "invalid_input", detail: err.message });
+        }
+        console.error(`[seller] ${routePattern} validate() threw a non-InputError: ${String(err?.message || err)}`);
+        return res.status(400).json({ error: "invalid_input", detail: String(err?.message || err) });
+      }
     }
-    return relayFailure(res, "verify", status, headers, body, {
-      detail: result.errorReason ?? result.error ?? undefined,
-    });
-  }
-  if (result.type === "no-payment-required") {
-    return res.json({ ok: true, note: "no payment required for this route" });
-  }
 
-  // payment-verified: drive settlement through the facilitator.
-  try {
-    const settle = await httpServer.processSettlement(
-      result.paymentPayload,
-      result.paymentRequirements,
-      result.declaredExtensions,
-    );
+    const paymentHeader = req.get("PAYMENT-SIGNATURE") || req.get("X-PAYMENT") || undefined;
+    const presentedPayment = Boolean(paymentHeader);
+    let result;
+    try {
+      result = await httpServer.processHTTPRequest({
+        adapter: adapter(req),
+        path: req.path,
+        method: req.method,
+        paymentHeader,
+        routePattern,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: "resource server error", detail: String(err?.message || err) });
+    }
+
+    if (result.type === "payment-error") {
+      const { status, headers, body } = result.response;
+      // NOT every payment-error is a failure. A request that presented NO
+      // payment gets the 402 CHALLENGE, and that is the protocol working — its
+      // body is empty by design because the requirements travel in the
+      // payment-required HEADER. Logging it as a failure (and filling the
+      // empty body) would make every unpaid first request look broken, which
+      // is the same class of misleading diagnostic this block exists to
+      // remove.
+      if (!presentedPayment) {
+        for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
+        return res.status(status).json(body ?? {});
+      }
+      return relayFailure(res, "verify", status, headers, body, {
+        detail: result.errorReason ?? result.error ?? undefined,
+      });
+    }
+    if (result.type === "no-payment-required") {
+      return res.json({ ok: true, note: "no payment required for this route" });
+    }
+
+    // payment-verified: drive settlement through the facilitator.
+    let settle;
+    try {
+      settle = await httpServer.processSettlement(
+        result.paymentPayload,
+        result.paymentRequirements,
+        result.declaredExtensions,
+      );
+    } catch (err) {
+      // A throw from processSettlement never had a body to lose, but it was
+      // also never logged — so a crash-shaped failure and a refusal looked
+      // the same from outside.
+      return relayFailure(res, "settle-threw", 502, {}, undefined, {
+        detail: String(err?.message || err),
+      });
+    }
     for (const [k, v] of Object.entries(settle.headers || {})) res.setHeader(k, v);
     if (settle.success === false) {
       const { status, headers, body } = settle.response || {};
-      // `settle.errorReason` carries the facilitator's status and body verbatim
-      // when the client library could not parse a structured error — which is
-      // exactly the case for our own 503s. It is the most informative field
-      // available, and it was being dropped.
+      // `settle.errorReason` carries the facilitator's status and body
+      // verbatim when the client library could not parse a structured error
+      // — which is exactly the case for our own 503s. It is the most
+      // informative field available, and it was being dropped.
       return relayFailure(res, "settle", status || 502, headers, body, {
         detail: settle.errorReason,
         errorMessage: settle.errorMessage,
       });
     }
-    res.json({
-      quote: "Ships are safe in harbor, but that's not what ships are for.",
-      topic: req.query.topic ?? "perseverance",
-      settlement: { transaction: settle.transaction, payer: settle.payer, network: settle.network },
-    });
-  } catch (err) {
-    // A throw from processSettlement never had a body to lose, but it was also
-    // never logged — so a crash-shaped failure and a refusal looked the same
-    // from outside.
-    return relayFailure(res, "settle-threw", 502, {}, undefined, {
-      detail: String(err?.message || err),
-    });
-  }
-});
+
+    // Payment settled. Build this route's own payload; errors here are ours,
+    // not the facilitator's, so they get their own clear status/body rather
+    // than being folded into relayFailure's x402-shaped envelope.
+    try {
+      const payload = await buildResult(req);
+      res.json({
+        ...payload,
+        settlement: { transaction: settle.transaction, payer: settle.payer, network: settle.network },
+      });
+    } catch (err) {
+      console.error(`[seller] ${routePattern} handler failed after settlement: ${String(err?.message || err)}`);
+      res.status(502).json({ error: "handler_failed", detail: String(err?.message || err) });
+    }
+  };
+}
+
+app.get(
+  "/quote",
+  handlePaidRoute("GET /quote", (req) => ({
+    quote: "Ships are safe in harbor, but that's not what ships are for.",
+    topic: req.query.topic ?? "perseverance",
+  })),
+);
+
+// ---------------------------------------------------------------------------
+// SEVEN NEW PAID ROUTES.
+//
+// Each follows the same shape: a `validate` step (runs before any payment
+// processing, throws InputError for a clean 4xx) and a `buildResult` step
+// (runs after settlement, returns the JSON payload merged with `settlement`).
+// Response shape matches /quote's own established convention — flat fields
+// plus a `settlement` block, NOT wrapped in a `result` envelope.
+// ---------------------------------------------------------------------------
+
+app.get(
+  "/inspect/:address",
+  handlePaidRoute(
+    "GET /inspect/:address",
+    async (req) => {
+      const address = req.params.address;
+
+      const [accountRes, txRes] = await Promise.all([
+        fetchHorizon(`/accounts/${encodeURIComponent(address)}`),
+        fetchHorizon(`/accounts/${encodeURIComponent(address)}/transactions?order=desc&limit=3`),
+      ]);
+
+      if (!accountRes.ok) {
+        if (accountRes.status === 404) {
+          throw new InputError(404, `no account found on Stellar testnet for address ${address}`);
+        }
+        const reason = accountRes.timedOut
+          ? "Horizon did not respond within 10s"
+          : accountRes.error || `Horizon returned HTTP ${accountRes.status}`;
+        throw new Error(`horizon_unavailable: ${reason}`);
+      }
+
+      // Horizon's classic /accounts balances array reports both the native
+      // XLM line (asset_type: "native", no asset_code) and any classic
+      // trustline the account holds — including USDC, since the SAC this
+      // seller prices in (CBIELTK6…) wraps a classic Circle-issued asset that
+      // shows up here the same way any other trustline balance does. No
+      // separate Soroban RPC call needed; "all from Horizon testnet" per
+      // spec.
+      const balances = accountRes.body?.balances || [];
+      const xlmLine = balances.find((b) => b.asset_type === "native");
+      const usdcLine = balances.find((b) => b.asset_code === "USDC");
+
+      const hashes = (txRes.ok ? txRes.body?._embedded?.records || [] : []).map((t) => t.hash);
+
+      return {
+        address,
+        xlmBalance: xlmLine?.balance ?? "0",
+        usdcBalance: usdcLine?.balance ?? "0",
+        recentTransactionHashes: hashes,
+      };
+    },
+    async (req) => {
+      const address = req.params.address;
+      if (!address || typeof address !== "string") {
+        throw new InputError(400, "missing address path parameter");
+      }
+      if (!StrKey.isValidEd25519PublicKey(address)) {
+        throw new InputError(400, `"${address}" is not a valid Stellar G... address`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/stroops",
+  handlePaidRoute(
+    "GET /stroops",
+    (req) => {
+      const usdc = req.query.usdc;
+      const stroops = usdcToStroops(usdc);
+      return { usdc, stroops: stroops.toString() };
+    },
+    (req) => {
+      const usdc = req.query.usdc;
+      if (usdc === undefined || usdc === "") {
+        throw new InputError(400, "missing required query param: usdc");
+      }
+      if (typeof usdc !== "string" || usdcToStroops(usdc) === null) {
+        throw new InputError(
+          400,
+          `"${usdc}" is not a valid USDC decimal amount (expected e.g. "1.5", up to 7 decimal places, no sign/exponent)`,
+        );
+      }
+    },
+  ),
+);
+
+const HASH_INPUT_MAX_LEN = 500;
+
+app.get(
+  "/hash",
+  handlePaidRoute(
+    "GET /hash",
+    (req) => {
+      const input = req.query.input;
+      return {
+        input,
+        sha256: createHash("sha256").update(input, "utf8").digest("hex"),
+        md5: createHash("md5").update(input, "utf8").digest("hex"),
+      };
+    },
+    (req) => {
+      const input = req.query.input;
+      if (input === undefined || input === "") {
+        throw new InputError(400, "missing required query param: input");
+      }
+      if (typeof input !== "string") {
+        throw new InputError(400, "input must be a single string query param");
+      }
+      if (input.length > HASH_INPUT_MAX_LEN) {
+        throw new InputError(400, `input too long (${input.length} chars) — max ${HASH_INPUT_MAX_LEN}`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/timestamp",
+  handlePaidRoute("GET /timestamp", async () => {
+    const now = new Date();
+    const ledgerRes = await fetchHorizon("/ledgers?order=desc&limit=1");
+    if (!ledgerRes.ok) {
+      const reason = ledgerRes.timedOut
+        ? "Horizon did not respond within 10s"
+        : ledgerRes.error || `Horizon returned HTTP ${ledgerRes.status}`;
+      throw new Error(`horizon_unavailable: ${reason}`);
+    }
+    const ledger = ledgerRes.body?._embedded?.records?.[0];
+    if (!ledger || typeof ledger.sequence !== "number") {
+      throw new Error("horizon_unavailable: unexpected /ledgers response shape (no sequence found)");
+    }
+    return {
+      iso8601: now.toISOString(),
+      unixSeconds: Math.floor(now.getTime() / 1000),
+      stellarLedgerSequence: ledger.sequence,
+    };
+  }),
+);
+
+const BASE64_INPUT_MAX_LEN = 1000;
+// Plausible-base64 check: standard alphabet, correctly padded to a multiple
+// of 4. Used both to reject obviously-invalid `mode=decode` input up front
+// AND, after decoding, to catch Buffer.from's lenient decoding (it silently
+// ignores non-base64 characters rather than throwing) by re-encoding the
+// decoded bytes and comparing against the (whitespace-stripped) original —
+// a round-trip mismatch means the input wasn't really valid base64.
+const BASE64_SHAPE_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+app.get(
+  "/base64",
+  handlePaidRoute(
+    "GET /base64",
+    (req) => {
+      const { input, mode } = req.query;
+      if (mode === "encode") {
+        return { mode, input, output: Buffer.from(input, "utf8").toString("base64") };
+      }
+      // mode === "decode", already validated round-trips cleanly.
+      return { mode, input, output: Buffer.from(input, "base64").toString("utf8") };
+    },
+    (req) => {
+      const { input, mode } = req.query;
+      if (mode === undefined || mode === "") {
+        throw new InputError(400, "missing required query param: mode (must be \"encode\" or \"decode\")");
+      }
+      if (mode !== "encode" && mode !== "decode") {
+        throw new InputError(400, `mode must be "encode" or "decode", got "${mode}"`);
+      }
+      if (input === undefined || input === "") {
+        throw new InputError(400, "missing required query param: input");
+      }
+      if (typeof input !== "string") {
+        throw new InputError(400, "input must be a single string query param");
+      }
+      if (input.length > BASE64_INPUT_MAX_LEN) {
+        throw new InputError(400, `input too long (${input.length} chars) — max ${BASE64_INPUT_MAX_LEN}`);
+      }
+      if (mode === "decode") {
+        const stripped = input.replace(/\s+/g, "");
+        if (!BASE64_SHAPE_REGEX.test(stripped)) {
+          throw new InputError(400, `"${input}" is not valid base64`);
+        }
+        // Round-trip check: Buffer.from(x, 'base64') silently ignores
+        // characters outside the alphabet rather than throwing, so the shape
+        // regex above is necessary but re-encoding and comparing is what
+        // actually catches lenient-decode garbage.
+        const roundTripped = Buffer.from(stripped, "base64").toString("base64");
+        if (roundTripped.replace(/=+$/, "") !== stripped.replace(/=+$/, "")) {
+          throw new InputError(400, `"${input}" is not valid base64 (failed round-trip check)`);
+        }
+      }
+    },
+  ),
+);
+
+const WORD_COUNT_INPUT_MAX_LEN = 2000;
+// Reading speed assumption: 200 words per minute. This sits inside the
+// commonly-cited 200-238 wpm average adult silent-reading range; 200 is used
+// specifically because it is the more conservative (slower) end, which is
+// the safer bias for an estimate nobody can verify against the reader. This
+// is a documented heuristic, not a precise measurement.
+const READING_WPM = 200;
+// Sentence-boundary heuristic: count runs of `.`/`!`/`?` as one terminator
+// each (so "..." or "?!" count once). This is not linguistically precise
+// (misses abbreviations like "Mr." as false positives, etc.) — it's a
+// reasonable, documented approximation, not a claim of exactness.
+const SENTENCE_TERMINATOR_REGEX = /[.!?]+/g;
+
+app.get(
+  "/word-count",
+  handlePaidRoute(
+    "GET /word-count",
+    (req) => {
+      const text = req.query.text;
+      const trimmed = text.trim();
+      const words = trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+      const sentenceMatches = text.match(SENTENCE_TERMINATOR_REGEX);
+      const sentences = sentenceMatches ? sentenceMatches.length : 0;
+      const estimatedReadingTimeSeconds = Math.ceil((words / READING_WPM) * 60);
+      return {
+        text,
+        words,
+        characters: text.length,
+        sentences,
+        estimatedReadingTimeSeconds,
+      };
+    },
+    (req) => {
+      const text = req.query.text;
+      if (text === undefined || text === "") {
+        throw new InputError(400, "missing required query param: text");
+      }
+      if (typeof text !== "string") {
+        throw new InputError(400, "text must be a single string query param");
+      }
+      if (text.length > WORD_COUNT_INPUT_MAX_LEN) {
+        throw new InputError(400, `text too long (${text.length} chars) — max ${WORD_COUNT_INPUT_MAX_LEN}`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/uuid",
+  handlePaidRoute("GET /uuid", () => {
+    // randomUUID() is called fresh on every request — nothing here is cached
+    // or memoized, so distinct calls always produce distinct UUIDs.
+    const uuid = randomUUID();
+    const fingerprint = createHash("sha256").update(uuid, "utf8").digest("hex");
+    return { uuid, fingerprint };
+  }),
+);
 
 app.listen(PORT, () => {
   console.error(`[seller] paid API on ${publicBase()}/quote  (bound to port ${PORT})`);
@@ -627,4 +1217,8 @@ app.listen(PORT, () => {
   }
   console.error(`[seller] facilitator: ${FACILITATOR_URL}`);
   console.error(`[seller] price: ${PRICE_ATOMIC} atomic of ${ASSET} -> ${PAYTO}`);
+  console.error(
+    `[seller] also serving: /inspect/:address (${PRICE_ATOMIC_002_USDC} atomic), ` +
+      `/stroops /hash /timestamp /base64 /word-count /uuid (${PRICE_ATOMIC_001_USDC} atomic each)`,
+  );
 });
