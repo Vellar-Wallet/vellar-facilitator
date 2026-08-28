@@ -147,6 +147,11 @@ resources through this facilitator.
    and whether the resource is an HTTP API or an MCP tool (both first-class).
 4. **Agent pays via §4.**
 
+The VS Code extension (`VellarWallet.vellar-x402`) generates this
+discovery metadata automatically as part of the injected boilerplate,
+so any endpoint gated through the extension self-lists in the Bazaar
+on first payment without any additional developer action.
+
 An **MCP discovery server** wraps this so an LLM tool-use loop can call
 `x402_search_resources` / `x402_list_resources` as MCP tools, not just raw HTTP.
 Both are wire-compatible with the canonical `@x402/extensions` bazaar client.
@@ -301,6 +306,19 @@ Implemented, tested, and live:
   and the hosted demo resource is itself payable in USDC by any stranger.
   `demo.sh` walks a clean clone to a settled transaction hash in one command,
   with preflight checks that each name the real failure they prevent.
+- **VS Code extension** (`VellarWallet.vellar-x402`, v0.1.3, MIT,
+  live on the VS Code Marketplace): one command adds a working x402
+  payment gate to any Express, Fastify, or Next.js App Router
+  endpoint — type-checked against real `@x402/*` packages, injection
+  verified across three framework fixture projects. Generated
+  boilerplate includes the Bazaar discovery extension fields
+  (`description`, `serviceName`, `tags`) so the endpoint
+  auto-catalogs in the Bazaar on its first settled payment. The
+  developer's payout address flows from a VS Code setting into the
+  generated `PAYMENT_CONFIG.payToAddress` — no placeholder, no
+  manual wiring. This closes the seller onboarding gap: the wallet
+  is the x402 payer, this facilitator is verify/settle, the
+  extension is how a developer becomes a seller in under a minute.
 - **Test suite and security review:** 379 tests (`vitest run`), including
   mutation-named guards and the wire-conformance suites above; a completed
   pre-mainnet security review with every finding tracked to closure
