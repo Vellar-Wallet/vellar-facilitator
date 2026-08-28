@@ -306,8 +306,9 @@ Implemented, tested, and live:
   and the hosted demo resource is itself payable in USDC by any stranger.
   `demo.sh` walks a clean clone to a settled transaction hash in one command,
   with preflight checks that each name the real failure they prevent.
-- **VS Code extension** (`VellarWallet.vellar-x402`, v0.1.3, MIT,
-  live on the VS Code Marketplace): one command adds a working x402
+- **VS Code extension**
+  ([`VellarWallet.vellar-x402`](https://marketplace.visualstudio.com/items?itemName=VellarWallet.vellar-x402),
+  v0.1.3, MIT, live on the VS Code Marketplace): one command adds a working x402
   payment gate to any Express, Fastify, or Next.js App Router
   endpoint — type-checked against real `@x402/*` packages, injection
   verified across three framework fixture projects. Generated
