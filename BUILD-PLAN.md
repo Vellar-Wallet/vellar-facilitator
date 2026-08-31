@@ -86,6 +86,13 @@ See docs/decisions.md._
       rotation the way docs/channel-pool-design.md §5 describes; it stays
       `available` and keeps getting acquired until a settlement using it
       fails on-chain.
+- [ ] Migrate src/metrics.ts off `prom-client` (deprecated by its own
+      maintainers as of the version pinned for Tranche 1's telemetry
+      deliverable, 1.2) to `@prometheus-io/client`, the maintainer-named
+      successor — deliberately NOT done for Tranche 1 itself: that package
+      was pre-1.0 (v0.16.1, only 4 published versions) at decision time,
+      too immature to build a grant deliverable on with confidence.
+      Post-Tranche-1 item once it has matured.
 - [x] Hosting DEPLOYED 2026-07-31: `https://vellar-facilitator.onrender.com`
       (render.yaml blueprint, dedicated funded sponsor `GBUCR6H2…`).
       Live-proven: settlement tx `1da6f9e6…` through the hosted instance,

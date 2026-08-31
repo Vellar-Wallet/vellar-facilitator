@@ -21,6 +21,18 @@ import {
 import { createSpendPolicy, type SpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
 import { registerSettlement, type BondEscrowOptions } from "./bond.js";
+import {
+  registry as metricsRegistry,
+  setPoolGauges,
+  setCatalogSize,
+  setUptimeSeconds,
+  setReverifyPending,
+  incrementRateLimitRejectionsTotal,
+  incrementSettleTotal,
+  incrementSettleErrorsTotal,
+  observeSettleDurationSeconds,
+  incrementVerifyTotal,
+} from "./metrics.js";
 
 interface FacilitatorRequestBody {
   x402Version?: number;
@@ -119,7 +131,31 @@ export async function buildServer(
     global: true,
     max: hardening.rateMaxPerMinute ?? DEFAULT_RATE_MAX,
     timeWindow: "1 minute",
+    // Only /health is fully exempt — unthrottled by design, since Render's
+    // own health checker must never be blocked (a throttled health check
+    // reads as a dead instance and could trigger a restart loop). /metrics
+    // (Tranche 1 deliverable 1.2) deliberately does NOT get the same
+    // exemption: allowList is a COMPLETE bypass in @fastify/rate-limit's
+    // own implementation (confirmed by reading its source — an allow-listed
+    // request returns { isAllowed: true } immediately, with no fallback
+    // ceiling of any kind still applying underneath it), so putting
+    // /metrics here would mean truly unbounded public access. It has its
+    // own real, generous per-route ceiling instead (see the /metrics route
+    // itself) — a scraper polling every 15s has 15x headroom before ever
+    // being affected, while a real ceiling still exists for anything else
+    // that finds the public URL. Nothing on /metrics is secret (confirmed
+    // by reading every metric definition in src/metrics.ts — counts,
+    // gauges, a duration histogram, never an address or a key), so this is
+    // about compute-cost/abuse posture, not confidentiality.
     allowList: (req) => req.url === "/health",
+    // vellar_rate_limit_rejections_total (src/metrics.ts) — onExceeded is
+    // the correct hook (confirmed against @fastify/rate-limit's own type
+    // definitions): it fires exactly when a request is ACTUALLY rejected
+    // for exceeding the limit, unlike onExceeding, which fires earlier, as
+    // the count approaches the limit but before it's actually tripped —
+    // using that one instead would count requests that were still allowed
+    // through.
+    onExceeded: () => incrementRateLimitRejectionsTotal(),
   });
 
   app.get("/health", async () => ({
@@ -180,11 +216,65 @@ export async function buildServer(
       : {}),
   }));
 
+  // Tranche 1 deliverable 1.2 (scf-form-response.md: "metrics + structured
+  // logging, 10+ named metrics") — Prometheus text-format scrape endpoint,
+  // src/metrics.ts owns the registry and all 11 metric definitions; this
+  // route only sets the gauges that reflect CURRENT state (mirroring
+  // /health's own catalog.size/catalog.reverifyPending/pool.status() reads
+  // immediately above) and renders the registry.
+  //
+  // Gauges are set here, at scrape time, not on every underlying event —
+  // same reasoning as /health's own channelPool field: a gauge should
+  // always reflect "what is true right now", and setting it only when
+  // scraped (rather than, say, on every catalog mutation) means it can
+  // never go stale between scrapes the way an incrementally-maintained
+  // gauge could if an update were ever missed.
+  //
+  // RATE LIMIT, deliberately NOT the same treatment as /health: /health is
+  // fully allow-listed (unthrottled) because Render's own health checker
+  // must never be blocked. /metrics is a public, unauthenticated endpoint
+  // by necessity (Grafana Cloud's scraper needs to reach it with no
+  // credentials) — but "public" and "unthrottled" are different questions,
+  // and allow-listing it would have meant genuinely unbounded access, since
+  // @fastify/rate-limit's allowList is a complete bypass with no fallback
+  // ceiling underneath it (confirmed by reading its source). This route
+  // gets its own real per-route ceiling instead: 60 req/min is 15x the ~4
+  // req/min a 15s-interval scraper actually generates, so the intended
+  // scraper is never affected, while the endpoint is not literally
+  // unlimited to anything else that finds the URL. Not because the content
+  // is sensitive (it isn't — confirmed by reading every metric definition
+  // in src/metrics.ts: counts, gauges, a duration histogram, never an
+  // address or a key) but because unbounded public compute is its own
+  // exposure regardless of what the response contains.
+  app.get(
+    "/metrics",
+    { config: { rateLimit: { max: 60, timeWindow: 60_000 } } },
+    async (_request, reply) => {
+      setPoolGauges(pool.status());
+      setCatalogSize(catalog.size);
+      setUptimeSeconds(process.uptime());
+      setReverifyPending(catalog.reverifyPending);
+      reply.header("content-type", metricsRegistry.contentType);
+      return metricsRegistry.metrics();
+    },
+  );
+
   app.get("/supported", async () => facilitator.getSupported());
 
   app.post<{ Body: FacilitatorRequestBody }>("/verify", async (request, reply) => {
+    // Tranche 1 deliverable 1.2 telemetry (src/metrics.ts). Explicit calls
+    // at each return, NOT try/finally: unlike /settle, this handler has
+    // exactly 3 exit points, no try/catch of its own, no async side effects
+    // beyond the one facilitator.verify() call, and every path's outcome is
+    // already known at the point of its own return statement — wrapping it
+    // would add a layer of indirection this handler's actual shape doesn't
+    // need. (Contrast with /settle's ~10 return points across nested
+    // try/catch/finally blocks and bond-registration branches, where
+    // try/finally is what keeps every path covered without having to
+    // enumerate them all by hand.)
     const { paymentPayload, paymentRequirements } = request.body ?? {};
     if (!paymentPayload || !paymentRequirements) {
+      incrementVerifyTotal("failure");
       return reply.status(400).send(
         verifyError("invalid_body", {
           error: "invalid_body",
@@ -197,6 +287,7 @@ export async function buildServer(
     // still costs one simulation upstream), so reject anything whose transaction
     // isn't parseable XDR without a network round-trip.
     if (!isParseableTransactionXdr(paymentPayload)) {
+      incrementVerifyTotal("failure");
       return reply.status(400).send(
         verifyError("invalid_payload", {
           error: "invalid_payload",
@@ -204,23 +295,53 @@ export async function buildServer(
         }),
       );
     }
-    return withSkewRetry(
+    const result = await withSkewRetry(
       () => facilitator.verify(paymentPayload, paymentRequirements),
       (r) => (r as { invalidReason?: string }).invalidReason,
       (m) => request.log.warn(m),
     );
+    incrementVerifyTotal((result as { isValid?: boolean }).isValid === true ? "success" : "failure");
+    return result;
   });
 
   app.post<{ Body: FacilitatorRequestBody }>("/settle", async (request, reply) => {
-    const { paymentPayload, paymentRequirements } = request.body ?? {};
-    if (!paymentPayload || !paymentRequirements) {
-      return reply.status(400).send(
-        settleError(network, "invalid_body", {
-          error: "invalid_body",
-          detail: "paymentPayload and paymentRequirements are required",
-        }),
-      );
-    }
+    // Tranche 1 deliverable 1.2 telemetry (src/metrics.ts). startTime is
+    // recorded before the try block, ahead of every early return this
+    // handler has — a pool_exhausted refusal or a balance/policy rejection
+    // is still a real /settle request that took real wall-clock time and
+    // belongs in vellar_settle_duration_seconds, not just the requests that
+    // reach facilitator.settle() itself.
+    //
+    // outcome defaults to "failure" and is ONLY overwritten to "success" at
+    // the one genuine success return path (the final `return result;` at
+    // the end of this handler, reached exclusively when result.success ===
+    // true and — if bond registration is configured — it also succeeded).
+    // This default-to-failure posture is deliberate: if this handler ever
+    // grows an 11th return path that forgets to set outcome, it silently
+    // counts as a failure rather than a silent, wrong "success" — the
+    // safer failure mode for a metric a grant reviewer will read.
+    //
+    // errorReason is set at each point the REAL cause is already known in
+    // the existing code (pool_exhausted's own branch; rpcStatus's
+    // txBadSeq/TRY_AGAIN_LATER classification once rpcStatus exists) —
+    // confirmed by reading the actual server.ts source rather than assumed:
+    // neither "txBadSeq" nor "TRY_AGAIN_LATER" appears anywhere in this
+    // file as a literal errorReason string; both only ever arrive via
+    // rpcStatus.errorCode / rpcStatus.status, a separate object from
+    // result.errorReason.
+    const startTime = performance.now();
+    let outcome: "success" | "failure" = "failure";
+    let errorReason: "txBadSeq" | "TRY_AGAIN_LATER" | "pool_exhausted" | "other" | undefined;
+    try {
+      const { paymentPayload, paymentRequirements } = request.body ?? {};
+      if (!paymentPayload || !paymentRequirements) {
+        return reply.status(400).send(
+          settleError(network, "invalid_body", {
+            error: "invalid_body",
+            detail: "paymentPayload and paymentRequirements are required",
+          }),
+        );
+      }
     // Re-audit: shed unsubmittable payloads BEFORE reserving spend budget,
     // symmetric with /verify. Junk costs the sponsor no XLM, so it must not be
     // able to consume the global ceiling and refuse real settlement.
@@ -341,6 +462,7 @@ export async function buildServer(
         // (docs/channel-pool-design.md §4) — nothing was spent, nothing
         // about this request was invalid, the pool was simply, transiently,
         // fully checked out.
+        errorReason = "pool_exhausted";
         request.log.warn({ status: pool.status() }, "[channel-pool] settle refused: pool exhausted");
         return reply.status(503).send(
           settleError(network, "pool_exhausted", {
@@ -382,6 +504,21 @@ export async function buildServer(
     // (do not retry, the payload is stale). Additive: the x402-required fields
     // are untouched.
     if (result.success === false && rpcStatus) {
+      // vellar_settle_errors_total (src/metrics.ts) classification — the
+      // ONLY two places these two specific reasons ever originate, per the
+      // real rpcStatus shape (src/rpcstatus.ts's CapturedRpcStatus):
+      // rpcStatus.errorCode carries "txBadSeq" when the RPC's own
+      // errorResult XDR decodes to that name; rpcStatus.status carries
+      // "TRY_AGAIN_LATER" when the RPC declined to forward the transaction
+      // at all (no errorResult in that case). Anything else reaching this
+      // branch is a real rpcStatus the caller should still see, just not
+      // one of these two named metric reasons — falls through to "other".
+      errorReason =
+        rpcStatus.errorCode === "txBadSeq"
+          ? "txBadSeq"
+          : rpcStatus.status === "TRY_AGAIN_LATER"
+            ? "TRY_AGAIN_LATER"
+            : "other";
       request.log.warn({ rpcStatus }, "[settle] submission refused by the RPC");
       return { ...result, rpcStatus };
     }
@@ -491,7 +628,20 @@ export async function buildServer(
         );
       }
     }
-    return result;
+      // The one genuine success path — reached only when result.success ===
+      // true survived every intermediate guard above, including bond
+      // registration (every bond-registration failure branch returns
+      // early with its own response before control ever reaches here).
+      outcome = "success";
+      return result;
+    } finally {
+      const durationSeconds = (performance.now() - startTime) / 1000;
+      observeSettleDurationSeconds(durationSeconds);
+      incrementSettleTotal(outcome);
+      if (outcome === "failure") {
+        incrementSettleErrorsTotal(errorReason ?? "other");
+      }
+    }
   });
 
   /**
