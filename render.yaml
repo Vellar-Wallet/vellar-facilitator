@@ -207,3 +207,54 @@ services:
         value: "GAATVGLRHZXFC66GEN5QNKD56HC5JJZVHQ3P7ZJNVCCI4WKLN44FICSC"
       - key: ASSET
         value: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+
+  # ── GRAFANA ALLOY — Tranche 1 deliverable 1.3 (public status dashboard) ────
+  #
+  # WHY THIS SERVICE EXISTS AT ALL. Grafana Cloud's Prometheus service is
+  # push-based (remote_write): it cannot reach out and scrape an arbitrary
+  # public URL on its own, even though src/server.ts's /metrics is already
+  # public and unauthenticated. Something has to sit in between, scrape
+  # /metrics on an interval, and push the samples to Grafana Cloud. Alloy is
+  # Grafana's own component for exactly that job — see
+  # docs/grafana-dashboard-setup.md for the full account-setup trail (why
+  # Alloy, not "Prometheus Remote Write", not a self-run Prometheus server)
+  # and alloy/config.alloy for the scrape/forward pipeline itself.
+  #
+  # This is intentionally its own service, not code inside the facilitator:
+  # Alloy is a standalone Go binary/agent, not an npm package, and mixing an
+  # unrelated telemetry agent into the facilitator's own process would widen
+  # that process's blast radius for no benefit — a crash in the scrape loop
+  # has no business taking /settle down with it.
+  #
+  # docker, not node: Grafana publishes an official grafana/alloy image
+  # (alloy/Dockerfile FROMs it, pinned, not :latest) — using it is lower
+  # maintenance than hand-rolling a binary-download build step on Render's
+  # node runtime, and it is the officially supported way to run Alloy.
+  - type: web
+    name: vellar-alloy
+    runtime: docker
+    plan: free
+    dockerfilePath: ./alloy/Dockerfile
+    dockerContext: ./alloy
+    # No healthCheckPath: Alloy's own HTTP server (bound to 0.0.0.0:$PORT —
+    # see alloy/Dockerfile's ENTRYPOINT) satisfies Render's port-binding
+    # detection, the same "no healthCheckPath, port-binding is what we want"
+    # precedent as vellar-seller-demo above.
+    envVars:
+      # Fixed per docs/grafana-dashboard-setup.md — this stack's Prometheus
+      # instance details (steadycelery1546-prom, Switzerland /
+      # prod-eu-central-0 region). Not secret: an Instance ID / remote_write
+      # URL authorize nothing by themselves without the API token below.
+      - key: GRAFANA_REMOTE_WRITE_URL
+        value: "https://prometheus-prod-58-prod-eu-central-0.grafana.net/api/prom/push"
+      - key: GRAFANA_INSTANCE_ID
+        value: "3551448"
+      # THE credential here. Scoped to set:alloy-data-write only (write-only
+      # metrics ingestion, not a broad admin token) when generated — see
+      # docs/grafana-dashboard-setup.md. sync:false keeps it out of git;
+      # paste it in the Render dashboard, never in this file. Treat it like
+      # SPONSOR_SECRET_KEY or CATALOG_DB_AUTH_TOKEN above: whoever holds it
+      # can write arbitrary series into this Grafana Cloud stack, though it
+      # cannot read anything back and cannot reach any other Grafana stack.
+      - key: GRAFANA_API_TOKEN
+        sync: false

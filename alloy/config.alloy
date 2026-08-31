@@ -1,0 +1,53 @@
+// Grafana Alloy config — Tranche 1 deliverable 1.3 (public status dashboard).
+//
+// WHAT THIS IS: a standalone scrape-and-forward agent, deployed as its own
+// tiny Render service (see render.yaml's "vellar-alloy" service), separate
+// from the facilitator process itself. It exists for one reason: Grafana
+// Cloud's Prometheus service is push-based (remote_write), not pull-based —
+// it cannot reach out and scrape an arbitrary public URL on its own, even
+// though our /metrics endpoint (src/server.ts) is already public and
+// unauthenticated. Something has to sit in between, scrape /metrics on an
+// interval, and push the samples to Grafana Cloud. Alloy is Grafana's own
+// component for exactly that job — see docs/grafana-dashboard-setup.md for
+// the full account-setup trail (why Alloy, not "Prometheus Remote Write",
+// not a self-run Prometheus server) and why this had to be a second service
+// rather than code inside the facilitator.
+//
+// This agent is READ-ONLY toward the facilitator: it only ever issues GET
+// requests to a public, unauthenticated endpoint that leaks nothing
+// sensitive (counts, gauges, a duration histogram — confirmed by reading
+// every metric definition in src/metrics.ts). Credentials below authenticate
+// this agent TO Grafana Cloud, not to the facilitator.
+
+prometheus.scrape "facilitator" {
+  // __address__ takes no port here deliberately: scheme = "https" below
+  // applies the standard 443 default (verified against the v1.5
+  // prometheus.scrape reference — __address__ is <host>:<port>, port
+  // optional, and the scheme argument, not a port suffix, is what selects
+  // 443 vs. 80).
+  targets = [{
+    __address__ = "vellar-facilitator.onrender.com",
+  }]
+  scheme          = "https"
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    // sys.env(), NOT env() — verified against the v1.5 stdlib reference
+    // (grafana.com/docs/alloy/v1.5/reference/stdlib/sys/) to match the
+    // pinned image version in alloy/Dockerfile. Getting this wrong is a
+    // silent boot failure, not a typo Alloy would catch at parse time in
+    // an obviously loud way — worth stating so a future version bump
+    // re-checks this against the new version's stdlib docs, not just
+    // copies the line forward.
+    url = sys.env("GRAFANA_REMOTE_WRITE_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_INSTANCE_ID")
+      password = sys.env("GRAFANA_API_TOKEN")
+    }
+  }
+}
