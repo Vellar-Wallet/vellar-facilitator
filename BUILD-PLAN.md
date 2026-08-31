@@ -75,6 +75,17 @@ See docs/decisions.md._
       (technical-doc.md §6) — load-tested, not just designed. Note:
       `ExactStellarScheme` supports a `feeBumpSigner` decoupling fees from
       sequence numbers — evaluate under load
+- [ ] Extend channel-account pool to UptoStellarScheme
+      (src/upto.ts:219) — currently a documented limitation,
+      see docs/channel-pool-design.md §8
+- [ ] Channel-account balance monitoring job (src/channelPool.ts's
+      disable()/enable() are fully implemented and exported but never
+      called anywhere in production code today — found in the channel-pool
+      security review). Without it, a channel account that drops toward
+      the Stellar minimum reserve is never proactively pulled from
+      rotation the way docs/channel-pool-design.md §5 describes; it stays
+      `available` and keeps getting acquired until a settlement using it
+      fails on-chain.
 - [x] Hosting DEPLOYED 2026-07-31: `https://vellar-facilitator.onrender.com`
       (render.yaml blueprint, dedicated funded sponsor `GBUCR6H2…`).
       Live-proven: settlement tx `1da6f9e6…` through the hosted instance,

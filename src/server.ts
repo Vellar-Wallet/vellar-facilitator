@@ -5,7 +5,7 @@ import cors from "@fastify/cors";
 import { TransactionBuilder } from "@stellar/stellar-sdk";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
-import { buildFacilitator } from "./facilitator.js";
+import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
@@ -66,7 +66,14 @@ export const SERVER_LIMITS = Object.freeze({
 });
 
 export async function buildServer(
-  facilitator: ReturnType<typeof buildFacilitator>,
+  // { facilitator, pool } — buildFacilitator's real return shape (Step 3,
+  // docs/channel-pool-design.md §7). Reverted back from the Step 3
+  // Option-A split (plain x402Facilitator) now that this function's own
+  // /settle route needs `pool` directly, per Step 4 — the two travel
+  // together as one concept everywhere they're actually used, so splitting
+  // them at this boundary only to immediately need to rejoin them here
+  // was Step 3's OWN deliberately temporary compromise, not a real design.
+  built: BuiltFacilitator,
   catalog: BazaarCatalog,
   trust?: TrustResolver,
   policy?: SpendPolicy,
@@ -81,6 +88,7 @@ export async function buildServer(
    *  existed. See the bond-registration block in /settle for the full behavior. */
   bondEscrow?: BondEscrowOptions,
 ) {
+  const { facilitator, pool } = built;
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
   // default), sized for real signed settlement XDR with headroom.
@@ -150,6 +158,26 @@ export async function buildServer(
     // F3: surfaced so an operator sees a frozen catalog rather than wondering
     // why discovery stopped growing. Settlement is unaffected while frozen.
     ...(catalog.catalogFrozen ? { catalogFrozen: catalog.catalogFrozen } : {}),
+    // Channel-account pool (docs/channel-pool-design.md §2/§5) — `total`
+    // should always read exactly 50 on a correctly provisioned instance
+    // (config.ts's own exact-count validation at boot is what actually
+    // enforces that; this field is a live confirmation of it, not a second
+    // enforcement point). `available` dropping to 0 for any sustained
+    // period is the signal that matters most here: it means /settle is
+    // now refusing new requests with pool_exhausted (§4) rather than
+    // merely running slow.
+    //
+    // `pool` is required on BuiltFacilitator (Step 3) and so should never
+    // actually be falsy here — but checked defensively anyway, same
+    // "never assume, verify" posture as unverifiableCount/catalogFrozen
+    // above, and so a test or future caller that somehow builds this
+    // server without a real pool gets a missing field, not a crash.
+    ...(pool
+      ? (() => {
+          const s = pool.status();
+          return { channelPool: { ...s, total: s.available + s.inUse + s.disabled } };
+        })()
+      : {}),
   }));
 
   app.get("/supported", async () => facilitator.getSupported());
@@ -268,29 +296,77 @@ export async function buildServer(
         );
       }
     }
-    // Final audit (HIGH): facilitator.settle can THROW, not just return
-    // success:false — @x402/core throws for an unregistered x402Version/scheme/
-    // network, and @x402/stellar re-throws when `accepted` is absent. Those paths
-    // spend ZERO sponsor XLM, but without this try/catch the reservation stayed
-    // held and cheap junk could still exhaust the global ceiling and lock out all
-    // real settlement. Prevalidation does not cover it: one static valid XDR is
-    // reused for every request.
+    // Channel-account pool (docs/channel-pool-design.md). selectSigner is
+    // called SYNCHRONOUSLY INSIDE facilitator.settle() itself
+    // (@x402/stellar's own scheme.ts) — there is no separate "acquire, then
+    // call settle" step to do here; acquisition IS part of the settle()
+    // call. (REAL BUG FOUND AND FIXED, discovered under this design's own
+    // load test: an earlier version of this file called pool.acquire()
+    // itself, a second time, before this block — meaning every /settle
+    // call consumed TWO pool slots instead of one, silently halving real
+    // capacity. See src/facilitator.ts's own withChannelAcquisitionCapture
+    // doc comment for the full account.)
+    //
+    // withSkewRetry still wraps the WHOLE settle() call (unchanged from
+    // before this pool existed) — a ledger-skew retry re-runs settle()
+    // against the same already-built transaction, so if a retry happens it
+    // calls selectSigner again and acquires again; this is intentional and
+    // fine, since only one channel account is ever held per ATTEMPT, and
+    // withChannelAcquisitionCapture's scope covers all attempts inside one
+    // withSkewRetry call, always ending with acquiredAddress reflecting
+    // whichever attempt actually settled.
     let result;
     let rpcStatus;
+    let acquiredAddress: string | undefined;
     try {
       // The capture slot must wrap the settle call itself: the RPC response we
       // want is produced deep inside @x402/stellar, which discards it before
-      // returning. See src/rpcstatus.ts.
+      // returning. See src/rpcstatus.ts. Channel-acquisition capture wraps the
+      // exact same call for the same reason — see src/facilitator.ts's own
+      // withChannelAcquisitionCapture doc comment.
       const captured = await withSkewRetry(
-        () => withRpcStatusCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
-        (c) => (c.value as { errorReason?: string }).errorReason,
+        () =>
+          withChannelAcquisitionCapture(() =>
+            withRpcStatusCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
+          ),
+        (c) => (c.value.value as { errorReason?: string }).errorReason,
         (m) => request.log.warn(m),
       );
-      result = captured.value;
-      rpcStatus = captured.rpcStatus;
+      acquiredAddress = captured.acquiredAddress;
+      if (captured.poolExhausted) {
+        // Same shape/status as sponsor_balance_low above: a real, structured,
+        // retryable refusal — never an unhandled exception, and never the
+        // vendored library's own generic unexpected_settle_error either.
+        // retryable: true matches this pool's own locked design decision
+        // (docs/channel-pool-design.md §4) — nothing was spent, nothing
+        // about this request was invalid, the pool was simply, transiently,
+        // fully checked out.
+        request.log.warn({ status: pool.status() }, "[channel-pool] settle refused: pool exhausted");
+        return reply.status(503).send(
+          settleError(network, "pool_exhausted", {
+            error: "settlement_refused",
+            reason: "pool_exhausted",
+            retryable: true,
+          }),
+        );
+      }
+      result = captured.value.value;
+      rpcStatus = captured.value.rpcStatus;
     } catch (err) {
       policy?.refundUnspent(reservation);
       throw err;
+    } finally {
+      // ALWAYS released — success, failure, or throw — but ONLY if
+      // something was actually acquired (undefined when selectSigner was
+      // never reached at all, e.g. verification failed first inside
+      // settle() before signer selection). release() is also idempotent on
+      // an already-available address, so this is defensive-but-harmless
+      // even in edge cases this reasoning didn't anticipate. A channel
+      // account that is genuinely acquired but never released silently
+      // shrinks the pool below its configured size, the exact failure mode
+      // docs/channel-pool-design.md §2's exact-count sizing exists to
+      // prevent.
+      if (acquiredAddress !== undefined) pool.release(acquiredAddress);
     }
     // Release the reservation when the settlement never reached the chain.
     // @x402/stellar returns an empty `transaction` when it failed before

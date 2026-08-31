@@ -1,0 +1,1034 @@
+{
+  "concurrency": 50,
+  "setupElapsedSeconds": 25.6,
+  "payTo": "GBGWLVFK2CPL5NCNBBF3QOEF7WQUS25RMSTCDUMCZWYT4RRYAUVNBUH6",
+  "run1": {
+    "summary": {
+      "label": "Run 1 — negative control (single-signer)",
+      "total": 50,
+      "success": 1,
+      "txBadSeq": 48,
+      "TRY_AGAIN_LATER": 0,
+      "pool_exhausted": 0,
+      "other": 1,
+      "p50Ms": 16896,
+      "p95Ms": 16998,
+      "p99Ms": 90297,
+      "wallClockMs": 90351
+    },
+    "results": [
+      {
+        "buyer": "GCIE55KYN5MX43NTRL4VMADQTQXAPYAKQCWWWMOIZ3CNTOVGUOOVCLV3",
+        "durationMs": 16183,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCNGKJ5KYUCGWQJQ2XK7O7Y75IYJKFIUQ3OCCRNLDKOW3A67WLEPB6P3",
+        "durationMs": 16907,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCWON2LO37NZ5QU56TBWGSTFKCH6I5GLINTI6TRGYZUCUOO6RJCR3626",
+        "durationMs": 16967,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBWV57LSC4N3HG4D5P6ULQG63BZMSFHMRZZMFVI6ORNVKWVXV3WX7FDL",
+        "durationMs": 16978,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCD6SXD42LTGW2G4N63WRBXD5KZBMJRSBWR5JZHJLLW5XOWX7VJQE7EK",
+        "durationMs": 16976,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBVEPAP2U42JFJIUFV7ZKSWJUV3JQRMU2OJAYIYXNJUFKMWAKYEMLK5P",
+        "durationMs": 16977,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBRUAD6D2SRZRUE2QDE5VXT2MJ4CM5ZRDFITZTIVAKHMSFQFXBHYHWZM",
+        "durationMs": 16099,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDSNE5ENDTNTLT2Z5O2W4T7DTVB2OEIRSNLHVWFUKH63GHHNPAWFEKUV",
+        "durationMs": 16966,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GASJ6EBKCIYN7K67QV7VOCJN4O5N7IA7PZ2OGVHPFOSST3QFZN2GQJIL",
+        "durationMs": 17210,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCNF7WZPMHZH7KK3EW7IUMSRUY3EGBUBF4MU44P2SE4MD5GUBCB7QEX6",
+        "durationMs": 16096,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDO74XGDIXUC7J3TM2PRPOGI3S4LKD4QWXW3IJ2FI2WKZGXGB3IPNHLO",
+        "durationMs": 16093,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GC5WWH6ATHXQUGJTF652V3OSTI45KSVPLAGW5H36WZ3GXTVYCRTKEQ6R",
+        "durationMs": 16998,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCQERBJD7Z24YQ2FEJIGXG6XPIERFAF4YJZHP6SM7ZC26NIF2BWUD7OF",
+        "durationMs": 16997,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCCFQV2YUP64E2ZK34RDTO6FVCM243LUVSI7Y7P2FSJ6UZZYAFRJZLOW",
+        "durationMs": 16896,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GA7LFW373YXMDX3KXAOAT6ZCWBMC66ZWOFULBJYZDOXCNTCQNZKOJAQO",
+        "durationMs": 16898,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDPMHN6D7Z6VGLLP74GKRS753PHFZXETRMHXCO5YL6PESP57JJJ3BJBD",
+        "durationMs": 16995,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GAFNZIH6LT4U66GV434TSK75MWYH6GI3TNBAHIMMR7FX6WP27SRTNE2F",
+        "durationMs": 16994,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GA5YHBBJIWKI46RUFHM3AOZUBGY34F6IEILBW5VNG2UNHBJU4W4OUWU4",
+        "durationMs": 16961,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GD4SF4FDHBOMFWRLD6IN5UQV5SUFG5YWY7DEERYDHBOBIFHMAEOU6LNT",
+        "durationMs": 16959,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBIHXQWY7SHSHBIJV42EVFKHCXHCN2JGGU473WGBPLVHLPDFLTVHIJ3U",
+        "durationMs": 16963,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCQN7D42ZVEORFBM46GAXDFMZMNIGZYEKQAHOOFO3YYE7DJIPZPCLR2Z",
+        "durationMs": 16996,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCOH53SETB4OUJO3FRTBKZOJOYIGOGPK2BPXJIVTLHS2BIYLUBRQP5EP",
+        "durationMs": 16703,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCA4LITAKUBNJ3BMLVFK3QPQI6SCWYECXBH6IC3OC5LV3OU6O7EFLHTU",
+        "durationMs": 16094,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDMR5GPHC5AD665M4R4AGGAEVNQIM27INAY64LCAQSVONZV2EIXJXXY2",
+        "durationMs": 16607,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBU4LJXOHZJ2C3W66WM6NTXNZ4LDG2HGGV66ZJFT5A4Y5FEGH4XCUAWE",
+        "durationMs": 16898,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GCG4KFUDO624BWT5XO7BP2TCBVNMJM2SQ7YKXYH3IG5Z7LAPWYBR37VN",
+        "durationMs": 16880,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBBVN3KNFYLAAHXYGPVYZOH7EMJDS2VSTYTIDH4X5C4HARIJ4XFNHXYQ",
+        "durationMs": 16996,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDN4JBTD75VYFNUV7XX5QDFM7YQZPZ6RRVGVLCKQQB5IPMQLEFBJEEUU",
+        "durationMs": 16684,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDIVFIDICO6EPOOIEI3RBCVHYDQRHEMGGUMCACKDBXHKQP5SFW4KBMHX",
+        "durationMs": 90297,
+        "outcome": "other",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_failed",
+        "transaction": "e6a61f18aa97cf994580863fbb8907085613a960cffb95b741109e5a5e4b1471"
+      },
+      {
+        "buyer": "GBUWOLVKE7ZF637W4CN6IRYFUOHZTZLU2RHHRA2WU3GE56KJ4BLY5GPI",
+        "durationMs": 16604,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GABFWQ7A7SII5M6OYA6KV3I4G2YSRJ443ZFTG4PVXQ2G7OJTASSWA7FZ",
+        "durationMs": 16891,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDTVIDRVBGOC2RKNTZF56VUNPC7UCF3D25CPGFDLCSBIUCAOR4EANMOD",
+        "durationMs": 16956,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBD7MJMEI2WH62GYKG76PLMKKIBE7NP5E22WUVBBLC3VWCSUW2F3KR3C",
+        "durationMs": 14271,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "7770615733740c666829aaaa4361c2cc0f3d66a440080a23c5f2db80892f06f8"
+      },
+      {
+        "buyer": "GAUPWZCA3ZPYENZXV5UDIMLPUZ5C6DDOU264AN6RJ7WC3XAFRL63DUJS",
+        "durationMs": 16956,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBOGK6DBL3IELOHTX7LUY576UZALZO7A2U6R7BBCXTPT2SZM5AUHJT7R",
+        "durationMs": 16600,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBM7PSXGMTZMVQLQMAJKNBZX4KBO3RHDUPLYAOEWQ6XEPKSXF2RBPEGA",
+        "durationMs": 16087,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GAQNEVV2O5Y5N7QEFBZDFLRMHDQV55DO5BST6ZEMM6GHKRWFM6V4QMPZ",
+        "durationMs": 16892,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDBC7W5XJ333REMTAUV523ZJYNCR5TBMBAPUL7ACLAJQB5INMY2NW5FN",
+        "durationMs": 16596,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDB3ZXANZZLIMRWM4WHNGY6TKOP2SM7B4CNS246Y6RBGTPCZBGA7ANCF",
+        "durationMs": 16954,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDS5JY5CFMDQ3ZDZDVSSYHALSRVLEBMJLZUMRV5QJU26BVMRWAUQP2RL",
+        "durationMs": 16891,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GAWTIVRNGS22OV36L5X36JN2YO2J2BAMMAZHAFKIX55SQRKD45XMMGDH",
+        "durationMs": 16886,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDUYP7IZ3CBSWXHV3X42KYKP3NCGADADTZAXEZEQVYSPCO55ACKPDS5S",
+        "durationMs": 16694,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBZEQCQ2KPLF7NSSLWOKBIK4BKTD4US6UP76XIQS7LVCMDW3RVCUBHL5",
+        "durationMs": 16986,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GBZ5SWYEFKMIQXZT323Y46PJSNV32LR3TZ5IXXRVOOYEDD5DSFU7JVXE",
+        "durationMs": 16961,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDQ6KPEMZ3Y7DTH5HKVLNHTPWKHDLS45OXGD5FZBEOCJYRTUM3MV2AFZ",
+        "durationMs": 16869,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GA22UGKMFOPT7H5W3FBUBSNJG7IY3VBRIC5ZSTJRK3JPXAGO6AFRYPVF",
+        "durationMs": 16084,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GAYARVDYMKLTIDCAAJOWAXZI2ZHGBF2PU2ZR3CNYB5LORFZYTLFL5TQW",
+        "durationMs": 16871,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GDEXCD4LLPECQCDITMIALIAJDHW4QJ7NI4KMAWJUGQDYHMHHQAJ3LCQW",
+        "durationMs": 16949,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GAUFVUHUZB7CX5UILRPQUZTMKH5UO2TMINNAKKDQTOENHW6QTDDH6J5J",
+        "durationMs": 16574,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      },
+      {
+        "buyer": "GAI6WX6SV723GFW4TATHYDYKZT7XRN42LRI4MDEQHEBC3BDLQ6HVB7ET",
+        "durationMs": 16598,
+        "outcome": "txBadSeq",
+        "httpStatus": 200,
+        "errorReason": "settle_exact_stellar_transaction_submission_failed",
+        "rpcStatus": {
+          "status": "ERROR",
+          "errorCode": "txBadSeq",
+          "latestLedger": 4430139
+        },
+        "transaction": ""
+      }
+    ]
+  },
+  "run2": {
+    "summary": {
+      "label": "Run 2 — positive control (channel pool)",
+      "total": 50,
+      "success": 50,
+      "txBadSeq": 0,
+      "TRY_AGAIN_LATER": 0,
+      "pool_exhausted": 0,
+      "other": 0,
+      "p50Ms": 11248,
+      "p95Ms": 11956,
+      "p99Ms": 12088,
+      "wallClockMs": 12109
+    },
+    "results": [
+      {
+        "buyer": "GBPR2ZT2RKTSI26LS6TYGJJRHESBIXSGEM25JXAYMVB4WDHT4SVKFYHQ",
+        "durationMs": 11276,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "9e68da0375ac8db9d4c95046c93bb0d40991c1685143ff97ab8fc47eb51ac485"
+      },
+      {
+        "buyer": "GBHQEHSSMUIJT2BYPTZY2O64M7CAI7PTSEYSR6IEIBNCD7POZ7KXFLLA",
+        "durationMs": 11256,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "af4ac1d47c97a06281296c1fa8e15081da5744973d151f5d8d0ad02471b61369"
+      },
+      {
+        "buyer": "GAJIMQ7UAWHVN7OAWECVWQM44BRNEHLF3ZOXKBI6PWJ6BPNCJZBKWT3X",
+        "durationMs": 11249,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "5f5dbbdd308f352ca6d9db892bc7b44591972fad2374d8917e01f3fbba8610e5"
+      },
+      {
+        "buyer": "GCAXE6PECDI4PL37ZRK5M4EDAK2SIYHB2VNYUWOK572QW53ST64AS6WN",
+        "durationMs": 11216,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "4a4cc02a7a784bd7b65d137bfb796a031cc511aa9c37019e1991cac84ca49b26"
+      },
+      {
+        "buyer": "GBVHN2KTXNTHHRANP7YYZ2FUIBUZZ5EYFEZA37BDXSWJLG2O24UHWHOB",
+        "durationMs": 11246,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "4658f1498c7d9f68eec4907b668d0b98d78f86d1cf5339e3cd8d407460d01436"
+      },
+      {
+        "buyer": "GB633MFX4HPJAXYVIOO3WMU4PJTU3BKFN5LV3YF35DMF7DEMS6CEDPMM",
+        "durationMs": 11248,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "8e252e1fd628c9d31a6c369f0cd22bdc5c235a2b4af119d225a25cfe8d713622"
+      },
+      {
+        "buyer": "GCSHUUUJV5PTPDLODIY7DOWC5NMM7ESL3VN3GWDDBJW36GQKIQYU7ITP",
+        "durationMs": 11247,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "0b712a83d1f25b58458fddad7fb018236b84aa4384afc47b27e3ff052798ef73"
+      },
+      {
+        "buyer": "GACIQI36YW5TQHYYX72MP5F5AWOFZWGFSHDQINGJXSW7EVUBTFWCP3NE",
+        "durationMs": 11257,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "a72df9282d1b004d817dce34dd17bff1165e8da582af31883e8a4168cfa38978"
+      },
+      {
+        "buyer": "GAMJV4JZXK3NEFRNU27TJHXONX4K2VPBDBLG7J3JQTDLPUSWMV342IVG",
+        "durationMs": 11252,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "c84fec864597032e6c9d90f4bae1f2b6ad9999837c51aa5a088fcd25080229db"
+      },
+      {
+        "buyer": "GBLPVB7U7SBZSH7IZ4MHKVARHCGJNZLUORUHPVV2RAH5NQNWPZNECIV6",
+        "durationMs": 11251,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "4934d59517f8d6bc1d11ee0c8b92ea61753da5beb187bd7cd283c6607ea8a6e6"
+      },
+      {
+        "buyer": "GDUQ2YTEA7KU3JOABOZIO7OARA4YDATKDGXFDTHBWARJI54K23ESA5UW",
+        "durationMs": 11398,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "4c842c88c5123da82baa68eb17f94a5d25ad6b3ee591c5fed8e0845e81273e31"
+      },
+      {
+        "buyer": "GBCGVVJYT5Y2XUNTAU6LBN2YTQAXBGWLBXV67DDHP73L36ZWTY6IQBP7",
+        "durationMs": 11246,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "f1122dd1eb13b90fb2c16283fa9654764412216e2d33603922c1d0e5135cee7d"
+      },
+      {
+        "buyer": "GDPR4N6JQTU6WYZLD2QLHLRTJVIYCACG54U3E3MYQYQ5Y2TEEU7KDXUY",
+        "durationMs": 11247,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "ac5784ba265897f0bb0c4f06ce7f7faeebfed2c84b897ae564ee53709633a71e"
+      },
+      {
+        "buyer": "GCL3VKYK2Q3ZMXXOC3ISGJHTD7PJ5T6E4FTJST6LPOU3B3FJZMDVT44V",
+        "durationMs": 11255,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "49629645b88e5fbd0773c12a044ad6ee8e782f550d5c3a120403e647ba5459fb"
+      },
+      {
+        "buyer": "GAC44M7IDEXGI6VQBF7CSHB57ZFD2MBEGKMD3ZFAYJJNB6FXRW5TCAH5",
+        "durationMs": 12088,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "db07013409c748a43f83158773a50ef61f3ba2e1d1fed19847e944a1eee3377c"
+      },
+      {
+        "buyer": "GBRLLM2XYSLVDAQW3N5LHQ4MIDVSU2PVYVKVTWCCPRFEB2O4CWQMPPEA",
+        "durationMs": 11194,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "265f7dba0187f657ded9ef5f93111a463869bdc32ede09f8655cf02f8107c7e6"
+      },
+      {
+        "buyer": "GB73FUALAQFXT5XNYC6RBKM7W4N2Z3QWWQDU5XHQG3255XGUD3UOFBSL",
+        "durationMs": 11256,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "ec693145f66601c65238fe24737d242a06d10c7d3ed3810451e6e86e4b577ce1"
+      },
+      {
+        "buyer": "GA5XYEIXUY73LVIZWMOAND3FWVT24Z3H2GGVXXQDHWADDFHRPNQVWOMD",
+        "durationMs": 11246,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "b2e13e4902a64945e680f7d5647c5b0cf83a283df2e47a6c278b0a9faad27249"
+      },
+      {
+        "buyer": "GCLSMNYHNUFYFA6SLDC2EUIGR3FDIJ3SVGRK2HAFOFTX7Y3QLSQIJEN2",
+        "durationMs": 11245,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "7327d871e50cb4238ae34b29830a31db7fc92727d56b38745db26c617978aebc"
+      },
+      {
+        "buyer": "GA7GEU3NAFNMAXSZPXRZEZKU7AGXKM5YS3SHNHABLCXBZ4LSY5XARUTD",
+        "durationMs": 11250,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "ffb908c4551c6733fbf1294168184e795eb952e64dff55044ebc532e74bfc34e"
+      },
+      {
+        "buyer": "GBIS2CMQZZU6VY7X4ZF57NTE5CTY3VQ745Z75PQ6STNWGMTBD774IOHI",
+        "durationMs": 11244,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "94e46aa0cac63c7e5763eb332827be5e594cba00d0738465f27f791caf70de10"
+      },
+      {
+        "buyer": "GA42XRMEHKB2HQUWSVJ543ZUGPR3UIUINMXE3725XIIM4WPSIZMC7Z54",
+        "durationMs": 11253,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "a086787b298ecd113a83f8d99c6d0caf90b546abfc3068aa7eb52f6284371421"
+      },
+      {
+        "buyer": "GD6CVRHH4DFRFZST455VIRJOQZVU2TRLA3MJ6QOQFNWHNRGXHJNBEWZG",
+        "durationMs": 11244,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "98af8a34517e3a326130ae404bd477836f8d1fee8466839dd2bfdcdaf444f84b"
+      },
+      {
+        "buyer": "GA5CXMWYA2YBJF65BDEGRC6SGANVYWBGCLMTX2CZUFK6TONEVATZQVPP",
+        "durationMs": 11208,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "6bb9b9655f79e718335b3af7cb61c40980ad2d86f19ce61bcc1c9d8563988d74"
+      },
+      {
+        "buyer": "GANZP55W5EAUBHIPGCSIUZTZC7KA53SBUHNKGOYBGJ6URQVFEXQ3QDFJ",
+        "durationMs": 11956,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "386af19ae4f45364cf6a019690df81dc0dd45cc846c49d7b7f8404ca0d509e70"
+      },
+      {
+        "buyer": "GCXWNIY4KR6BHEMBPUAOVR35AWPITZNJWHD7GTMOJYADYCF44DVK52UK",
+        "durationMs": 11248,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "9c95ad5f108e728d82c20ad8ad689651293f2b09a1d23807fd0c8daeb5e5606a"
+      },
+      {
+        "buyer": "GDOWQEHTFOBE3H4R2JMZLI3GSGRA6HKDY3DSMRNK7L5XSQXJ7YHOGQQ2",
+        "durationMs": 11247,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "13164d4095f169d009aa228bdc25fe8deb32d25bd05f1109b110e8afaf3c7fef"
+      },
+      {
+        "buyer": "GBS4XPTRLK2XMY7VWIGBGRVRZQQFURUJRINYHJJJOTQHALFILIS5GTXP",
+        "durationMs": 11319,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "1009714958239bd84b138c45e5a7e690c7f558d533afb17d294b76ced660f3fc"
+      },
+      {
+        "buyer": "GALCMEW3D65SNWI3EAXKEEHWWJSWETT4VNX7UF63AMDP3QNEFYVH4WSU",
+        "durationMs": 11248,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "243c91368871b9674519940da0fb77fc6b690646323410994e4a0f1ec964973a"
+      },
+      {
+        "buyer": "GALBY6IFZLTBLAPEEVNABBT7MQQ5LXRX7ICNE3CWNVA6YM5URGS5F4R2",
+        "durationMs": 11245,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "2c5cb5675d80180dafa3b3fd8712f1fd9466440c3995902d078bd0149ea1b998"
+      },
+      {
+        "buyer": "GARWVUIEBSLBW4SQK263P52Y5G6PZRJ2ILTMDWITGSSDGPEZ7H2VQNFU",
+        "durationMs": 11251,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "958e8753e14b416a9a41f335ad2f33a45348416509cac39f163e1f007c75681e"
+      },
+      {
+        "buyer": "GDFJ5LLX5QNY2737KOYAHXLLIPWHGKGGDRKOLBXAVUZ6T6RM27E3WDFA",
+        "durationMs": 11405,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "496e77000c4b296f1a93544fd0bd0be425a6f0024a97c86d79cf62e4adc483d8"
+      },
+      {
+        "buyer": "GCUMMSKHM5TQPBWNRU77X5FQIZPG5BXKYXOPYE7O4653KJIG5RNN7SKP",
+        "durationMs": 11316,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "52576f2d62ec156dfec4d895e8bb826ee4f111465c6bf82f1b75cb8b5d3c660f"
+      },
+      {
+        "buyer": "GAZ54QWTX2HQYRI7VFBIG3GQCVC7VNX5HHOSTX7JJ2FAPFHVBVXSTEQC",
+        "durationMs": 11246,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "050139d93885529a8d7459a76376a8f4943dcd140cbf29cdb1c70a185a0372ac"
+      },
+      {
+        "buyer": "GCJEJECCYNWDTWLEDMY6A2FZWJUNXGFUGUQ2D4EZIKBANET7WK3NUJYK",
+        "durationMs": 11250,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "c46999a9584903ca8ccce9449da84c5fbb7979de0f3869bb13a002b771763da0"
+      },
+      {
+        "buyer": "GBBBEL2YXQO2FJJ4A3W5ILHR4GHNET7L3GQIWUFD3J3PYXRTPCVJDYBX",
+        "durationMs": 11246,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "3f0221c231190c711dfe4b50abc5a5a8339ef281b95948bf9d6df0dde61dd10a"
+      },
+      {
+        "buyer": "GCZG6PN62B25IWNB57DUO2GVULQWFAH3FERD3TM6LRIFGVSNIUKOZ6BD",
+        "durationMs": 11236,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "030a00baaf53b45a602e966ebefd32dd894042e0bda38f1f57929f425fcaf324"
+      },
+      {
+        "buyer": "GDMRRC2Y7WQ7LJWOF67PNRH3LNTLMRSAHL7ADYXX47UAKAZFLHNGU44Q",
+        "durationMs": 11249,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "ef87af40929abcc15f400afee003fc6712181fc103912611f618db63db068545"
+      },
+      {
+        "buyer": "GBHOW4TFXMGJYIJ2WBMPPIBMBIYBX7RZB6C7XZIJ2SMED63OZ4JSKJAE",
+        "durationMs": 12077,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "1246bae44ab36b8f235df774c901c209a2d9e6ac924b17cc6a1bf051ded01da9"
+      },
+      {
+        "buyer": "GDW4ZVRRZ5UQ5BZW6VUL5MAMKXHVL7ARLHVX62THC3IDPV2GQKOGG5IY",
+        "durationMs": 11393,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "d4724eac071e08f08a33c5ff71fa2e7987ec77c18026c02f0339a4087b709f13"
+      },
+      {
+        "buyer": "GCGVLYP6R3WRNVZQOT4FTMHX4SNGOP3J4N2XONNK2A4JR3B7JX7SLT6V",
+        "durationMs": 11244,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "71888c82603d168bd53ea579689bd0fd79e08131c1e2f23de2110833ec032caa"
+      },
+      {
+        "buyer": "GAM4JJ2OAHTNHVBG3OFJZB5HYQRTYR75BWAIUUJGSRZBBGD2KLFAGGET",
+        "durationMs": 11243,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "b0d55b4b1e211fcffc92c6133fb1964c72d47a48549c99788881ec643d94311f"
+      },
+      {
+        "buyer": "GC2CULSXRVHKXADXN7YZMIVZY5THMT5AXJNNAUBW7S7EXARUXG7ULLPE",
+        "durationMs": 11401,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "675641b580afcd86cd26b708dec99da338a55b85ce4bd488d0ea9e871c4cbde2"
+      },
+      {
+        "buyer": "GA46UDQ66B4NLS3Z3SU4W6SBI5SXBJHJ2JIQYTUCZ5XZSCOQMDQTMGU7",
+        "durationMs": 11245,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "bb559559ce33692e61ba00c10a2fc350fbbbef3892c0135edbaa77957aef97a1"
+      },
+      {
+        "buyer": "GCZWXD24VZNIPJHSK7DY3UD4W4I75EACJENM4NIK3GDGSKGX6OIDISCZ",
+        "durationMs": 11390,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "90f2bada996b9e481d0eed6225f856dd5f8166b1b1f4c06e8e2fcc97f0764919"
+      },
+      {
+        "buyer": "GAS66VNZMNDPQ5D2OMC56KFW3NEOU3XGLQ7NBTB4TVX7JOC6O2YGDM4X",
+        "durationMs": 11320,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "d6cc9378fdf87362ef7c2b6989fb16dbf5ff8fcc9cef85e529fbba8356615ae8"
+      },
+      {
+        "buyer": "GDC22THQ7UZ2NNNVLRS7RLEMPYLX5DOPCLERGOQ23YN5XRQW76HA3UAM",
+        "durationMs": 11235,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "70e4e0f5f7947b6c85160c0d53ac56e9db64f7036eb74996a84f95501bb11f25"
+      },
+      {
+        "buyer": "GCLCP6F33S4WETTGXGZ7OPEAOIGVLVGMDJPOPAXKA6SQCEYYJTSVJQYJ",
+        "durationMs": 11233,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "cdb2125907e0b0237802b348593b7da0ff76b7900ce8a5d9138cc737cab09e10"
+      },
+      {
+        "buyer": "GCZ2YS7DGLIKEJTCEEQMQZAHG7WJLI2A4O3BBMTD7YCZIHRXMXTVNXST",
+        "durationMs": 11244,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "47eb2298cbe3ed192622a386b016e95018f60ba3a7bc9e85220197d33d6e67ed"
+      },
+      {
+        "buyer": "GCZPCAT72ZWUGKF4BWN7LG4B7WPHTE46CY4V2YCLQKXWUQZ6WZNDPJGZ",
+        "durationMs": 11390,
+        "outcome": "success",
+        "httpStatus": 200,
+        "transaction": "26c669829dfbf502b1979ed8fadc678fa2f4c61b6b1ecb6b80d7aa68adc43f1b"
+      }
+    ]
+  },
+  "successCriteria": {
+    "zeroTxBadSeq": true,
+    "p95Ok": true,
+    "run1HadTxBadSeq": true,
+    "overallPass": true
+  }
+}

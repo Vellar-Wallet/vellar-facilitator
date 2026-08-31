@@ -10,6 +10,7 @@ import { readOwnership, reopen, seedRows } from "./store.testkit.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
 import type { TrustResolver, TrustedDiscoveryResource } from "./trust.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 // ============================================================================
 // CHARACTERIZATION TESTS — these pin CURRENT behaviour, including two KNOWN
@@ -75,6 +76,7 @@ const testConfig = {
   network: "stellar:testnet" as const,
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
+  channelAccountSecretKeys: fakeChannelAccountSecretKeys(),
   maxTransactionFeeStroops: 2_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,

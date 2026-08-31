@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
 import { loadConfig } from "./config.js";
 import { readOwnership, seedRows, tmpStore } from "./store.testkit.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
+
+const CHANNEL_KEYS = fakeChannelAccountSecretKeys().join(",");
 
 // ============================================================================
 // The bootstrap hatch is GONE, and this file is what stops it coming back.
@@ -30,7 +33,7 @@ describe("the ownership bootstrap hatch no longer exists", () => {
     // MUTATION THAT MUST BREAK THIS: drop the warning branch in config.ts and
     // let the variable be ignored silently. The test then sees zero warnings.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    loadConfig({ SPONSOR_SECRET_KEY: SECRET, CATALOG_OWNERSHIP_BOOTSTRAP: "1" });
+    loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: CHANNEL_KEYS, CATALOG_OWNERSHIP_BOOTSTRAP: "1" });
     const hits = warn.mock.calls.filter((c) => /CATALOG_OWNERSHIP_BOOTSTRAP/.test(String(c[0])));
     expect(hits.length, "a retired flag must announce itself, not vanish").toBe(1);
     expect(String(hits[0]![0]), "must say it does nothing").toMatch(/NO LONGER EXISTS|IGNORED/);
@@ -42,7 +45,7 @@ describe("the ownership bootstrap hatch no longer exists", () => {
     // then point at their old file, see a healthy boot and an EMPTY catalog, and
     // have nothing telling them why.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    loadConfig({ SPONSOR_SECRET_KEY: SECRET, CATALOG_FILE: "/var/data/bazaar-catalog.json" });
+    loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: CHANNEL_KEYS, CATALOG_FILE: "/var/data/bazaar-catalog.json" });
     const hits = warn.mock.calls.filter((c) => /CATALOG_FILE/.test(String(c[0])));
     expect(hits.length).toBe(1);
     expect(String(hits[0]![0])).toMatch(/NO LONGER USED/);

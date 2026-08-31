@@ -4,9 +4,10 @@ import { loadConfig } from "./config.js";
 import { OWNERSHIP_LIMITS } from "./ownership.js";
 import { SERVER_LIMITS } from "./server.js";
 import { TRUST_LIMITS } from "./trust.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 const SECRET = "SBJP6HHFTABK2GXVVFAKY6C4B7DDNB5PIEQXKUNL2ZAOBPWFOUOSTLVNMA";
-const base = { SPONSOR_SECRET_KEY: SECRET };
+const base = { SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: fakeChannelAccountSecretKeys().join(",") };
 
 // Threshold review. Two defects and one standing rule.
 //

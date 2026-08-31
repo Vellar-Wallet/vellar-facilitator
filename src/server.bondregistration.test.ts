@@ -5,6 +5,7 @@ import { BazaarCatalog } from "./catalog.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
 import type { RegisterSettlementResult } from "./bond.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 // The full live sequence (register_settlement's real network path) is proven by
 // docs/bond-escrow-deployment.md — every entry point, real ledger time, every transaction
@@ -32,6 +33,7 @@ const testConfig = {
   network: "stellar:testnet" as const,
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
+  channelAccountSecretKeys: fakeChannelAccountSecretKeys(),
   maxTransactionFeeStroops: 2_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
@@ -92,15 +94,15 @@ function settleBody() {
  *  matching how a genuine success is otherwise unreachable in a unit test (no existing test
  *  in server.test.ts achieves success:true either, for the same reason). */
 async function appWithStubbedSuccess(bondEscrow?: typeof BOND_ESCROW_OPTIONS) {
-  const facilitator = buildFacilitator(testConfig);
-  vi.spyOn(facilitator, "settle").mockResolvedValue({
+  const built = buildFacilitator(testConfig);
+  vi.spyOn(built.facilitator, "settle").mockResolvedValue({
     success: true,
     transaction: SETTLED_TX_HASH,
     payer: PAYER,
     network: "stellar:testnet",
   } as never);
   const app = await buildServer(
-    facilitator,
+    built,
     await BazaarCatalog.create(),
     undefined,
     undefined,
@@ -258,15 +260,15 @@ describe("/settle — the missing_payer_or_seller guard", () => {
     // parameter there can't distinguish "omitted" from "explicitly undefined" (JS applies
     // the default either way), so this needs its own setup rather than a payer-override
     // argument that would silently do nothing.
-    const facilitator = buildFacilitator(testConfig);
-    vi.spyOn(facilitator, "settle").mockResolvedValue({
+    const built = buildFacilitator(testConfig);
+    vi.spyOn(built.facilitator, "settle").mockResolvedValue({
       success: true,
       transaction: SETTLED_TX_HASH,
       payer: undefined,
       network: "stellar:testnet",
     } as never);
     const app = await buildServer(
-      facilitator,
+      built,
       await BazaarCatalog.create(),
       undefined,
       undefined,
@@ -293,15 +295,15 @@ describe("/settle — the missing_payer_or_seller guard", () => {
 
 describe("/settle — bond registration is skipped on a failed settlement", () => {
   it("does not call registerSettlement when the settlement itself did not succeed", async () => {
-    const facilitator = buildFacilitator(testConfig);
-    vi.spyOn(facilitator, "settle").mockResolvedValue({
+    const built = buildFacilitator(testConfig);
+    vi.spyOn(built.facilitator, "settle").mockResolvedValue({
       success: false,
       transaction: "",
       network: "stellar:testnet",
       errorReason: "settle_exact_stellar_transaction_failed",
     } as never);
     const app = await buildServer(
-      facilitator,
+      built,
       await BazaarCatalog.create(),
       undefined,
       undefined,

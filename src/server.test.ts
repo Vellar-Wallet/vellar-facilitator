@@ -8,6 +8,7 @@ import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
 import { createSpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 const testConfig = {
   port: 0,
@@ -15,6 +16,7 @@ const testConfig = {
   network: "stellar:testnet" as const,
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
+  channelAccountSecretKeys: fakeChannelAccountSecretKeys(),
   maxTransactionFeeStroops: 2_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,

@@ -162,7 +162,7 @@ Worth knowing before you point a client at it:
 | --- | --- |
 | Rate limit | 60 requests/min per IP (`/health` exempt) |
 | Request body | 32 KiB, applied to every route |
-| `/settle` refusals | `503 settlement_refused` with a `reason` — `sponsor_balance_low`, `spend_ceiling`, `rate_limited_payto`, `rate_limited_url`, `unbound_pool_exhausted` |
+| `/settle` refusals | `503 settlement_refused` with a `reason` — `sponsor_balance_low`, `spend_ceiling`, `rate_limited_payto`, `rate_limited_url`, `unbound_pool_exhausted`, `pool_exhausted` (`retryable: true` — see docs/channel-pool-design.md §4) |
 
 Refusals are deliberately loud and carry a reason. Spend controls are **log-only
 on testnet and enforced on pubnet**, so a testnet client will see them in logs

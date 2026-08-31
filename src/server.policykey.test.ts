@@ -6,6 +6,7 @@ import { BazaarCatalog } from "./catalog.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
 import type { SettleIdentity } from "./policy.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 // G-3 at the ROUTE. src/catalog.canonicalkey.test.ts proves the catalog helper
 // canonicalizes; it does NOT prove /settle uses it. Without this file, reverting
@@ -26,6 +27,7 @@ const testConfig = {
   network: "stellar:testnet" as const,
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
+  channelAccountSecretKeys: fakeChannelAccountSecretKeys(),
   maxTransactionFeeStroops: 2_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,

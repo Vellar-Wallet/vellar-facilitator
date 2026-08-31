@@ -216,6 +216,10 @@ export class UptoStellarScheme {
       functionName: "settle",
       args,
     });
+    // KNOWN LIMITATION: this call shares the sponsor account's sequence
+    // number with any concurrent upto settlement. Multiple concurrent upto
+    // settlements can produce txBadSeq. Tracked for a follow-up pool
+    // extension — see docs/channel-pool-design.md §8.
     const account = await this.server.getAccount(this.sponsor.publicKey());
     const tx = new TransactionBuilder(account, {
       fee: "1000",

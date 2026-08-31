@@ -4,6 +4,14 @@ export interface FacilitatorConfig {
   network: "stellar:testnet" | "stellar:pubnet";
   rpcUrl: string | undefined;
   sponsorSecretKey: string;
+  /** Channel-account pool for ExactStellarScheme settlement concurrency —
+   *  see docs/channel-pool-design.md. Exactly 50 (§2: sized for 50 true-
+   *  simultaneous settlements, not a probabilistic smaller pool), never the
+   *  sponsor's own key (§5: the sponsor is excluded from the pool by design,
+   *  reserved for funding channel accounts and as feeBumpSigner only). Both
+   *  invariants are enforced at boot in loadConfig, not left to be
+   *  discovered the first time two settlements collide. */
+  channelAccountSecretKeys: string[];
   maxTransactionFeeStroops: number;
   /** Our deployed `upto` settlement contract (C…). Set ⇒ the upto scheme is
    *  registered and advertised on /supported. Unset ⇒ exact only. Built from
@@ -84,6 +92,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
       "SPONSOR_SECRET_KEY is required: a funded Stellar classic (S...) secret whose account settles payments and pays sponsored fees",
     );
   }
+
+  const channelAccountSecretKeys = parseChannelAccountSecretKeys(env.CHANNEL_ACCOUNT_SECRET_KEYS, sponsorSecretKey);
 
   const network = env.STELLAR_NETWORK === "pubnet" ? "stellar:pubnet" : "stellar:testnet";
 
@@ -253,6 +263,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     network,
     rpcUrl: env.STELLAR_RPC_URL,
     sponsorSecretKey,
+    channelAccountSecretKeys,
     maxTransactionFeeStroops,
     uptoContractId: parseUptoContractId(env.UPTO_CONTRACT_ID),
     bondEscrowContractId,
@@ -302,6 +313,101 @@ function parseBondEscrowAdminSecretKey(raw: string | undefined): string | undefi
     );
   }
   return raw;
+}
+
+/** Exact channel-account pool size — see docs/channel-pool-design.md §2.
+ *  Not 49, not 51: a silently-smaller pool loses the collision-free
+ *  guarantee 50 true-simultaneous settlements were sized for, with no
+ *  visible signal that it happened, so the count is enforced exactly
+ *  rather than treated as a minimum. */
+const CHANNEL_POOL_SIZE = 50;
+
+/**
+ * Parses CHANNEL_ACCOUNT_SECRET_KEYS: a comma-separated list of Stellar
+ * classic secret keys (S…, 56 chars each — same shape
+ * parseBondEscrowAdminSecretKey validates), one per channel account in the
+ * settlement pool (docs/channel-pool-design.md).
+ *
+ * Three ways this fails the boot, loudly, rather than silently degrading —
+ * same "the operator set it on purpose, a malformed or wrong-shaped value
+ * fails immediately" posture as every other secret/ID parser in this file:
+ *
+ *   1. Missing entirely — required, unlike the optional contract IDs above.
+ *      There is no "channel pool disabled" fallback: settling with a single
+ *      shared signer under real concurrency is exactly the bug this pool
+ *      exists to close (docs/channel-pool-design.md §1), so there is no
+ *      safe default to fall back to.
+ *   2. Wrong count — anything other than exactly CHANNEL_POOL_SIZE. Named
+ *      explicitly in the error (actual vs. required), because "49 instead
+ *      of 50" is the one misconfiguration that would otherwise look
+ *      identical to a working pool right up until the 50th concurrent
+ *      settlement collides with one of the other 49.
+ *   3. Malformed key, or the sponsor's own key present in the list — the
+ *      latter is checked here (not left to be discovered later) because
+ *      the sponsor is excluded from the pool by design decision (§5): it
+ *      may only ever be the fee-bump payer, never a settlement source
+ *      account, and a misconfiguration that adds it to both lists would
+ *      silently reintroduce the exact contention this pool removes it to
+ *      avoid.
+ */
+function parseChannelAccountSecretKeys(raw: string | undefined, sponsorSecretKey: string): string[] {
+  if (raw === undefined || raw === "") {
+    throw new Error(
+      `[config] CHANNEL_ACCOUNT_SECRET_KEYS is required: a comma-separated list of exactly ` +
+        `${CHANNEL_POOL_SIZE} funded Stellar classic (S...) secrets, one per channel account in the ` +
+        `settlement pool — see docs/channel-pool-design.md. There is no default: settling every ` +
+        `payment from a single shared signer under concurrent load produces txBadSeq failures (§1).`,
+    );
+  }
+
+  const keys = raw
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+
+  if (keys.length !== CHANNEL_POOL_SIZE) {
+    throw new Error(
+      `[config] CHANNEL_ACCOUNT_SECRET_KEYS must contain exactly ${CHANNEL_POOL_SIZE} keys, got ${keys.length}. ` +
+        `The pool is sized for ${CHANNEL_POOL_SIZE} true-simultaneous settlements with zero sequence ` +
+        `collisions (docs/channel-pool-design.md §2) — a smaller count silently loses that guarantee, ` +
+        `and a larger count is rejected rather than trimmed, since an operator adding extra keys almost ` +
+        `certainly meant something the pool is not sized to give them.`,
+    );
+  }
+
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (!/^S[A-Z2-7]{55}$/.test(key)) {
+      // SECURITY (found in review): never interpolate the raw value here —
+      // a malformed key is still real (or near-real) secret material, and
+      // this error is uncaught at boot, so it would otherwise land in
+      // process/host logs. Same convention as parseBondEscrowAdminSecretKey
+      // above, which validates the identical shape and never includes the
+      // value either.
+      throw new Error(
+        "[config] CHANNEL_ACCOUNT_SECRET_KEYS contains a value that is not a valid Stellar secret key " +
+          "(S…, 56 chars)",
+      );
+    }
+    if (key === sponsorSecretKey) {
+      throw new Error(
+        "[config] CHANNEL_ACCOUNT_SECRET_KEYS contains SPONSOR_SECRET_KEY. The sponsor account is " +
+          "deliberately excluded from the channel pool (docs/channel-pool-design.md §5) — it is reserved " +
+          "for funding channel accounts and as the feeBumpSigner only, and must never also be a " +
+          "settlement source account in the pool. Remove it from the list.",
+      );
+    }
+    if (seen.has(key)) {
+      throw new Error(
+        "[config] CHANNEL_ACCOUNT_SECRET_KEYS contains a duplicate key. Each of the " +
+          `${CHANNEL_POOL_SIZE} channel accounts must be distinct — a duplicate silently shrinks the ` +
+          "pool below its configured size, the exact failure mode the exact-count check above exists to catch.",
+      );
+    }
+    seen.add(key);
+  }
+
+  return keys;
 }
 
 /** Parse a positive-integer env var, falling back to `fallback` when unset.

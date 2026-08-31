@@ -1,8 +1,9 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it  } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
-import { buildFacilitator } from "./facilitator.js";
+import { buildFacilitator, type BuiltFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 // /health must make "did the instance stay awake, and does it still have a
 // catalog" answerable from DATA rather than from a developer reporting an empty
@@ -11,7 +12,7 @@ import { buildServer } from "./server.js";
 
 const testConfig = {
   port: 0, host: "127.0.0.1", network: "stellar:testnet" as const, rpcUrl: undefined,
-  sponsorSecretKey: Keypair.random().secret(), maxTransactionFeeStroops: 500_000,
+  sponsorSecretKey: Keypair.random().secret(), channelAccountSecretKeys: fakeChannelAccountSecretKeys(), maxTransactionFeeStroops: 500_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
   bondEscrowContractId: undefined,
@@ -109,6 +110,47 @@ describe("/health surfaces structurally unverifiable entries", () => {
     const app = await buildServer(buildFacilitator(testConfig), catalog);
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
     expect("unverifiableEntries" in body, "a healthy catalog must not add noise").toBe(false);
+    await app.close();
+  });
+});
+
+// Step 5 (docs/channel-pool-design.md §2/§5) — channelPool on /health.
+describe("/health surfaces channel-account pool status", () => {
+  it("reports available/inUse/disabled/total for a freshly built server", async () => {
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    // Freshly built: nothing has ever called /settle, so every configured
+    // channel account is still available and none are in use or disabled.
+    expect(body.channelPool).toEqual({ available: 50, inUse: 0, disabled: 0, total: 50 });
+    await app.close();
+  });
+
+  it("total always equals available + inUse + disabled, matching the configured pool size", async () => {
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    const { available, inUse, disabled, total } = body.channelPool;
+    expect(total).toBe(available + inUse + disabled);
+    // 50 is this codebase's own locked pool size (docs/channel-pool-design.md
+    // §2) — a correctly provisioned instance must always read exactly this,
+    // never more or less, since config.ts's own boot-time validation only
+    // ever accepts exactly 50 keys.
+    expect(total).toBe(50);
+    await app.close();
+  });
+
+  it("omits channelPool entirely rather than crashing when no pool is present", async () => {
+    // BuiltFacilitator.pool is required (Step 3) — this scenario cannot arise
+    // through normal, type-safe construction, only by deliberately forcing
+    // it here to prove the defensive `...(pool ? ... : {})` branch in
+    // server.ts's /health handler actually works, not just that it
+    // typechecks. A future caller that somehow reaches buildServer with no
+    // real pool must get a missing field, never a 500.
+    const built = { facilitator: buildFacilitator(testConfig).facilitator } as BuiltFacilitator;
+    const app = await buildServer(built, await BazaarCatalog.create());
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode, "a missing pool must not crash /health").toBe(200);
+    const body = res.json();
+    expect("channelPool" in body, "absent rather than a misleading placeholder").toBe(false);
     await app.close();
   });
 });

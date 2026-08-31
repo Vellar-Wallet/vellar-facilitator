@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BazaarCatalog } from "./catalog.js";
 import { buildFacilitator } from "./facilitator.js";
 import { buildServer } from "./server.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 // Fix 2 — baseline hardening: per-IP rate limiting (/verify limited at least as
 // tightly as /settle, /health exempt), security headers (helmet), per-route body
@@ -16,6 +17,7 @@ const testConfig = {
   network: "stellar:testnet" as const,
   rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(),
+  channelAccountSecretKeys: fakeChannelAccountSecretKeys(),
   maxTransactionFeeStroops: 2_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
