@@ -6,11 +6,24 @@ it from scratch if the account, the dashboard, or the Alloy service is ever
 lost.
 
 **Public dashboard URL:**
-https://steadycelery1546.grafana.net/public-dashboards/43b100b2f72045afa52694954f62350b
+https://steadycelery1546.grafana.net/public-dashboards/649d07b29d184b489167f053d575ec03
 
 No login required — this is Grafana Cloud's own public-dashboard share feature,
 not a custom-built page. Live-verified: returns `200 OK` to an unauthenticated
 request.
+
+> **Note on the datasource UID.** The dashboard JSON's `panels[].datasource.uid`
+> must be the data source's real internal UID, not its display name. This
+> repo's Prometheus data source displays as `grafanacloud-steadycelery1546-prom`
+> in the UI, but its actual UID (visible in the URL when editing the data
+> source: `.../connections/datasources/edit/<uid>`) is `grafanacloud-prom`.
+> The first version of this dashboard used the display name as the UID —
+> it happened to resolve while viewing the dashboard signed in (Grafana
+> appears to fall back to a name match for an authenticated session) but
+> failed on the **public**, anonymous dashboard view with
+> `Datasource grafanacloud-steadycelery1546-prom was not found` on every
+> panel. Always confirm the real UID from the data source's own settings
+> page before hand-writing or regenerating this dashboard's JSON.
 
 ## Why this needed a separate agent, not just "point Grafana at /metrics"
 
@@ -156,7 +169,9 @@ cannot reach) satisfies Render's port-binding detection, the same
 ## The dashboard
 
 Title: **Vellar Facilitator — Status**. Built via Import dashboard (JSON
-model), data source `grafanacloud-steadycelery1546-prom`, refresh interval
+model), data source UID `grafanacloud-prom` (displays in the UI as
+`grafanacloud-steadycelery1546-prom` — see the note above on why the UID,
+not the display name, is what belongs in the panel JSON), refresh interval
 30s, default time range 1h.
 
 | # | Panel | Query | Type |
@@ -183,12 +198,17 @@ value even at zero traffic).
 
 ## Rebuilding the dashboard from scratch
 
-If the dashboard is ever lost, the panel list above is sufficient to rebuild
-it by hand (Dashboards → New → New dashboard → Add visualization, one panel
-at a time), or re-import the JSON model this dashboard was originally created
-from — reconstructable directly from the table above (`uid` values will
-differ if reassigned, which is fine; only the `title` and per-panel `expr`
-queries matter for the dashboard to be equivalent).
+`docs/grafana-dashboard.json` in this repo is the exact, working dashboard
+model — the same file that was last successfully imported to produce the live
+public dashboard above, with the correct `grafanacloud-prom` datasource UID
+already fixed in. To rebuild: Dashboards → New → Import dashboard → paste
+its contents. If a dashboard with the same `uid` already exists, Grafana
+offers to overwrite it in place (keeps the same public URL); importing fresh
+produces a new dashboard and a new public URL, which should then be updated
+both in this document and wherever else the link is shared.
+
+Failing that, the panel list below is sufficient to rebuild it by hand
+(Dashboards → New → New dashboard → Add visualization, one panel at a time).
 
 To re-enable public sharing on a rebuilt dashboard: **Dashboard settings →
 Share → Public dashboard → Enable public access**. This generates a new URL
