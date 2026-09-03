@@ -39,7 +39,7 @@ blocker.
 | | |
 |---|---|
 | Live URL | `https://vellar-facilitator.onrender.com` |
-| Commit serving | `e4ec7f4` (from `GET /health`) |
+| Commit serving | `128b566` (from `GET /health`, 2026-09-03) — §3 captures were taken at `e4ec7f4` and re-checked after this deploy; see §6.4 |
 | Networks advertised | `stellar:testnet` **only** — no `stellar:pubnet` |
 | Schemes advertised | `exact`, `upto` |
 | Extensions | `bazaar` |
@@ -47,10 +47,10 @@ blocker.
 | Catalog size | 12 entries |
 | Signers advertised | 51 (50 channel accounts + sponsor) |
 
-> **Note on the commit under test.** `e4ec7f4` is the deployed `main` build. It
-> predates the fixes on `fix/rfp-gap-report-1-2-3` (EXTENSION-RESPONSES header,
-> MCP compound key). Those are **not** exercised by this report; the results
-> below describe what a reviewer hitting the live URL sees today.
+> **Note on the commit under test.** The §3 captures below were taken against
+> `e4ec7f4`, the then-deployed `main` build. PR #79 has since merged as
+> `128b566` and deployed; the endpoint behaviour in §3 was re-verified against
+> it and is unchanged. See §6.4.
 
 ## 3. Live wire-level checks (`exact`, testnet)
 
@@ -286,12 +286,25 @@ This is scoped as a pre-mainnet engineering commitment, not a post-launch
 nice-to-have. It sits alongside §6.2 (no pubnet deployment) as work that must
 land before a mainnet tag.
 
-### 6.4 Deployed build predates this branch
+### 6.4 Deployed build predates this branch — ✅ CLOSED 2026-09-03
 
-The live instance serves `e4ec7f4`. The EXTENSION-RESPONSES header (RFP gap #2)
-and MCP compound key (gap #3) are on `fix/rfp-gap-report-1-2-3` and are not
-reflected in the live results above. Re-run this report after that branch
-deploys.
+**Closed.** PR #79 merged to `main` as `128b566` and Render auto-deployed it.
+`GET /health` now reports `"commit": "128b566"`, confirmed live on 2026-09-03.
+
+The live instance therefore now carries the EXTENSION-RESPONSES header (RFP gap
+#2), the MCP compound key (gap #3), the `verified_only` work (G-9), this
+conformance report (gap #4), and the search-ranking commitment (gap #1).
+
+Two notes on what that does and does not change:
+
+- The §3 wire-level captures above were taken against `e4ec7f4` and were
+  re-checked against `128b566` after the deploy: `/supported` still advertises
+  `stellar:testnet` only, both schemes, `areFeesSponsored: true` on each; and
+  `POST /settle {}` still returns `400` with **no** `extension-responses`
+  header, which is the correct behaviour — the header is set only on paths that
+  actually reach cataloging, never on an early exit.
+- Nothing here changes §6.1 (e2e suite not run), §6.2 (no pubnet deployment) or
+  §6.3 (lexical search). Those remain open.
 
 ## 7. Reproduction instructions
 
