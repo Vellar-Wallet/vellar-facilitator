@@ -26,6 +26,7 @@ It asks specifically for:
 | C4 | A passing run of the x402 repo's e2e suite for both networks | ⛔ **not done** — see §6.1 |
 | C5 | A published settled transaction hash per network per scheme | ⚠️ **testnet only** — §4, §5. Pubnet: §6.2 |
 | C6 | A non-null `reason` on every rejection | ✅ verified live, §3.3 |
+| S1 | Bazaar search: "real ranking" with a stated evaluation approach (RFP §3.2) | ⛔ **lexical only** — see §6.3 |
 
 This document is that artifact. Every claim in it is either a live response
 captured from the running service, or a transaction hash independently
@@ -246,7 +247,46 @@ its sponsor with XLM, provision channel accounts on pubnet, settle one real
 G-10 (the spend ceiling accounted at a ~22× over-estimate) is an open **pubnet
 tuning** decision that should be resolved before a mainnet launch, not after.
 
-### 6.3 Deployed build predates this branch
+### 6.3 Bazaar search ranking is lexical, not semantic — RFP §3.2 ⛔
+
+Bazaar search is currently **lexical** — weighted token/substring matching over
+`serviceName` (4), `tags` (3), `description` (2), and the resource URL (1), plus
+the stringified `extensions.bazaar` blob for MCP entries (`scoreResource` in
+`src/catalog.ts`). There are **no embeddings, no vector index, and no documented
+evaluation methodology**. The store carries no vector column, no vector
+extension, and no full-text index; search is computed in memory at read time.
+
+The RFP names this its highest-weighted requirement and the one existing
+catalogs most often leave unimplemented:
+
+> "Search quality is a deliverable, not a detail: this means real ranking, and
+> submissions must describe both their retrieval approach and how they will
+> evaluate result quality over time. It is the hardest part of the scope and the
+> part existing catalogs most often leave unimplemented."
+
+**We are not claiming it is done.** What exists is a deterministic, testable
+baseline that returns sensible results for keyword-shaped queries and degrades
+predictably for conceptual ones — not the semantic ranking the RFP asks to be
+graded on.
+
+**Pre-mainnet plan:**
+
+- Replace lexical scoring with **semantic embeddings**
+  (`text-embedding-3-small` or equivalent).
+- Add a **vector index** — in-memory HNSW rebuilt at boot from stored
+  embeddings, or Turso's native vector extension if available. (Neither exists
+  today; this is greenfield on schema and dependencies.)
+- Build an **eval harness** with a fixed query set and documented quality
+  metrics (**NDCG** or **MRR**).
+- Document the **quality-tracking process** so ranking regressions are caught
+  before deployment, not after.
+- **Target: complete before mainnet launch, not after.**
+
+This is scoped as a pre-mainnet engineering commitment, not a post-launch
+nice-to-have. It sits alongside §6.2 (no pubnet deployment) as work that must
+land before a mainnet tag.
+
+### 6.4 Deployed build predates this branch
 
 The live instance serves `e4ec7f4`. The EXTENSION-RESPONSES header (RFP gap #2)
 and MCP compound key (gap #3) are on `fix/rfp-gap-report-1-2-3` and are not

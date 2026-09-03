@@ -156,6 +156,39 @@ An **MCP discovery server** wraps this so an LLM tool-use loop can call
 `x402_search_resources` / `x402_list_resources` as MCP tools, not just raw HTTP.
 Both are wire-compatible with the canonical `@x402/extensions` bazaar client.
 
+### 5.1 Search ranking — lexical today, semantic before mainnet
+
+**Stated plainly, because this is the part of the scope most often overclaimed.**
+Ranking today is **lexical**: weighted token/substring matching over
+`serviceName` (4), `tags` (3), `description` (2) and the resource URL (1), plus
+the stringified `extensions.bazaar` blob for MCP entries (`scoreResource`,
+`src/catalog.ts`). Results are computed in memory at read time. There are **no
+embeddings, no vector index, and no documented evaluation methodology** — the
+store has no vector column, no vector extension and no full-text index.
+
+That baseline is deterministic and testable, and it answers keyword-shaped
+queries well. It is **not** the semantic ranking the RFP asks to be graded on,
+and it is not described here as if it were:
+
+> "Search quality is a deliverable, not a detail: this means real ranking, and
+> submissions must describe both their retrieval approach and how they will
+> evaluate result quality over time."
+
+**Pre-mainnet commitment — the next major engineering investment, not a
+post-launch nice-to-have:**
+
+- Semantic embeddings (`text-embedding-3-small` or equivalent) replacing the
+  lexical scorer.
+- A vector index — in-memory HNSW rebuilt at boot from stored embeddings, or
+  Turso's native vector extension if available. Both are greenfield: no schema,
+  dependency or model runtime for this exists today.
+- An eval harness over a fixed query set, reporting **NDCG** or **MRR**.
+- A documented quality-tracking process, so a ranking regression is caught
+  before it deploys.
+
+Sequenced **before** a mainnet tag, alongside the pubnet deployment itself. Full
+status and the reviewer-facing framing: `docs/conformance-report.md` §6.3.
+
 ## 6. Trust Layer
 
 The facilitator sees every settlement, so it can rank discovery results by
