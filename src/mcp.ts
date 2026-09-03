@@ -6,6 +6,7 @@
 // Run:  FACILITATOR_URL=https://<facilitator> npx tsx src/mcp.ts
 // (or add it to an MCP client config, e.g. Claude Desktop / Claude Code.)
 
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { HTTPFacilitatorClient } from "@x402/core/http";
@@ -25,7 +26,7 @@ function compact<T extends Record<string, unknown>>(obj: T): { [K in keyof T]: N
   };
 }
 
-const sharedFilters = {
+export const sharedFilters = {
   type: z.enum(["http", "mcp"]).optional().describe("Filter by protocol type"),
   payTo: z.string().optional().describe("Filter by payment recipient address"),
   network: z.string().optional().describe("Filter by network, e.g. stellar:testnet"),
@@ -35,7 +36,10 @@ const sharedFilters = {
     .optional()
     .describe(
       "Only return resources whose payment assets have VERIFIED source provenance " +
-        "(reproducible-build verification; verified means provenance, not audited/safe)",
+        "(reproducible-build verification; verified means provenance, not audited/safe). " +
+        "If this facilitator has no verification service configured, the response carries an " +
+        "explanatory `verifiedOnlyNote` field rather than an error — read it before concluding " +
+        "that nothing in the catalog is trustworthy.",
     ),
 };
 
@@ -51,7 +55,7 @@ const sharedFilters = {
  * also why the note only appears when there were items to observe. The note is
  * data for the model, not an error: silently returning [] taught agents that
  * nothing is trustworthy, when the truth was that nothing was being checked. */
-function applyVerifiedOnly<T extends { trust?: { verification?: string } }>(
+export function applyVerifiedOnly<T extends { trust?: { verification?: string } }>(
   items: T[],
   verifiedOnly: boolean | undefined,
 ): { items: T[]; note?: string } {
@@ -84,7 +88,7 @@ function applyVerifiedOnly<T extends { trust?: { verification?: string } }>(
  * which is the same format vellar-sdk's mcp-x402-payer emits, so an agent
  * connected to both servers sees one convention rather than two.
  */
-function frameDescriptions<T extends { description?: unknown }>(items: T[]): T[] {
+export function frameDescriptions<T extends { description?: unknown }>(items: T[]): T[] {
   return items.map((item) => {
     if (typeof item.description !== "string") return item;
     return { ...item, description: fenceUntrusted(item.description, "a resource description") };
@@ -158,6 +162,17 @@ server.registerTool(
   },
 );
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-console.error(`[mcp] vellar-facilitator discovery server connected (facilitator: ${FACILITATOR_URL})`);
+// Connect stdio ONLY when this module is executed directly (`npx tsx
+// src/mcp.ts`, the documented way to run it — see this file's header and
+// docs/guide.md). Guarded because src/mcp.test.ts imports this module to test
+// applyVerifiedOnly/frameDescriptions/sharedFilters as ordinary functions, and
+// an unguarded top-level `await server.connect(...)` would hang the test run
+// waiting on a stdio peer that never arrives. Nothing about the run-as-a-
+// process path changes: argv[1] IS this file in that case.
+const executedDirectly =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (executedDirectly) {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error(`[mcp] vellar-facilitator discovery server connected (facilitator: ${FACILITATOR_URL})`);
+}
