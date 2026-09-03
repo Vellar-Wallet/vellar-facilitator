@@ -1,7 +1,69 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { x402Facilitator } from "@x402/core/facilitator";
 import { BAZAAR, extractDiscoveryInfo } from "@x402/extensions/bazaar";
 import type { BazaarCatalog } from "./catalog.js";
 import { verifyResourceOwnership, type OwnershipVerdict } from "./ownership.js";
+
+/**
+ * RFP gap #2 — EXTENSION-RESPONSES. What the cataloging hook below actually
+ * decided, for a caller (server.ts's /settle handler) that has no other way
+ * to see it: `onAfterSettle` runs INSIDE `facilitator.settle()`
+ * (@x402/core facilitator/index.mjs — `await hook(resultContext)` before
+ * `settle()` returns), and the hook swallows its own errors by design ("must
+ * never affect settlement" — see the doc comment below). Its return value is
+ * discarded by @x402/core, so there is no built-in channel back to the
+ * caller. Same mechanism, same reasoning, as src/facilitator.ts's own
+ * withChannelAcquisitionCapture and src/rpcstatus.ts's withRpcStatusCapture:
+ * AsyncLocalStorage scoped per settle() call, because a module-level "last
+ * outcome" variable would leak one concurrent request's cataloging result
+ * onto another's response.
+ *
+ * Three distinct outcomes, not two — collapsing them would misinform a
+ * seller reading the header:
+ *  - no discovery extension on the payload at all -> "not attempted"
+ *  - extension present, catalog upsert refused -> "attempted, rejected"
+ *  - extension present, catalog upsert accepted -> "attempted, cataloged"
+ * (whether this was the resource's first catalog entry or an update to an
+ * existing one — both count as "cataloged" from a seller's point of view).
+ *
+ * Deliberately NOT included: tryDisplace and reverify. Both are
+ * fire-and-forget in the hook below (`void ... .catch(...)`) precisely so
+ * they never delay the settle response — so they are guaranteed to still be
+ * in flight, or not yet started, at the moment this capture is read. Reporting
+ * their outcome here would be reporting a result that does not exist yet.
+ */
+export type CatalogOutcomeReason =
+  | "no_discovery_extension"
+  | "invalid_payto"
+  | "ownership_tombstone_mismatch"
+  | "unbound_payto"
+  | "schema_validation_failed"
+  | "binding_refused"
+  | "invalid_tool_name"
+  | "cataloging_error";
+
+export interface CatalogOutcome {
+  cataloged: boolean;
+  reason?: CatalogOutcomeReason;
+}
+
+const catalogOutcomeStore = new AsyncLocalStorage<{ outcome?: CatalogOutcome }>();
+
+/**
+ * Runs `fn` (a call to `facilitator.settle(...)`) with a fresh capture slot,
+ * returning its value alongside whatever cataloging outcome the
+ * `onAfterSettle` hook recorded during that call — `undefined` when the hook
+ * never ran at all (e.g. settlement failed before `afterSettleHooks` fire,
+ * which @x402/core only runs on the success path).
+ */
+export async function withCatalogOutcomeCapture<T>(
+  fn: () => Promise<T>,
+): Promise<{ value: T; catalogOutcome: CatalogOutcome | undefined }> {
+  return catalogOutcomeStore.run({}, async () => {
+    const value = await fn();
+    return { value, catalogOutcome: catalogOutcomeStore.getStore()?.outcome };
+  });
+}
 
 /** Injectable for tests; production uses the SSRF-guarded 402-challenge fetch. */
 /** G-1: takes the resource's whole BOUND set, so a merchant with a rotated
@@ -44,13 +106,24 @@ export function registerBazaar(
     try {
       if (!result.success) return;
       const discovered = extractDiscoveryInfo(paymentPayload, requirements);
-      if (!discovered) return;
+      if (!discovered) {
+        // A real, distinct outcome — not "capture never ran". The hook DID
+        // run and DID look for a discovery extension; there just wasn't one
+        // to catalog. Recorded so EXTENSION-RESPONSES can tell this apart
+        // from "the extension was present and got rejected".
+        const slot = catalogOutcomeStore.getStore();
+        if (slot) slot.outcome = { cataloged: false, reason: "no_discovery_extension" };
+        return;
+      }
       // AWAITED, and this is load-bearing. The ownership write must commit before
       // anything treats the URL as bound (see catalog.bindOwnership). We are
       // already past settlement here — @x402/core calls this hook AFTER the
       // payment is on-chain — so the wait costs one round trip on the settle
       // RESPONSE and cannot delay or fail the payment itself.
-      await catalog.upsertFromPayment(discovered, requirements);
+      const outcome: CatalogOutcome = { cataloged: false };
+      await catalog.upsertFromPayment(discovered, requirements, outcome);
+      const slot = catalogOutcomeStore.getStore();
+      if (slot) slot.outcome = outcome;
       // Settlement ground truth (trust layer): count the settlement and the
       // distinct payer against the cataloged resource.
       //
@@ -99,6 +172,14 @@ export function registerBazaar(
         });
     } catch (err) {
       console.error("[bazaar] cataloging failed (settlement unaffected):", err);
+      // Fail safe, per the RFP security requirements: an unexpected throw
+      // must not silently look like "cataloging never ran" (which would omit
+      // the header entirely, indistinguishable from an early-exit /settle
+      // path) nor leak err's message (could carry internal detail — stack
+      // traces, file paths, library internals) into a response header. A
+      // fixed, generic reason only — never err.message.
+      const slot = catalogOutcomeStore.getStore();
+      if (slot && !slot.outcome) slot.outcome = { cataloged: false, reason: "cataloging_error" };
     }
   });
 }

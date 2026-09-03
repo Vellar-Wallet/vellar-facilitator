@@ -41,6 +41,34 @@ const MAX_TOMBSTONES = 100_000;
 /** Longest string that can be a payTo identity. Shared by the catalog and the
  *  spend policy — see BazaarCatalog.canonicalPayTo. */
 export const MAX_PAYTO_LEN = 128;
+/**
+ * RFP gap #3 — the compound-key separator for MCP resources
+ * (`resourceUrl \x1F toolName`, see BazaarCatalog.canonicalResourceKey).
+ *
+ * U+001F, the ASCII Unit Separator — the control code defined for exactly this
+ * job, delimiting fields inside one value. A seller cannot smuggle it:
+ * `new URL()` percent-encodes it out of origin/pathname, and
+ * canonicalResourceKey strips it from toolName, so exactly one \x1F in a key
+ * means exactly one boundary.
+ *
+ * NOT a NUL, which was the obvious first choice and is WRONG HERE:
+ * libSQL/SQLite truncates a TEXT value at the first NUL byte, so
+ * `url\0toolName` persists as bare `url`. Both of a server's tools then
+ * collapse onto one stored key and collide on `entry.resource_key`'s PRIMARY
+ * KEY — the compound key would work in memory and silently un-compound itself
+ * on the way to disk. Verified directly: inserting "a\0b" and "a\0c" yields
+ * two rows both reading "a", length 1. U+001F round-trips intact.
+ *
+ * Written as an escape rather than a literal control character in the source,
+ * which would be invisible in an editor and easy to lose in a patch.
+ */
+export const KEY_SEPARATOR = "\x1F";
+/** Longest usable MCP toolName. Seller-supplied and otherwise unbounded (the
+ *  x402 spec requires only "non-empty string"), and it lands in a Map key and a
+ *  TEXT PRIMARY KEY. Over this the key is REJECTED, never truncated: two
+ *  distinct tool names sharing a 256-char prefix would truncate onto one key,
+ *  reintroducing the collision compound keying exists to remove. */
+export const MAX_TOOL_NAME_LEN = 256;
 /** G-1 retry floors. A `mismatch` is a DEFINITE answer, so retrying it buys
  * nothing but outbound traffic — 24h makes it effectively terminal while still
  * self-healing after a legitimate operator rotation. An `unverifiable` is
@@ -629,8 +657,27 @@ export class BazaarCatalog {
     //
     // Doing it here rather than as a one-off SQL migration means the same is true
     // for the NEXT change to the function: there is no version to remember.
+    //
+    // RFP gap #3 — SPLIT, THEN RE-DERIVE. A stored MCP key ALREADY contains its
+    // toolName (`url \0 toolName`), so handing the whole stored key back to
+    // canonicalResourceKey as a url with the toolName alongside would append a
+    // SECOND copy and grow the key by one segment on every restart — silently
+    // unbinding the entry, a worse version of the hazard this block exists to
+    // prevent. Splitting first and re-deriving through the same exported
+    // function keeps §3.7's rule intact (nothing reassembles a key inline) and
+    // is a fixed point: re-deriving an already-canonical key returns it
+    // unchanged, restart after restart.
+    //
+    // An HTTP key contains no \0, so the split yields toolName undefined and
+    // this is byte-for-byte the previous behaviour — which is why no stored
+    // HTTP row migrates and no schema column was needed.
     for (const b of bindings) {
-      const key = BazaarCatalog.canonicalResourceKey(b.resourceKey);
+      const parts = BazaarCatalog.splitResourceKey(b.resourceKey);
+      // Falls back to the stored key when the toolName half is unusable (an
+      // over-long or NUL-only tool name written by an older build). Dropping
+      // the row instead would un-bind a real merchant's URL; keeping it under
+      // its stored key preserves the binding exactly as found.
+      const key = BazaarCatalog.canonicalResourceKey(parts.url, parts.toolName) ?? b.resourceKey;
       const existing = catalog.ownership.get(key);
       if (!existing) {
         catalog.ownership.set(key, b.boundPayTo);
@@ -733,13 +780,123 @@ export class BazaarCatalog {
     return trimmed;
   }
 
-  static canonicalResourceKey(rawUrl: string): string {
+  /**
+   * The ONE derivation of a resource identity — §3.7's standing rule, and the
+   * reason G-3/G-11 could happen at all. Every consumer calls this; nothing
+   * constructs a key inline, including the boot re-canonicalisation, which
+   * splits a stored key back into its parts and calls this again rather than
+   * reassembling one by hand.
+   *
+   * RFP gap #3 — MCP TOOL COMPOUND KEY. An MCP server exposes many tools at ONE
+   * url, so keying on the url alone silently merged every tool on a server into
+   * a single catalog entry: the second tool's settlement either overwrote the
+   * first's metadata or was refused as an unbound-payTo hijack, depending only
+   * on whether the two tools happened to share a payTo. The spec keys an MCP
+   * resource on the tuple (resource.url, input.toolName); this returns that
+   * tuple as one string.
+   *
+   * WHY THE NULL BYTE IS THE SEPARATOR. `toolName` is seller-supplied and
+   * attacker-controlled — same trust boundary as the F11 resourceUrl hijack —
+   * so a printable separator is a collision primitive: with "|", the pair
+   * ("https://x/y", "a|b") and ("https://x/y|a", "b") produce the same key, and
+   * a hostile seller picks a toolName that lands on a victim's entry. \x00
+   * cannot survive `new URL()` (it percent-encodes to %00 in origin/pathname),
+   * and it is stripped from toolName below, so it can only ever appear as OUR
+   * delimiter — one \x00 in a key means exactly one compound boundary.
+   *
+   * Returns undefined when toolName is supplied but unusable — empty after
+   * stripping, or over MAX_TOOL_NAME_LEN. Rejected, never truncated: two
+   * distinct long tool names truncated to the same prefix would collide, which
+   * is the failure this whole change removes. The caller refuses the upsert,
+   * matching how canonicalPayTo's undefined is handled two functions up.
+   *
+   * With toolName omitted (HTTP and every non-MCP resource) the result is
+   * byte-identical to what this returned before compound keys existed, so no
+   * stored HTTP key changes and no migration is needed.
+   */
+  // OVERLOADS, not a widened return. With no toolName the result is provably a
+  // string — the url-only path has no reject branch — so the twelve url-only
+  // call sites keep their exact previous types and needed no edit. Only a
+  // caller that actually supplies a toolName has to handle undefined, which is
+  // precisely the caller that can cause one.
+  static canonicalResourceKey(rawUrl: string): string;
+  static canonicalResourceKey(rawUrl: string, toolName: string | undefined): string | undefined;
+  static canonicalResourceKey(rawUrl: string, toolName?: string): string | undefined {
+    // IDEMPOTENCE. `rawUrl` is sometimes an already-derived KEY, not a raw url:
+    // every lookup site (isBound, isVerifiedOwner, recordSettlement, …) hands
+    // its argument straight back through this function, and the boot loops
+    // re-derive stored keys. For an HTTP key that is harmless — re-canonicalising
+    // a canonical url returns it unchanged. For a COMPOUND key it was not:
+    // `new URL()` percent-encodes the separator, so `…/tools\x1Fweather` came
+    // back as `…/tools%1Fweather` and no lookup could ever match the entry the
+    // write path had stored. Splitting a compound input back into its parts
+    // makes this function a fixed point on its own output, which is the property
+    // all twelve url-only call sites silently rely on.
+    if (toolName === undefined && rawUrl.includes(KEY_SEPARATOR)) {
+      const parts = BazaarCatalog.splitResourceKey(rawUrl);
+      return BazaarCatalog.canonicalResourceKey(parts.url, parts.toolName);
+    }
+    let base: string;
     try {
       const u = new URL(rawUrl);
-      return `${u.origin}${normalizePath(u.pathname)}`;
+      base = `${u.origin}${normalizePath(u.pathname)}`;
     } catch {
-      return rawUrl;
+      // Degrades to the raw string on an unparseable url — this is
+      // client-supplied, so it must not throw, and a non-url simply cannot
+      // match a binding.
+      base = rawUrl;
     }
+    if (toolName === undefined) return base;
+    // Strip the separator BEFORE any length check: it must only ever be ours,
+    // and a toolName carrying one must not be able to forge a boundary.
+    // Built from KEY_SEPARATOR itself, so changing the separator cannot leave
+    // this stripping the old one.
+    const sanitized = toolName.split(KEY_SEPARATOR).join("");
+    if (sanitized.length === 0) return undefined;
+    if (sanitized.length > MAX_TOOL_NAME_LEN) return undefined;
+    return `${base}${KEY_SEPARATOR}${sanitized}`;
+  }
+
+  /**
+   * Split a STORED key back into the parts canonicalResourceKey built it from.
+   *
+   * Exists so the boot re-canonicalisation can re-derive a key through the one
+   * exported derivation instead of reassembling it inline (§3.7). A stored MCP
+   * key already contains its toolName, so re-deriving from (storedKey, toolName)
+   * would append a second copy and grow the key on every restart — silently
+   * unbinding the entry, a worse version of the hazard the re-canonicalisation
+   * exists to prevent.
+   *
+   * An HTTP key contains no \x00 and yields `[key, undefined]`, so the same
+   * call site handles both without branching on resource type.
+   */
+  /**
+   * The toolName a DiscoveredResource carries, or undefined for anything that
+   * is not an MCP resource.
+   *
+   * ONE reader, called by both key-deriving call sites (upsertFromPayment and
+   * tryDisplace) — §3.7 again. Two sites each reaching into the discovery
+   * payload themselves is exactly the "one identity, several derivations"
+   * shape that produced G-3 and G-11; they would agree until the day the
+   * payload shape moved under one of them.
+   *
+   * Reads `discoveryInfo.input`, which is where the extension actually carries
+   * it (`McpDiscoveryInfo`, @x402/extensions). The SDK also copies it to a
+   * top-level `toolName` on DiscoveredMCPResource, but that field does not
+   * exist on the HTTP variant, so the union is narrowed on `input.type` — the
+   * same discriminant extractDiscoveryInfo itself branches on.
+   */
+  static toolNameOf(discovered: DiscoveredResource): string | undefined {
+    const input = (discovered as { discoveryInfo?: { input?: { type?: unknown; toolName?: unknown } } })
+      .discoveryInfo?.input;
+    if (!input || input.type !== "mcp") return undefined;
+    return typeof input.toolName === "string" ? input.toolName : undefined;
+  }
+
+  static splitResourceKey(storedKey: string): { url: string; toolName?: string } {
+    const sep = storedKey.indexOf(KEY_SEPARATOR);
+    if (sep === -1) return { url: storedKey };
+    return { url: storedKey.slice(0, sep), toolName: storedKey.slice(sep + 1) };
   }
 
   /** `isBound`, but accepting a raw payload url. Prefer this at trust
@@ -1024,7 +1181,24 @@ export class BazaarCatalog {
     verify: (url: string, payTos: string[]) => Promise<OwnershipVerdict>,
     now: number = Date.now(),
   ): Promise<"displaced" | "refused" | "skipped"> {
-    const key = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
+    // RFP gap #3: the SAME compound derivation upsertFromPayment uses, from the
+    // SAME shared toolNameOf reader. If these two disagreed, a displacement
+    // would probe and rebind a DIFFERENT entry than the one the settlement
+    // cataloged — the G-3/G-11 shape exactly, in the control built to stop
+    // squatting.
+    const key = BazaarCatalog.canonicalResourceKey(
+      rawResourceUrl,
+      BazaarCatalog.toolNameOf(discovered),
+    );
+    // An unusable toolName never reaches a binding decision: upsertFromPayment
+    // already refused this settlement outright, so there is nothing to displace.
+    if (key === undefined) {
+      console.warn(
+        `[catalog] displacement skipped for ${rawResourceUrl} (claimant ${claimant || "<empty>"}): ` +
+          `MCP toolName is not usable as a key part`,
+      );
+      return "skipped";
+    }
     const entry = this.entries.get(key);
     /**
      * EVERY EXIT SAYS WHY.
@@ -1168,11 +1342,26 @@ export class BazaarCatalog {
    *
    * Returns `true` when this call FIRST catalogs the URL (a new binding was
    * created), so the caller can trigger Layer 2 402-challenge verification. A
-   * rejected or already-existing upsert returns `false`.
+   * rejected or already-existing upsert returns `false` — the two are NOT the
+   * same outcome (see `outcomeOut` below), which is why nothing in this
+   * codebase should read a bare `false` as "not cataloged".
+   *
+   * `outcomeOut` (RFP gap #2, EXTENSION-RESPONSES): purely additive, optional
+   * out-param — every existing call site (all ~90 of them, across catalog.ts
+   * and its own tests) omits it and is completely unaffected. When supplied,
+   * this method writes ONE fixed-shape outcome into it before returning,
+   * covering both the accept and every reject path below:
+   *   - accepted, first catalog:      { cataloged: true }
+   *   - accepted, existing updated:   { cataloged: true }
+   *   - rejected, any of the 5 guards below: { cataloged: false, reason: <stable code> }
+   * The reason is always one of a fixed enum (never interpolated user text —
+   * see the CatalogOutcomeReason union in bazaar.ts), so a caller that
+   * forwards it to an HTTP header never needs to sanitize free-form content.
    */
   async upsertFromPayment(
     discovered: DiscoveredResource,
     requirements: PaymentRequirements,
+    outcomeOut?: { cataloged: boolean; reason?: string },
   ): Promise<boolean> {
     // CANONICAL, not raw. This line keyed the entry map on the merchant's
     // ADVERTISED spelling while recordSettlement, isBoundResource and the spend
@@ -1181,7 +1370,41 @@ export class BazaarCatalog {
     // by reporting one stable URL. G-3 fixed the policy side of that split and
     // this side was left behind; G-11 is what surfaced it, because a second
     // spelling is precisely when raw and canonical diverge.
-    const key = BazaarCatalog.canonicalResourceKey(discovered.resourceUrl);
+    //
+    // RFP gap #3: an MCP resource keys on (resourceUrl, toolName), so two tools
+    // on ONE server url are two entries rather than one that overwrites the
+    // other. Non-MCP resources pass toolName undefined and key exactly as
+    // before — byte-identical, which is why no stored HTTP key migrates.
+    const toolName = BazaarCatalog.toolNameOf(discovered);
+    const key = BazaarCatalog.canonicalResourceKey(discovered.resourceUrl, toolName);
+
+    // Single write point for the out-param so every reject/accept site below
+    // sets it exactly once, on its own exit — no risk of one branch's outcome
+    // leaking a stale value from an earlier attempt on a shared object.
+    const reportOutcome = (cataloged: boolean, reason?: string) => {
+      if (!outcomeOut) return;
+      outcomeOut.cataloged = cataloged;
+      if (reason !== undefined) outcomeOut.reason = reason;
+      else delete outcomeOut.reason;
+    };
+
+    // An MCP resource whose toolName cannot be a key part — empty once NULs are
+    // stripped, or past MAX_TOOL_NAME_LEN — is REFUSED whole. Never fall back to
+    // a url-only key: that is precisely the silent merge this change removes,
+    // and it would let an over-long or NUL-padded toolName land on the url's
+    // plain entry, which may belong to a different seller. The SDK's own
+    // validation already rejects an empty toolName upstream
+    // (extractDiscoveryInfo returns null → bazaar.ts's no-discovery-extension
+    // branch), so this is the same answer for the cases it does not cover.
+    if (key === undefined) {
+      console.warn(
+        `[catalog] rejected upsert for ${discovered.resourceUrl}: MCP toolName is not usable as a key ` +
+          `part (empty after stripping NULs, or over ${MAX_TOOL_NAME_LEN} chars) — refused rather than ` +
+          `keyed on the url alone, which would merge this tool into another entry (RFP gap #3)`,
+      );
+      reportOutcome(false, "invalid_tool_name");
+      return false;
+    }
     const existing = this.entries.get(key);
 
     // One derivation, shared with the spend policy. An unusable payTo is refused
@@ -1193,6 +1416,7 @@ export class BazaarCatalog {
         `[catalog] rejected upsert for ${key}: payTo is not a usable identity ` +
           `(non-string, empty, or over ${MAX_PAYTO_LEN} chars)`,
       );
+      reportOutcome(false, "invalid_payto");
       return false;
     }
     requirements = { ...requirements, payTo };
@@ -1206,6 +1430,7 @@ export class BazaarCatalog {
         `[catalog] rejected upsert for ${key}: payTo ${requirements.payTo} does not match the ` +
           `ownership tombstone (${tomb.join(", ")}) — evicted-entry reclaim refused (F3/F11)`,
       );
+      reportOutcome(false, "ownership_tombstone_mismatch");
       return false;
     }
     if (existing && !existing.boundPayTo.includes(requirements.payTo)) {
@@ -1226,6 +1451,7 @@ export class BazaarCatalog {
           `indistinguishable here. Read the "[catalog] displacement …" line for this key to tell ` +
           `them apart before treating it as an attack (F11)`,
       );
+      reportOutcome(false, "unbound_payto");
       return false;
     }
 
@@ -1279,6 +1505,7 @@ export class BazaarCatalog {
       console.warn(
         `[catalog] rejected upsert for ${key}: ${parsed.error.issues[0]?.message ?? "failed schema validation"}`,
       );
+      reportOutcome(false, "schema_validation_failed");
       return false;
     }
     const entry: DiscoveryResource = sanitizeStoredResource(parsed.data);
@@ -1302,6 +1529,7 @@ export class BazaarCatalog {
       const frozenOnOwnership =
         this.frozen === "ownership-unreachable" || this.frozen === "ownership-invalid";
       if (frozenOnOwnership || !(await this.bindOwnership(key, requirements.payTo, candidate))) {
+        reportOutcome(false, "binding_refused");
         return false;
       }
     }
@@ -1320,6 +1548,11 @@ export class BazaarCatalog {
     }
     this.evictToCap();
     this.save();
+    // Accepted — "cataloged: true" regardless of isFirstCatalog. A seller
+    // reading EXTENSION-RESPONSES cares whether their resource IS in the
+    // catalog now, not whether this particular settlement happened to be the
+    // one that created the entry vs. one that updated an existing one.
+    reportOutcome(true);
     return isFirstCatalog;
   }
 
@@ -1502,7 +1735,19 @@ export class BazaarCatalog {
       // two spellings must not become two entries. On collision the newer
       // lastUpdated wins — entries are reconstructible, so this only decides
       // which stale copy is served until the next settlement.
-      const entryKey = BazaarCatalog.canonicalResourceKey(stored.resource.resource);
+      //
+      // RFP gap #3 — DERIVED FROM `row.resourceKey`, NOT from the payload's own
+      // url. `storedResourceSchema` has no toolName field (toolName survives
+      // only inside the opaque `extensions` blob), so re-deriving from
+      // `stored.resource.resource` would key every MCP entry url-only while its
+      // OWNERSHIP row is keyed compound — the two halves of one resource under
+      // two different keys, which is the G-5 shape: an entry whose binding can
+      // never be found. `row.resourceKey` already carries the compound key, so
+      // split-then-re-derive (same as the ownership loop) is both correct and a
+      // fixed point. HTTP rows have no \0 and are unchanged.
+      const entryParts = BazaarCatalog.splitResourceKey(row.resourceKey);
+      const entryKey =
+        BazaarCatalog.canonicalResourceKey(entryParts.url, entryParts.toolName) ?? row.resourceKey;
       const prior = this.entries.get(entryKey);
       if (prior && prior.resource.lastUpdated >= stored.resource.lastUpdated) continue;
       this.entries.set(entryKey, this.bindLoadedEntry(stored, entryKey));

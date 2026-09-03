@@ -69,7 +69,7 @@ the risk still exists in a different place. **Open**: still true.
 | **G-6** | `MAX_ENTRIES` not enforced on the load path | **closed** — `ORDER BY … LIMIT ?` |
 | **G-7** | Bootstrap-derived bindings never persisted | **closed** — the hatch it existed for cannot exist with one database |
 | **G-8** | Tombstone cap is a one-way freeze with no reset | **open** — policy. Bounded ~2 orders of magnitude tighter by the sponsor guard than by the cap, but 5.7× thinner than originally documented |
-| **G-9** | `verified_only` ignored with no trust resolver | **open** — not reachable; `server.ts` always constructs one |
+| **G-9** | `verified_only` ignored with no trust resolver | **closed-by-test** — fixed in `9504135` ("refuse `verified_only` honestly"). `server.ts` does always construct a resolver, but `hasVerdictSource` is `Boolean(verificationApiUrl)` (`trust.ts`), so an unconfigured deployment now REFUSES `verified_only=true` with `400 verified_only_unavailable` on both discovery routes rather than ignoring it. Covered by `server.pagination.test.ts:44-128`, including the no-resolver-at-all case this row called unreachable. This row read **open** long after the fix landed — the status was stale, not the finding |
 | **G-10** | Spend ceiling throttles honest throughput **22× earlier than sponsor exposure requires** | **open — pubnet tuning.** Accounting uses the 500,000 estimate against a measured 22,579 charge, so the ceiling refuses the 101st settle having spent ~0.23 of the 5 XLM it names. Fails safe; deliberately unchanged |
 | **G-11** | One resource, several canonical keys | closed-by-test — fixed as a family, and it surfaced the class in §3 |
 | **G-12** | Bindings proven before displacement load as displaceable | **open, self-closing.** One window per binding; recorded in runbook §1 |
@@ -778,7 +778,8 @@ approximately nothing, which the measurement confirms.
 ### Deferred, with reasons
 
 **F5** (integration-level), **F8** (operator-supplied input), **RA-14r** (not
-reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
+reachable here), **G-9** (**now closed** — `verified_only` is refused honestly,
+commit `9504135`; see the G-9 row above), **G-12** (self-closing).
 
 ---
 
@@ -842,7 +843,10 @@ reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
 
 ### Explicitly NOT blockers
 
-- **G-8, G-9, G-12** — bounded, unreachable, and self-closing respectively.
+- **G-8, G-12** — bounded and self-closing respectively.
+- **G-9** — **closed**, not merely unreachable: `verified_only` now filters when a
+  verdict source exists and is refused with `400 verified_only_unavailable` when
+  one does not (commit `9504135`, covered by `src/server.pagination.test.ts:44-128`).
 - **F5, F8, RA-14r** — deferred with reasons that still hold.
 - **The 1-in-3 failures** — they cost nothing and predate every change made here.
   Worth understanding, not worth blocking on.
