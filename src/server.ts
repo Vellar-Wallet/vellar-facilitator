@@ -10,7 +10,7 @@ import { LibsqlCatalogStore } from "./store.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
-import { registerBazaar } from "./bazaar.js";
+import { registerBazaar, withCatalogOutcomeCapture, type CatalogOutcome } from "./bazaar.js";
 import { verifyResourceOwnership } from "./ownership.js";
 import {
   annotateTrust,
@@ -439,18 +439,26 @@ export async function buildServer(
     let result;
     let rpcStatus;
     let acquiredAddress: string | undefined;
+    let catalogOutcome: CatalogOutcome | undefined;
     try {
       // The capture slot must wrap the settle call itself: the RPC response we
       // want is produced deep inside @x402/stellar, which discards it before
       // returning. See src/rpcstatus.ts. Channel-acquisition capture wraps the
       // exact same call for the same reason — see src/facilitator.ts's own
-      // withChannelAcquisitionCapture doc comment.
+      // withChannelAcquisitionCapture doc comment. withCatalogOutcomeCapture
+      // (RFP gap #2, EXTENSION-RESPONSES) is innermost, wrapping
+      // facilitator.settle(...) directly, for the same reason as the other
+      // two: the bazaar `onAfterSettle` hook that records the outcome runs
+      // INSIDE that call (@x402/core awaits every afterSettle hook before
+      // settle() returns), so this is the only place its result can be seen.
       const captured = await withSkewRetry(
         () =>
           withChannelAcquisitionCapture(() =>
-            withRpcStatusCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
+            withRpcStatusCapture(() =>
+              withCatalogOutcomeCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
+            ),
           ),
-        (c) => (c.value.value as { errorReason?: string }).errorReason,
+        (c) => (c.value.value.value as { errorReason?: string }).errorReason,
         (m) => request.log.warn(m),
       );
       acquiredAddress = captured.acquiredAddress;
@@ -472,8 +480,9 @@ export async function buildServer(
           }),
         );
       }
-      result = captured.value.value;
+      result = captured.value.value.value;
       rpcStatus = captured.value.rpcStatus;
+      catalogOutcome = captured.value.value.catalogOutcome;
     } catch (err) {
       policy?.refundUnspent(reservation);
       throw err;
@@ -489,6 +498,22 @@ export async function buildServer(
       // docs/channel-pool-design.md §2's exact-count sizing exists to
       // prevent.
       if (acquiredAddress !== undefined) pool.release(acquiredAddress);
+    }
+    // RFP gap #2 — EXTENSION-RESPONSES. Set the header from whatever
+    // catalogOutcome actually holds, never from a hand-maintained list of
+    // "which branches count" — drift between such a list and the real
+    // control flow is exactly the bug class this codebase's own history
+    // (G-3/G-11, docs/closing-state.md) keeps finding. catalogOutcome is
+    // ONLY ever defined when the bazaar onAfterSettle hook actually ran,
+    // which @x402/core only does on result.success === true (its own
+    // settle() — see facilitator/index.mjs — runs afterSettleHooks
+    // unconditionally on the success branch, never on failure or throw).
+    // So this is naturally a no-op on every early-exit path above
+    // (pool_exhausted 503, the 400s before this block, sponsor_balance_low),
+    // and on the rpcStatus-submission-failure return just below, without
+    // needing to special-case any of them here.
+    if (catalogOutcome) {
+      reply.header("extension-responses", buildExtensionResponsesHeader(catalogOutcome));
     }
     // Release the reservation when the settlement never reached the chain.
     // @x402/stellar returns an empty `transaction` when it failed before
@@ -778,6 +803,45 @@ function settleError(network: string, errorReason: string, extra: Record<string,
 }
 function verifyError(invalidReason: string, extra: Record<string, unknown> = {}) {
   return { isValid: false, invalidReason, ...extra };
+}
+
+/**
+ * RFP gap #2 — EXTENSION-RESPONSES header value, hardened before it ever
+ * reaches `reply.header`.
+ *
+ * `catalogOutcome.reason` is, today, always one of the fixed
+ * `CatalogOutcomeReason` enum values from src/bazaar.ts — never
+ * user-controlled free text (confirmed: every rejection branch in
+ * BazaarCatalog.upsertFromPayment reports a hardcoded string literal, not any
+ * part of the client-supplied payload or a merchant's catalog metadata). This
+ * function is defense-in-depth against that invariant ever drifting — a
+ * future reason added without updating this file, or a refactor that
+ * accidentally threads through a real error message, must still produce a
+ * safe header rather than a header-injection or unbounded-size vector:
+ *  - strip CR/LF and other control characters (header-injection surface —
+ *    HTTP header values must not contain raw newlines);
+ *  - cap length well under any real reason string, so a runaway value is
+ *    truncated rather than blown up into an oversized header.
+ */
+const MAX_EXTENSION_RESPONSES_HEADER_CHARS = 512;
+function sanitizeExtensionResponsesReason(reason: string): string {
+  // eslint-disable-next-line no-control-regex -- deliberately stripping control chars, not matching them for another purpose
+  const stripped = reason.replace(/[\r\n\x00-\x1f\x7f]/g, "");
+  return stripped.length > MAX_EXTENSION_RESPONSES_HEADER_CHARS
+    ? stripped.slice(0, MAX_EXTENSION_RESPONSES_HEADER_CHARS)
+    : stripped;
+}
+function buildExtensionResponsesHeader(outcome: CatalogOutcome): string {
+  // Deliberately widened to `string`, not CatalogOutcomeReason: sanitizing
+  // (stripping control chars, truncating) can produce a value the fixed enum
+  // no longer describes, so forcing it back into that narrower type would be
+  // a false type-level promise. The header is serialized data, not a typed
+  // API response — the wire consumer reads it as a bare string either way.
+  const safe: { cataloged: boolean; reason?: string } = { cataloged: outcome.cataloged };
+  if (outcome.reason !== undefined) {
+    safe.reason = sanitizeExtensionResponsesReason(outcome.reason);
+  }
+  return JSON.stringify({ bazaar: safe });
 }
 
 export function policyBucketKey(payTo: unknown): string {

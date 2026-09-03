@@ -778,7 +778,8 @@ approximately nothing, which the measurement confirms.
 ### Deferred, with reasons
 
 **F5** (integration-level), **F8** (operator-supplied input), **RA-14r** (not
-reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
+reachable here), **G-9** (**now closed** — `verified_only` is refused honestly,
+commit `9504135`; see the G-9 row above), **G-12** (self-closing).
 
 ---
 
@@ -842,7 +843,10 @@ reachable here), **G-9** (not reachable in production), **G-12** (self-closing).
 
 ### Explicitly NOT blockers
 
-- **G-8, G-9, G-12** — bounded, unreachable, and self-closing respectively.
+- **G-8, G-12** — bounded and self-closing respectively.
+- **G-9** — **closed**, not merely unreachable: `verified_only` now filters when a
+  verdict source exists and is refused with `400 verified_only_unavailable` when
+  one does not (commit `9504135`, covered by `src/server.pagination.test.ts:44-128`).
 - **F5, F8, RA-14r** — deferred with reasons that still hold.
 - **The 1-in-3 failures** — they cost nothing and predate every change made here.
   Worth understanding, not worth blocking on.
