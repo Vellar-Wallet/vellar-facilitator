@@ -108,7 +108,10 @@ export class ChannelMonitor {
    * across the interval. At the default 60s tick that is ~50 req/min against a
    * ~60 req/min per-IP budget, with the sponsor guard taking one more — which is
    * why lowering SPONSOR_BALANCE_INTERVAL_MS is the thing that would make this
-   * the binding constraint. Never throws.
+   * the binding constraint. Do not go below ~10s — at 10s the monitor alone
+   * generates 300 req/min, which exceeds Horizon's per-IP limit; checks then
+   * fail, and five consecutive failures on one account disable an account that
+   * is actually healthy. Never throws.
    */
   async checkAll(): Promise<void> {
     for (const address of this.opts.addresses) {
