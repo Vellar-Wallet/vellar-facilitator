@@ -89,7 +89,7 @@ uncaught at boot), a key equal to `SPONSOR_SECRET_KEY`, or a duplicate.
 
 | Name | Default | What it does |
 | --- | --- | --- |
-| `STELLAR_NETWORK` | `testnet` | Only the exact string `pubnet` selects mainnet; anything else falls back to testnet. |
+| `STELLAR_NETWORK` | `testnet` | Exactly `pubnet` or `testnet`; unset means `testnet`. **Any other value throws at boot** — see §10. |
 | `STELLAR_RPC_URL` | SDK default | Soroban RPC endpoint. |
 | `PORT` | `4100` | |
 | `HOST` | `0.0.0.0` | |
@@ -363,13 +363,30 @@ keypair does not exist on pubnet.
 
 | | Testnet | Pubnet |
 | --- | --- | --- |
-| `STELLAR_NETWORK` | `testnet` (or unset) | **`pubnet`** exactly |
+| `STELLAR_NETWORK` | `testnet` (or unset) | **`pubnet`** exactly — see the note below |
 | `STELLAR_RPC_URL` | `https://soroban-testnet.stellar.org` | e.g. `https://mainnet.sorobanrpc.com` |
 | Horizon (derived) | `horizon-testnet.stellar.org` | `horizon.stellar.org` |
 | USDC SAC | `CBIELTK6…QDAMA` | `CCW67TSZ…MI75` |
 | Sponsor + 50 channel accounts | Friendbot | **New accounts, funded for real** |
 | Spend policy | Log-only | **Enforced** — `503 settlement_refused` |
 | Floor invariant | Warns | **Throws at boot** |
+
+> **`STELLAR_NETWORK` is validated strictly, and rejects anything else at boot.**
+> Only `"pubnet"` and `"testnet"` are accepted; unset means `testnet`. Anything
+> else throws before a port is bound, naming the mistake:
+>
+> ```
+> [config] STELLAR_NETWORK must be "pubnet" or "testnet", got "mainnet".
+> Common mistakes: "mainnet" (Stellar calls it pubnet), "PUBNET"
+> (case-sensitive), "stellar:pubnet" (that is the CAIP-2 id this derives,
+> not the input). Unset defaults to "testnet".
+> ```
+>
+> This used to fail *silently* — every unrecognised value meant `testnet`. On a
+> box provisioned for mainnet that is the worst outcome available: real sponsor,
+> 50 real channel accounts, and a testnet facilitator holding those keys with
+> the spend policy in log-only mode and the floor invariant demoted to a
+> warning. Every pubnet safety control off, and nothing in the logs saying so.
 
 **USDT0 is mainnet-only** (no testnet equivalent). It needs no facilitator
 configuration — the facilitator is asset-agnostic at settle time and runs no

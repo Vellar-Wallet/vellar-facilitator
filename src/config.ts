@@ -107,7 +107,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
 
   const channelAccountSecretKeys = parseChannelAccountSecretKeys(env.CHANNEL_ACCOUNT_SECRET_KEYS, sponsorSecretKey);
 
-  const network = env.STELLAR_NETWORK === "pubnet" ? "stellar:pubnet" : "stellar:testnet";
+  // STRICT, because the old `=== "pubnet" ? … : testnet` ternary made every
+  // unrecognised value mean TESTNET silently. That is the dangerous direction:
+  // an operator who writes "mainnet" or "PUBNET" has already provisioned real
+  // mainnet accounts and funded a real sponsor, and would get a testnet
+  // facilitator holding those keys with the spend policy in log-only mode and
+  // the floor invariant demoted to a warning — every pubnet safety control off,
+  // with nothing in the logs saying so.
+  //
+  // Fail closed at boot instead. This runs before anything binds a port or
+  // opens a socket (loadConfig is the first statement in main), so a
+  // misconfigured instance serves no request at all.
+  //
+  // The value is echoed back deliberately — unlike the secret-key parsers
+  // below, which never echo theirs. A network name is not credential material,
+  // and an operator debugging a typo needs to see what was actually read.
+  const rawNetwork = env.STELLAR_NETWORK ?? "testnet";
+  if (rawNetwork !== "pubnet" && rawNetwork !== "testnet") {
+    throw new Error(
+      `[config] STELLAR_NETWORK must be "pubnet" or "testnet", got "${rawNetwork}". ` +
+        `Common mistakes: "mainnet" (Stellar calls it pubnet), "PUBNET" (case-sensitive), ` +
+        `"stellar:pubnet" (that is the CAIP-2 id this derives, not the input). ` +
+        `Unset defaults to "testnet".`,
+    );
+  }
+  const network = rawNetwork === "pubnet" ? "stellar:pubnet" : "stellar:testnet";
 
   // ==========================================================================
   // "THE FEE" IS THREE DIFFERENT NUMBERS. Read this before touching any
@@ -173,6 +197,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     // the over-count is deliberate (server.ts), but honest throughput is
     // throttled ~22x earlier than sponsor exposure requires. Tracked in
     // docs/security-audit.md under "Still open".
+    //
+    // LOWERING THIS CEILING DOES NOT FIX G-10, and was evaluated and rejected
+    // (2026-09-04). The 22x gap is between the ESTIMATE and the CHARGE, and
+    // both are unchanged by moving the ceiling: at 1 XLM the policy admits
+    // 10,000,000/500,000 = 20 settles per window instead of 100, still
+    // spending 4.5% of what it names. It also breaks two properties asserted
+    // in src/config.thresholds.test.ts — the 60/min per-IP limit would exceed
+    // global capacity, and the unbound pool would no longer sit below a fifth
+    // of it. The real fix is to account at the measured charge rather than the
+    // estimate, which needs pubnet data this repo does not have yet.
     //
     // These numbers are asserted in src/config.thresholds.test.ts rather than
     // only described here: an earlier version of this comment still reasoned
