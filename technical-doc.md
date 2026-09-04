@@ -371,11 +371,24 @@ Implemented, tested, and live:
   risk sits with the seller rather than with a non-custodial facilitator.
 - **WebMCP tools** ([`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp),
   live at [`vellar-webmcp.onrender.com`](https://vellar-webmcp.onrender.com)):
-  browser-native WebMCP tools exposing this facilitator's Bazaar to an agent
-  running in the page — `search_vellar_bazaar`, `pay_and_call`, and
-  `check_vellar_earnings`. Submitted to the WebMCP Challenge hackathon
-  (2026-09-03). Separate repo; it consumes this facilitator's public HTTP API
-  and shares no code with it.
+  browser-native tools exposing this facilitator's Bazaar to an agent running in
+  the page. **6 WebMCP tools are registered at runtime:** 3 core tools
+  (`search_vellar_bazaar`, `pay_and_call`, `check_vellar_earnings`) plus 3
+  dynamic tools generated from the live Bazaar catalog (`call_uuid`,
+  `call_quote`, `call_timestamp` — one per verified or proven-unconfirmed
+  listing).
+
+  The dynamic tools are not hardcoded. They are registered client-side on page
+  load by querying `/discovery/resources` and filtering for listings with real
+  settlement history, so as more endpoints earn verified status in the Bazaar,
+  new WebMCP tools appear automatically without any code change. That is the
+  Bazaar's discovery guarantee turned into agent-callable surface: the trust
+  layer decides which listings qualify, and the tool list follows.
+
+  Confirmed via `document.modelContext.getTools()` returning 6 tools in a live
+  Chrome session with the WebMCP flag enabled. Submitted to the WebMCP Challenge
+  hackathon (2026-09-03). Separate repo; it consumes this facilitator's public
+  HTTP API and shares no code with it.
 - **Trust layer:** settlement stats with provenance disclosure
   (`statsSource`, `observedSettlements`), TOFU ownership binding with
   origin-fetch verification and displacement, `ownershipState` tri-state on the
