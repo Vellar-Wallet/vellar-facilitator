@@ -271,7 +271,13 @@ const routes = {
       price: { asset: ASSET, amount: PRICE_ATOMIC },
       maxTimeoutSeconds: 120,
     },
+    serviceName: "Motivational Quote",
     description: "Motivational quote of the day (paid)",
+    // Bazaar discovery tags. Scored at weight 3 — second only to serviceName —
+    // and previously empty on every route here, so that weight was doing
+    // nothing. Each term is a word an agent would plausibly search for and that
+    // the description above actually supports; none is invented.
+    tags: ["quote", "motivation", "motivational", "inspiration", "daily"],
     mimeType: "application/json",
     // The Bazaar declaration: how agents should call this endpoint. The
     // resource-server extension enriches it (adds the HTTP method) and ships
@@ -301,6 +307,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "Stellar Address Inspector",
+    tags: ["inspect", "stellar", "address", "balance", "xlm", "usdc", "account"],
     description:
       "Give it any Stellar testnet address, get back its XLM balance, USDC balance, and recent transactions.",
     mimeType: "application/json",
@@ -330,6 +337,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "Stroop Converter",
+    tags: ["stroops", "xlm", "convert", "stellar", "usdc", "payment"],
     description: "Give it a USDC amount, get back the exact stroop value. Useful for building x402 payment payloads.",
     mimeType: "application/json",
     extensions: declareDiscoveryExtension({
@@ -351,6 +359,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "Text Hasher",
+    tags: ["hash", "sha256", "md5", "checksum", "fingerprint", "text", "verifiable"],
     description: "Give it any text, get back SHA-256 and MD5 hashes. Results are independently verifiable.",
     mimeType: "application/json",
     extensions: declareDiscoveryExtension({
@@ -378,6 +387,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "Trusted Timestamp",
+    tags: ["timestamp", "time", "ledger", "stellar", "verifiable", "clock"],
     description:
       "Returns the current time anchored to the Stellar ledger sequence number — a verifiable timestamp from the chain.",
     mimeType: "application/json",
@@ -403,6 +413,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "Base64 Encoder/Decoder",
+    tags: ["base64", "encode", "decode", "encoding", "x402", "header"],
     description: "Encode or decode base64. Useful for reading raw x402 payment headers.",
     mimeType: "application/json",
     extensions: declareDiscoveryExtension({
@@ -427,6 +438,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "Text Analyzer",
+    tags: ["wordcount", "words", "text", "analyze", "characters", "reading"],
     description: "Give it any text, get back word count, character count, sentence count, and reading time.",
     mimeType: "application/json",
     extensions: declareDiscoveryExtension({
@@ -450,6 +462,7 @@ const routes = {
       maxTimeoutSeconds: 120,
     },
     serviceName: "UUID Generator",
+    tags: ["uuid", "identifier", "unique", "guid", "fingerprint", "verifiable"],
     description: "Returns a fresh UUID v4 with a SHA-256 fingerprint. Each call is unique and independently verifiable.",
     mimeType: "application/json",
     extensions: declareDiscoveryExtension({
