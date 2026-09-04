@@ -20,6 +20,7 @@ import {
 } from "./trust.js";
 import { createSpendPolicy, type SpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
+import { createChannelMonitor } from "./channelMonitor.js";
 import { registerSettlement, type BondEscrowOptions } from "./bond.js";
 import {
   registry as metricsRegistry,
@@ -1018,6 +1019,7 @@ if (isDirectRun) {
   });
   balanceGuard.start();
 
+
   // Bond registration is opt-in by contract ID, same convention as uptoContractId
   // above — unset means bonding is entirely inactive, /settle unchanged. The
   // both-or-neither invariant already enforced in config.ts guarantees the admin
@@ -1039,8 +1041,12 @@ if (isDirectRun) {
     );
   }
 
+  // Hoisted rather than inlined into buildServer(...): the channel monitor below
+  // needs the SAME ChannelPool instance the facilitator settles through, and a
+  // second buildFacilitator() call would construct a second, disconnected pool.
+  const built = buildFacilitator(config);
   const app = await buildServer(
-    buildFacilitator(config),
+    built,
     catalog,
     trust,
     policy,
@@ -1049,6 +1055,35 @@ if (isDirectRun) {
     config.network,
     bondEscrow,
   );
+
+  // Channel-account balance monitor. The pool's disable()/enable() shipped fully
+  // implemented and tested with NO production caller, so an account drifting
+  // toward the Stellar minimum reserve stayed `available` and kept being handed
+  // out until a settlement using it failed on-chain — the gap named in
+  // docs/deploy-runbook.md §11. This is that caller.
+  //
+  // PUBLIC keys only, derived here the same way sponsorPub is above. The monitor
+  // is never given a secret: there is nothing in its scope that could leak one.
+  // They cannot be read off the pool instead — its address sets are private by
+  // design and status() returns counts only.
+  const channelAddresses = config.channelAccountSecretKeys.map(
+    (secret) => Keypair.fromSecret(secret).publicKey(),
+  );
+  const channelMonitor = createChannelMonitor({
+    pool: built.pool,
+    addresses: channelAddresses,
+    fetchBalanceStroops: (address) => fetchXlmBalanceStroops(horizonUrl, address),
+    floorStroops: config.channelAccountMinStroops,
+    // Shared with the sponsor guard on purpose — see config.ts. What matters is
+    // the combined Horizon request budget, not two independently tunable knobs.
+    intervalMs: config.balance.intervalMs,
+    logger: {
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+      error: (msg) => app.log.error(msg),
+    },
+  });
+  channelMonitor.start();
   // P3 — sponsor funding asserted AT BOOT, with the fix in the error. The
   // polling balance guard exists for drain DURING operation; this exists for
   // the setup mistake, which otherwise surfaces mid-payment as an

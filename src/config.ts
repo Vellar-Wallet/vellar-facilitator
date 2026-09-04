@@ -73,6 +73,18 @@ export interface FacilitatorConfig {
    * first upgrade produces, and equally the state a tamperer produces. Off by
    * default; must be set deliberately and removed once the upgrade is done.
    */
+  /**
+   * Reserve floor for ONE channel account, in stroops. Below this the account is
+   * pulled from the settlement pool by the channel monitor (src/channelMonitor.ts)
+   * and returned to it automatically once re-funded.
+   *
+   * This is a RESERVE floor, not a fee budget: channel accounts never pay their
+   * own transaction fees (the sponsor is the feeBumpSigner) and never hold the
+   * payment asset, so each only needs enough XLM to keep existing —
+   * docs/channel-pool-design.md §5/§6. Default 5 XLM leaves generous headroom
+   * over the 1 XLM a subentry-free account actually requires.
+   */
+  channelAccountMinStroops: number;
   /** Fix 3 sponsor balance guard floors, in stroops. */
   balance: {
     /** Warn below this (default 250_000_000 = 25 XLM). */
@@ -196,6 +208,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
   // check-interval stale. Otherwise the guard can read "above floor" and then be
   // drained straight through it before the next check — a floor that cannot
   // hold. Defaults: 25 XLM warn / 10 XLM refuse, against a 5 XLM window ceiling.
+  // Deliberately NOT given its own interval: the channel monitor runs on
+  // config.balance.intervalMs alongside the sponsor guard. Two knobs for "how
+  // often do we ask Horizon about a balance" would be two things to keep in
+  // agreement, and the request budget they share is what actually matters —
+  // ~50 channel checks plus 1 sponsor check per tick against Horizon's per-IP
+  // rate limit (see src/channelMonitor.ts's checkAll doc comment).
+  const channelAccountMinStroops = positiveIntEnv(
+    env.CHANNEL_ACCOUNT_MIN_STROOPS,
+    5_000_000,
+    "CHANNEL_ACCOUNT_MIN_STROOPS",
+  );
+
   const balance = {
     softFloorStroops: positiveIntEnv(env.SPONSOR_SOFT_FLOOR_STROOPS, 250_000_000, "SPONSOR_SOFT_FLOOR_STROOPS"),
     hardFloorStroops: positiveIntEnv(env.SPONSOR_HARD_FLOOR_STROOPS, 100_000_000, "SPONSOR_HARD_FLOOR_STROOPS"),
@@ -268,6 +292,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     uptoContractId: parseUptoContractId(env.UPTO_CONTRACT_ID),
     bondEscrowContractId,
     bondEscrowAdminSecretKey,
+    channelAccountMinStroops,
     catalogDbUrl: env.CATALOG_DB_URL,
     catalogDbAuthToken: env.CATALOG_DB_AUTH_TOKEN,
     verificationApiUrl: env.VERIFICATION_API_URL,
