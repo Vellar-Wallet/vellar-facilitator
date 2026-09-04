@@ -13,6 +13,7 @@ import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 const testConfig = {
   port: 0, host: "127.0.0.1", network: "stellar:testnet" as const, rpcUrl: undefined,
   sponsorSecretKey: Keypair.random().secret(), channelAccountSecretKeys: fakeChannelAccountSecretKeys(), maxTransactionFeeStroops: 500_000,
+  channelAccountMinStroops: 5_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
   bondEscrowContractId: undefined,

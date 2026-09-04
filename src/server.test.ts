@@ -18,6 +18,7 @@ const testConfig = {
   sponsorSecretKey: Keypair.random().secret(),
   channelAccountSecretKeys: fakeChannelAccountSecretKeys(),
   maxTransactionFeeStroops: 2_000_000,
+  channelAccountMinStroops: 5_000_000,
   catalogDbUrl: undefined,
   uptoContractId: undefined,
   bondEscrowContractId: undefined,
