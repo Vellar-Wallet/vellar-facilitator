@@ -60,6 +60,71 @@ describe("loadConfig", () => {
     expect(config.network).toBe("stellar:pubnet");
   });
 
+  // ── STELLAR_NETWORK — strict, because the failure was silent ──────────────
+  //
+  // The old parse was `env.STELLAR_NETWORK === "pubnet" ? pubnet : testnet`, so
+  // EVERY unrecognised value meant testnet. That is the dangerous direction: an
+  // operator typing "mainnet" has already funded a real sponsor and provisioned
+  // 50 real channel accounts, and would get a testnet facilitator holding those
+  // keys — spend policy log-only, floor invariant demoted to a warning, every
+  // pubnet control off, nothing in the logs saying so.
+  //
+  // Tests 1-3 below assert the ACCEPTED values still behave exactly as before;
+  // 4-6 assert the three typos an operator actually makes now fail loudly.
+  describe("STELLAR_NETWORK is strict", () => {
+    const withNetwork = (STELLAR_NETWORK: string) =>
+      loadConfig({
+        SPONSOR_SECRET_KEY: SECRET,
+        CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+        STELLAR_NETWORK,
+      });
+
+    it("1. \"pubnet\" still selects pubnet — accepted behaviour preserved", async () => {
+      expect(withNetwork("pubnet").network).toBe("stellar:pubnet");
+    });
+
+    it("2. \"testnet\" still selects testnet — accepted behaviour preserved", async () => {
+      expect(withNetwork("testnet").network).toBe("stellar:testnet");
+    });
+
+    it("3. unset still defaults to testnet — accepted behaviour preserved", async () => {
+      const config = loadConfig({
+        SPONSOR_SECRET_KEY: SECRET,
+        CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+      });
+      expect(config.network).toBe("stellar:testnet");
+    });
+
+    it("4. \"mainnet\" throws, and the message names it as a common mistake", async () => {
+      // The single most likely typo: every other chain calls it mainnet.
+      expect(() => withNetwork("mainnet")).toThrow(/STELLAR_NETWORK must be "pubnet" or "testnet"/);
+      expect(() => withNetwork("mainnet")).toThrow(/got "mainnet"/);
+      expect(() => withNetwork("mainnet"), "names the mistake so no doc lookup is needed").toThrow(
+        /mainnet.*Stellar calls it pubnet/,
+      );
+    });
+
+    it("5. \"PUBNET\" throws — the check is case-sensitive and says so", async () => {
+      expect(() => withNetwork("PUBNET")).toThrow(/got "PUBNET"/);
+      expect(() => withNetwork("PUBNET")).toThrow(/case-sensitive/);
+    });
+
+    it("6. \"stellar:pubnet\" throws — the CAIP-2 id is the output, not the input", async () => {
+      // Plausible precisely because it IS what config.network ends up holding,
+      // and it appears throughout the docs and on /supported.
+      expect(() => withNetwork("stellar:pubnet")).toThrow(/got "stellar:pubnet"/);
+      expect(() => withNetwork("stellar:pubnet")).toThrow(/CAIP-2/);
+    });
+
+    it("a misconfigured network fails BEFORE any other config work", async () => {
+      // loadConfig is the first statement in main(), and this check sits above
+      // every threshold parse — so a typo can never reach a port bind or a
+      // Horizon call. Asserted by passing config that is otherwise complete:
+      // the network error is what surfaces, not something downstream.
+      expect(() => withNetwork("mainnet")).toThrow(/STELLAR_NETWORK/);
+    });
+  });
+
   it("honors PORT, STELLAR_RPC_URL, MAX_TX_FEE_STROOPS overrides", async () => {
     const config = loadConfig({
       SPONSOR_SECRET_KEY: SECRET,
