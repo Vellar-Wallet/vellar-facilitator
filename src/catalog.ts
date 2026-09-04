@@ -1623,7 +1623,14 @@ export class BazaarCatalog {
    */
   search(params: SearchDiscoveryResourcesParams): SearchDiscoveryResourcesResponse {
     const limit = clampLimit(params.limit);
-    const tokens = tokenize(params.query);
+    // Expand, then stem — ONCE per query, never per entry. Order matters: the
+    // synonym map is keyed on whole words ("conversion" -> "convert"), so
+    // stemming first would look up "convers" and miss.
+    const tokens = expandWithSynonyms(tokenize(params.query)).map(stem);
+    // hashKey stays on params (the RAW query string), NOT on the expanded
+    // tokens. A cursor must stay valid for the same query across a synonym-map
+    // edit or a deploy; keying it on the expansion would silently invalidate
+    // every in-flight cursor whenever the map changed.
     const filterKey = hashKey(params);
 
     let offset = 0;
@@ -1633,7 +1640,7 @@ export class BazaarCatalog {
     }
 
     const scored = this.filter(params)
-      .map((entry) => ({ entry, score: scoreResource(entry.resource, tokens) }))
+      .map((entry) => ({ entry, score: scoreResource(entry.resource, tokens, entry.stats) }))
       .filter((s) => s.score > 0)
       .sort(
         (a, b) =>
@@ -2022,6 +2029,114 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(Math.max(1, Math.floor(limit)), MAX_LIMIT);
 }
 
+/**
+ * Bidirectional synonym groups for query expansion.
+ *
+ * Hardcoded on purpose: no config file, no database, no operator surface. A
+ * synonym map that anyone can edit at runtime is an injection vector into every
+ * agent's search results, and this one is applied to tokens that have ALREADY
+ * been through tokenize() — so every lookup key is `[a-z0-9]+` by construction
+ * and a crafted query cannot introduce a key that is not.
+ *
+ * Each group is a set of mutually interchangeable terms. Membership is
+ * bidirectional and derived, not written twice: SYNONYMS below is built from
+ * these groups at module load, so "uuid -> identifier" and "identifier -> uuid"
+ * cannot drift apart the way two hand-maintained directions would.
+ *
+ * These come from the real failure mode, not from a thesaurus. The scorer drops
+ * anything with score 0, so a query sharing no literal token with any listing
+ * returns NOTHING — "cheap random number" found no UUID generator, "verify
+ * content" found no hasher. Each group below is anchored on a term that actually
+ * appears in the demo catalog's own serviceName/description text.
+ */
+const SYNONYM_GROUPS: readonly (readonly string[])[] = [
+  ["uuid", "identifier", "unique", "id", "guid"],
+  ["timestamp", "time", "clock", "date", "datetime", "ledger"],
+  ["hash", "sha256", "md5", "checksum", "fingerprint", "digest", "verify"],
+  ["base64", "encode", "decode", "encoding", "decoding"],
+  ["stroops", "xlm", "stellar", "convert", "conversion"],
+  ["quote", "motivation", "motivational", "saying", "inspiration"],
+  ["inspect", "lookup", "check", "balance", "account", "address"],
+  ["wordcount", "words", "characters", "count", "analyze", "analysis", "text", "reading"],
+];
+
+/** term -> every other term in every group it belongs to. Built once. */
+const SYNONYMS: ReadonlyMap<string, readonly string[]> = (() => {
+  const map = new Map<string, Set<string>>();
+  for (const group of SYNONYM_GROUPS) {
+    for (const term of group) {
+      let bucket = map.get(term);
+      if (!bucket) map.set(term, (bucket = new Set()));
+      for (const other of group) if (other !== term) bucket.add(other);
+    }
+  }
+  return new Map([...map].map(([k, v]) => [k, [...v]]));
+})();
+
+/**
+ * The query tokens plus every synonym of every token, deduped.
+ *
+ * Called ONCE per search, never per entry — expansion is a property of the
+ * query, and doing it inside the per-entry loop would repeat identical work
+ * across the whole catalog.
+ *
+ * Each synonym is itself run through tokenize() before being added, so a
+ * multi-word synonym splits correctly and a single-character one is dropped by
+ * the same rule that governs the original query. Synonyms are NOT expanded
+ * transitively: one hop only, or "id" would eventually reach half the map.
+ */
+export function expandWithSynonyms(tokens: string[]): string[] {
+  const out = new Set(tokens);
+  for (const token of tokens) {
+    for (const synonym of SYNONYMS.get(token) ?? []) {
+      for (const piece of tokenize(synonym)) out.add(piece);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * A deliberately minimal Porter-style stemmer — six suffix rules, chosen for
+ * this corpus rather than for linguistic completeness.
+ *
+ * Pure: no state, no side effects, no regex (every rule is endsWith + slice), so
+ * there is no backtracking behaviour to reason about. Operates on tokens that
+ * are already lowercase alphanumeric.
+ *
+ * The `>= 3` guards are what stop the rules eating short words into noise —
+ * "is" must not become "i", "ted" must not become "t".
+ *
+ * ORDER MATTERS. "tion" is tested before "s"/"ed" so "conversion" reaches
+ * "convert" rather than being shortened one letter at a time by a different
+ * rule first. Only ONE rule fires per call: stemming is not applied repeatedly
+ * to its own output, which would turn "generating" into "generat" into "genera".
+ */
+export function stem(word: string): string {
+  const min = 3;
+  // generation -> generat, conversion -> convert.
+  //
+  // BOTH "tion" AND "sion" are handled, and that is not a stylistic choice: the
+  // canonical example for this rule is conversion -> convert, and "conversion"
+  // ends in "sion", not "tion". A "tion"-only rule silently fails the one word
+  // it was written for — caught by stem()'s own unit test rather than by a
+  // search returning nothing months later.
+  if ((word.endsWith("tion") || word.endsWith("sion")) && word.length - 4 >= min) {
+    return `${word.slice(0, -4)}t`;
+  }
+  // generating -> generat, paying -> pai
+  if (word.endsWith("ing") && word.length - 3 >= min) return word.slice(0, -3);
+  // independently -> independent
+  if (word.endsWith("ly") && word.length - 2 >= min) return word.slice(0, -2);
+  // generated -> generat, encoded -> encod
+  if (word.endsWith("ed") && word.length - 2 >= min) return word.slice(0, -2);
+  // encoder -> encod, generator -> generat
+  if (word.endsWith("er") && word.length - 2 >= min) return word.slice(0, -2);
+  // identifiers -> identifier, hashes -> hashe. "ss" is exempt so "address"
+  // does not become "addres".
+  if (word.endsWith("s") && !word.endsWith("ss") && word.length - 1 >= min) return word.slice(0, -1);
+  return word;
+}
+
 function tokenize(query: string): string[] {
   return query
     .toLowerCase()
@@ -2029,8 +2144,48 @@ function tokenize(query: string): string[] {
     .filter((t) => t.length > 1);
 }
 
-function scoreResource(resource: DiscoveryResource, tokens: string[]): number {
-  if (tokens.length === 0) return 1; // empty query matches everything, unranked
+/**
+ * Relevance score for one entry against an already-expanded, already-stemmed
+ * token list. Zero means "does not match" — search() drops those entirely.
+ *
+ * `stats` is passed EXPLICITLY rather than read off `resource`, and that is not
+ * a style choice. `resource` is DiscoveryResource, the SDK's external wire
+ * shape, which carries neither `trust` nor `stats`: trust is attached later by
+ * toItem() from the wrapping StoredEntry. Reaching for `resource.trust` here
+ * would read `undefined` for every entry, score every one of them 0, and make
+ * the empty-query branch below return an EMPTY catalog — the exact opposite of
+ * what it is for. The stats live on the StoredEntry that is already in scope at
+ * the call site, so they are handed in.
+ */
+function scoreResource(
+  resource: DiscoveryResource,
+  tokens: string[],
+  stats?: SettlementStats,
+): number {
+  // EMPTY QUERY = undirected browsing, ranked by proven use rather than by
+  // recency. Recency ranked whoever settled most recently, which rewards
+  // nothing but arrival order; this ranks what buyers have actually paid for.
+  //
+  // settlements is weighted double uniquePayers: volume is the stronger signal,
+  // but breadth still counts, so one merchant paying itself 50 times does not
+  // outrank a resource 30 distinct payers use. Both numbers are the same ones
+  // toItem() surfaces as `trust`, so the ranking agrees with what the wire says.
+  //
+  // A brand-new entry scores 0 and is therefore FILTERED OUT of empty-query
+  // results by search()'s own `score > 0`. That is deliberate: the Bazaar
+  // surfaces proven endpoints for undirected browsing, and an unproven one has
+  // to earn its place with a settlement. It remains fully findable by any
+  // directed query.
+  //
+  // Overflow is not reachable: payers is capped at MAX_TRACKED_PAYERS (10k) and
+  // even 1e6 settlements gives ~2e6, nine orders of magnitude inside
+  // Number.MAX_SAFE_INTEGER.
+  if (tokens.length === 0) {
+    const settlements = stats?.settlements ?? 0;
+    const uniquePayers = stats?.payers.length ?? 0;
+    return settlements * 2 + uniquePayers;
+  }
+
   const fields: Array<[string, number]> = [
     [resource.serviceName ?? "", 4],
     [(resource.tags ?? []).join(" "), 3],
@@ -2046,10 +2201,21 @@ function scoreResource(resource: DiscoveryResource, tokens: string[]): number {
   let score = 0;
   for (const [field, weight] of fields) {
     const haystack = field.toLowerCase();
-    const words = new Set(tokenize(haystack));
+    // STEMMED ON BOTH SIDES. The caller stems the query tokens; these field
+    // tokens are stemmed by the same function. A mismatch — stemmed query
+    // against unstemmed field — produces false negatives that are worse than
+    // no stemming at all, because it breaks matches that used to work.
+    const words = new Set(tokenize(haystack).map(stem));
     for (const token of tokens) {
-      if (words.has(token)) score += weight * 2;
-      else if (haystack.includes(token)) score += weight;
+      if (words.has(token)) {
+        score += weight * 2;
+      } else if (haystack.includes(token)) {
+        // Substring fallback, on the RAW haystack. Kept unstemmed on purpose:
+        // it is what lets a partial token still match inside a longer word, and
+        // stemming the haystack string (rather than its tokens) would corrupt
+        // the very positions this check searches.
+        score += weight;
+      }
     }
   }
   return score;
