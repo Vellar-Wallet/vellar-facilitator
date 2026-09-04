@@ -5,7 +5,11 @@ Support." This document governs this repo (`vellar-facilitator`). It is
 separate infrastructure from the Vellar wallet product; the two share x402
 domain expertise, not code.
 
-**Status: built and live on testnet; pre-mainnet security review complete.**
+**Status: live on Stellar testnet, 578 tests passing. Production-hardened —
+the channel pool (50 accounts; 50/50 under load), telemetry (11 Prometheus
+metrics), the deploy runbook, and the RFP gap fixes are all shipped.
+Pre-mainnet: the external security audit, semantic search, and the pubnet
+deployment remain — see the checklist at the top of §9.**
 The facilitator, Bazaar discovery, the MCP server, and the trust layer are
 implemented, tested, and deployed at `https://vellar-facilitator.onrender.com`,
 with on-chain settlements to show for it (§8). The pre-mainnet security review
@@ -20,7 +24,8 @@ architecture and the path to mainnet that the SCF Build Award funds.
 ## Evidence at a Glance
 
 Every load-bearing claim in this document, re-verified in one sweep on
-2026-08-21. Each row names where to check it without trusting this table:
+2026-08-21, with the rows below the divider added and checked on 2026-09-04.
+Each row names where to check it without trusting this table:
 
 | Claim | Verified | Check it yourself |
 | --- | --- | --- |
@@ -35,6 +40,14 @@ Every load-bearing claim in this document, re-verified in one sweep on
 | Reliability is measured, not asserted | the scheduled settle probe is green on its cron (five runs/day observed), each run settling real payments with a no-retry control arm beside the retry | the repo's Actions tab, `settle-probe.yml` |
 | Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
 | `upto` settles for the metered actual, not the signed ceiling, and an independent service says so | three settlements against the hosted instance — actual/ceiling pairs 555000/1500000, 312000/800000, 417000/1200000 — each shows on `explorer.vellar.xyz` with `scheme: upto` and `settled by: vellar`, verified by neither this repo nor its author | `curl https://vellar-explorer.onrender.com/payments/<hash>`, or the feed at `explorer.vellar.xyz` |
+| *— shipped since the 2026-08-21 sweep, verified 2026-09-04 —* | | |
+| Concurrency is solved, with a negative control | channel pool: **50/50** settled, **0** `txBadSeq`, p95 **11,956 ms**. Single-signer control on the same run: **1/50**, **48** `txBadSeq` | `git log 6f5de85`, raw data in `load-test-results-2026-08-31T11-15-47-630Z.json` |
+| Operational telemetry is live | 11 named `vellar_*` metrics on a public `/metrics`, forwarded to Grafana Cloud | `git log 97107b1`, `curl -s https://vellar-facilitator.onrender.com/metrics \| grep -c '^# HELP vellar_'` → 11 |
+| An operator can stand up a new instance from nothing | `docs/deploy-runbook.md` — 445 lines, all 25 `config.ts` environment variables, provisioning, verification, and the operational gaps stated plainly | `git log 9c9bad3` |
+| A seller learns whether their listing was cataloged | `EXTENSION-RESPONSES` on `/settle`, carried out of the error-swallowing hook via the same `AsyncLocalStorage` capture the channel pool uses | `git log c771c0d` |
+| Two MCP tools on one server URL no longer collide | MCP resources keyed on the spec's `(resource.url, input.toolName)` tuple, U+001F separated | `git log c771c0d` |
+| Discovery is asset-aware, settlement stays asset-agnostic | `/discovery/resources?asset=<SAC>` filters; `/supported` carries `catalogAssets`, derived live from the catalog | `git log dfa0aa9`, `curl -s https://vellar-facilitator.onrender.com/supported \| python3 -m json.tool` |
+| Agents can reach the Bazaar from inside a web page | 6 WebMCP tools — 3 core plus 3 generated live from the Bazaar catalog | [`vellar-webmcp.onrender.com`](https://vellar-webmcp.onrender.com), [`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp) |
 
 The table is an index; the sections behind it carry the methodology.
 
@@ -187,7 +200,8 @@ post-launch nice-to-have:**
   before it deploys.
 
 Sequenced **before** a mainnet tag, alongside the pubnet deployment itself. Full
-status and the reviewer-facing framing: `docs/conformance-report.md` §6.3.
+status and the reviewer-facing framing: `docs/conformance-report.md` §6.3. This
+is item 3 in the pre-mainnet checklist (§9 — Before mainnet).
 
 ## 6. Trust Layer
 
@@ -493,6 +507,35 @@ Proof (Stellar testnet):
 
 ## 9. Path to Mainnet (what the Build Award funds)
 
+### Before mainnet
+
+Everything below must be complete before the mainnet tag. The list is
+**sequenced** — each item depends on the previous being stable — and **none of
+the seven is complete today.** What *is* complete is the production-hardening
+work that precedes them (§8, and the delivered items struck through in
+milestone 1 below).
+
+| # | Item | Status | Notes |
+| --- | --- | --- | --- |
+| 1 | External security audit | ⏳ Not started | Longest lead time — start first. Firms covering Stellar/Soroban: OtterSec, Halborn, Cure53, Trail of Bits. |
+| 2 | Channel-account balance monitoring | ⏳ Not started | `disable()`/`enable()` are implemented and exported but never called in production. `docs/deploy-runbook.md` §11, `BUILD-PLAN.md` Phase 3. |
+| 3 | Semantic search (embeddings + eval harness) | ⏳ Not started | The RFP's highest-weighted requirement. Full plan in §5.1; status in `docs/conformance-report.md` §6.3. |
+| 4 | Pubnet deployment + live settlement test | ⏳ Not started | A real `exact`-scheme settled tx hash on pubnet. Closes `docs/conformance-report.md` §6.2. |
+| 5 | `upto` channel-pool integration | ⏳ Blocked | Concurrent `upto` settlements can `txBadSeq` — the scheme shares the sponsor's sequence instead of taking a pool lane. Blocked on the upstream wire format (x402-foundation/x402 #3134). `src/upto.ts`. |
+| 6 | USDT0 mainnet trustlines | ⏳ Not started | Only where a *seller* accepts USDT0 — their `payTo` needs the trustline. Channel accounts need none (they hold no payment asset; §8, `docs/channel-pool-design.md` §5). `docs/asset-support.md`. |
+| 7 | x402 Foundation listing | ⏳ Not started | A docs PR to x402-foundation/x402, after mainnet settlement is confirmed live. |
+
+**Items 1–4 are hard blockers** — mainnet cannot ship without them. **Items 5–7
+matter but can follow** the initial mainnet launch: 5 is upstream-blocked and
+affects only `upto` concurrency (`exact` is unaffected), 6 applies only if a
+seller chooses USDT0, and 7 is a post-launch announcement.
+
+The three milestones below are the *funding* structure — what the Build Award
+buys. The checklist above is the *status* answer: where this system is now, and
+what stands between it and mainnet.
+
+---
+
 The testnet system exists; the grant funds productionization and mainnet
 launch. Three milestones (final = mainnet, per SCF):
 
@@ -502,6 +545,10 @@ launch. Three milestones (final = mainnet, per SCF):
    (11 named Prometheus metrics, Grafana Cloud dashboard; §8).
    ~~Load-hardening + sequence-number management under concurrent settlement~~
    — **delivered** (the 50-account channel pool; §8).
+   ~~Operator deployment documentation~~ — **delivered**
+   (`docs/deploy-runbook.md`, `9c9bad3`: prerequisites, all 25 environment
+   variables read out of `config.ts`, sponsor and channel-account provisioning,
+   post-deploy verification, and the operational gaps stated plainly).
    Remaining: **a live
    trustline/payability check on every discovery entry** — read-time
    confirmation that the listed `payTo` currently holds a trustline for the
@@ -554,6 +601,15 @@ launch. Three milestones (final = mainnet, per SCF):
    remediated — a second, independent review on top of the already-completed
    pre-mainnet review (§8), not the first look;
    proven uptime; mainnet USDC / multi-asset support; professional user testing.
+
+   The conformance report (`docs/conformance-report.md`) identifies two further
+   hard acceptance criteria that are **not** satisfied today: running the
+   x402-foundation e2e suite against the live facilitator (§6.1 — it needs three
+   funded Stellar accounts, and the blocker is environment, not code), and
+   obtaining a settled transaction hash on pubnet for the `exact` scheme (§6.2 —
+   the facilitator currently advertises `stellar:testnet` only). Both close as
+   part of this pubnet deployment step, and both are named in the checklist at
+   the top of this section.
 
 Mainnet-specific engineering: pubnet RPC + real USDC SAC configuration
 (network plumbing exists via `STELLAR_NETWORK=pubnet`, currently untested),
