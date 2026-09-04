@@ -121,9 +121,10 @@ uncaught at boot), a key equal to `SPONSOR_SECRET_KEY`, or a duplicate.
 | `SETTLE_PER_URL_MAX` | `10` | Settles per window per bound resource URL. |
 | `SETTLE_PER_PAYTO_MAX` | `50` | Settles per window per `payTo`. |
 | `SETTLE_UNBOUND_POOL_MAX` | `10` | Shared budget for all unbound URLs. |
+| `CHANNEL_ACCOUNT_MIN_STROOPS` | `5000000` (5 XLM) | Reserve floor for ONE channel account. Below it the channel monitor disables the account; above it, re-enables. A **reserve** floor, not a fee budget — channel accounts never pay their own fees and never hold the payment asset (§2). |
 | `SPONSOR_SOFT_FLOOR_STROOPS` | `250000000` (25 XLM) | Warn below this. |
 | `SPONSOR_HARD_FLOOR_STROOPS` | `100000000` (10 XLM) | **Refuse `/settle`** below this (`503 sponsor_balance_low`). |
-| `SPONSOR_BALANCE_INTERVAL_MS` | `60000` | Balance poll interval. |
+| `SPONSOR_BALANCE_INTERVAL_MS` | `60000` | Sponsor balance poll interval — **and** the channel-account balance check interval (`src/channelMonitor.ts` reuses it). At the default 60s, 50 channel accounts = 50 Horizon requests per minute, within Horizon's per-IP limit. **Do not lower below 10s** — at 10s the channel monitor alone generates 300 req/min and will exceed that limit, causing balance checks to fail (and, after 5 consecutive failures per account, to disable accounts that are actually healthy). |
 
 > **Boot invariant.** `SPONSOR_HARD_FLOOR_STROOPS` must exceed
 > `SPEND_CEILING_STROOPS`, or one spend window can drain the sponsor straight
@@ -387,11 +388,17 @@ untested. See [`docs/conformance-report.md`](./conformance-report.md) §6.2.
 Stated plainly, because an operator finding these at 3 a.m. is worse than
 reading them now.
 
-- **Channel-account balance monitoring is not wired.** `ChannelPool.disable()` /
-  `enable()` are implemented and exported but **never called in production**. An
-  account drifting toward the minimum reserve is not pulled from rotation — it
-  stays `available` and keeps being acquired until a settlement using it fails
-  on-chain. **Monitor the 50 balances yourself.** (`BUILD-PLAN.md`, Phase 3.)
+- **Channel-account balance monitoring — automated** via `src/channelMonitor.ts`
+  (`c88d79f`). Accounts below `CHANNEL_ACCOUNT_MIN_STROOPS` (default 5 XLM) are
+  disabled automatically; accounts that recover are re-enabled automatically.
+  **Operators must still fund low-balance accounts manually** — the monitor
+  handles disable/enable, not funding. Watch `vellar_pool_disabled` (§9): a
+  non-zero, non-recovering value means an account needs XLM.
+  <br>Two behaviours worth knowing before you rely on it. A failed Horizon read
+  leaves an account **exactly as it is** — only 5 consecutive failures for that
+  same account withdraw it, so one Horizon outage cannot empty the pool. And a
+  balance read that is malformed rather than low counts as a failure, not as
+  healthy.
 - **No in-band rotation for a verified `payTo` binding.** A once-proven binding is
   permanently non-displaceable by design. Recovery is the manual procedure in
   [`docs/operator-runbook.md`](./operator-runbook.md) §1. Automating it would give
