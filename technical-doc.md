@@ -510,15 +510,15 @@ Proof (Stellar testnet):
 ### Before mainnet
 
 Everything below must be complete before the mainnet tag. The list is
-**sequenced** — each item depends on the previous being stable — and **none of
-the seven is complete today.** What *is* complete is the production-hardening
-work that precedes them (§8, and the delivered items struck through in
-milestone 1 below).
+**sequenced** — each item depends on the previous being stable — and **one of
+the seven is complete today** (item 2). What *is* complete alongside it is the
+production-hardening work that precedes the list (§8, and the delivered items
+struck through in milestone 1 below).
 
 | # | Item | Status | Notes |
 | --- | --- | --- | --- |
 | 1 | External security audit | ⏳ Not started | Longest lead time — start first. Firms covering Stellar/Soroban: OtterSec, Halborn, Cure53, Trail of Bits. |
-| 2 | Channel-account balance monitoring | ⏳ Not started | `disable()`/`enable()` are implemented and exported but never called in production. `docs/deploy-runbook.md` §11, `BUILD-PLAN.md` Phase 3. |
+| 2 | Channel-account balance monitoring | ✅ Done | Automated via `src/channelMonitor.ts` (commit `c88d79f`). Disables on low balance, auto-enables on recovery, fail-open with a 5-failure staleness limit. |
 | 3 | Semantic search (embeddings + eval harness) | ⏳ Not started | The RFP's highest-weighted requirement. Full plan in §5.1; status in `docs/conformance-report.md` §6.3. |
 | 4 | Pubnet deployment + live settlement test | ⏳ Not started | A real `exact`-scheme settled tx hash on pubnet. Closes `docs/conformance-report.md` §6.2. |
 | 5 | `upto` channel-pool integration | ⏳ Blocked | Concurrent `upto` settlements can `txBadSeq` — the scheme shares the sponsor's sequence instead of taking a pool lane. Blocked on the upstream wire format (x402-foundation/x402 #3134). `src/upto.ts`. |
