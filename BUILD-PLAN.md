@@ -53,15 +53,23 @@ See docs/decisions.md._
       discovery extension (catalog-on-settle = spam guard; cataloging can
       never break settlement — pinned by test)
 - [x] HTTP endpoints and MCP tools both cataloged as first-class resources
-      (type filter distinguishes them)
+      (type filter distinguishes them). CORRECTED 2026-09-03 (`c771c0d`):
+      this was only half-true when written — MCP resources were keyed on the
+      URL alone, so every tool on one MCP server collapsed into a single
+      entry. They are now keyed on the spec's `(resource.url,
+      input.toolName)` tuple, so the claim above now holds.
 - [x] Route-template safety validation via the official extractor (path
       traversal + URL injection both proven dropped; valid templates
       honored — 3 dedicated tests)
 - [x] MCP discovery server (`src/mcp.ts`, stdio): `x402_list_resources` +
       `x402_search_resources`, backed by the canonical withBazaar client —
       probed live over raw JSON-RPC, found the live-cataloged resource
-- [x] Catalog persistence: optional JSON file (`CATALOG_FILE`), corrupt-file
-      safe; storage behind the class for a future DB swap
+- [x] Catalog persistence: SUPERSEDED 2026-08-11 — the "future DB swap" this
+      line anticipated has happened. Now libSQL/Turso (`CATALOG_DB_URL`,
+      `src/store.ts`), restart-verified with ownership bindings intact across
+      a real spin-down; see `docs/brief-turso-migration.md` and
+      `docs/cutover-turso.md`. The original JSON-file store
+      (`CATALOG_FILE`) no longer exists.
 - [x] Tests: 32 total (catalog filters/pagination/search/cursor/persistence,
       ingestion through a real x402Facilitator, wire conformance)
 
@@ -69,12 +77,23 @@ See docs/decisions.md._
 
 - [ ] Mainnet support live (config plumbing exists — `STELLAR_NETWORK=pubnet`
       — but is untested; do NOT flip before the security review)
-- [ ] Public operational telemetry / status dashboard (99%+ uptime target)
+- [x] Public operational telemetry / status dashboard SHIPPED 2026-09-01
+      (`97107b1`, `f53b11c`, `e4ec7f4`): 11 named `vellar_*` Prometheus
+      metrics on a public `GET /metrics`, scraped by a Grafana Alloy service
+      and forwarded to a Grafana Cloud dashboard. Setup and the public URL in
+      `docs/grafana-dashboard-setup.md`. The 99%+ uptime TARGET itself is not
+      met by shipping the instrument — that stays a mainnet commitment.
 - [ ] Security review completed before any production traffic
-- [ ] Sequence-number management under concurrent/bursty settlement load
-      (technical-doc.md §6) — load-tested, not just designed. Note:
-      `ExactStellarScheme` supports a `feeBumpSigner` decoupling fees from
-      sequence numbers — evaluate under load
+- [x] Sequence-number management under concurrent/bursty settlement load
+      SHIPPED 2026-08-31 (`6f5de85`): the 50-account channel pool, load-tested
+      rather than designed-and-asserted. Negative control first (single
+      signer): 1/50 succeeded, 48 `txBadSeq`. Positive control (pool): 50/50
+      succeeded, 0 `txBadSeq`, p95 11,956 ms. Raw data in
+      `load-test-results-2026-08-31T11-15-47-630Z.json`; design in
+      `docs/channel-pool-design.md`. `feeBumpSigner` alone was evaluated and
+      is NOT the throughput mechanism — it decouples fees, not sequence
+      numbers. Still open below: extending the pool to `UptoStellarScheme`,
+      and the balance-monitoring job.
 - [ ] Extend channel-account pool to UptoStellarScheme
       (src/upto.ts:219) — currently a documented limitation,
       see docs/channel-pool-design.md §8

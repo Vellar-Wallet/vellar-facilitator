@@ -231,11 +231,17 @@ semantics, so it is a decision, not a cleanup.
 
 ---
 
-## 2. G-14 — payTo whitespace hijack — **Medium** — closed-by-test, **not yet deployed**
+## 2. G-14 — payTo whitespace hijack — **Medium** — closed-by-test, **deployed**
 
 Given its own entry because it is exploitable, it is invisible in the output, and
 nobody scanning for real vulnerabilities should have to read a methodology
 section to find it.
+
+**Deployment status, corrected 2026-09-04.** This heading read "not yet
+deployed" from the day it was written. It landed on `main` in `e1002c6`
+(PR #35, 2026-08-11) and has shipped on every deploy since; the hosted instance
+has been rebuilt many times over in the interim. The stale qualifier is removed
+rather than left to imply an exploitable defect is still live.
 
 **The defect.** `payTo` had two independent derivations. `policyBucketKey`
 (`server.ts`) trimmed it and capped it at 128 characters. The catalog compared

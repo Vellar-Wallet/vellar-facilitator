@@ -105,8 +105,8 @@ as "nothing here is verified" when the truth was "nothing is being checked".
 | --- | --- |
 | `POST /verify` | Verify a payment by re-simulation on Soroban RPC (runs the payer's `__check_auth`, including any on-chain spending policy) |
 | `POST /settle` | Submit the payment on-chain, sponsoring the network fee — buyers hold only the payment asset, no XLM |
-| `GET /supported` | Advertise scheme/network/extensions/signers to sellers |
-| `GET /discovery/resources` | List cataloged x402 resources (filters: `type`, `payTo`, `scheme`, `network`, `extensions`, `verified_only`†; `limit`/`offset`) |
+| `GET /supported` | Advertise scheme/network/extensions/signers to sellers, plus `catalogAssets` — the live set of assets the catalog actually holds, grouped by network |
+| `GET /discovery/resources` | List cataloged x402 resources (filters: `type`, `payTo`, `scheme`, `network`, `extensions`, `asset`‡, `verified_only`†; `limit`/`offset`) |
 | `GET /discovery/search` | Keyword search over the catalog — tokenized and relevance-scored, not semantic (`query`, same filters, cursor-paginated) |
 | `GET /health` | Liveness, plus the deployed `commit`, `uptimeSeconds`, `catalogSize`, `catalogFrozen` when bindings are frozen, and `unverifiableEntries` when any seller advertises an address the facilitator cannot fetch |
 
@@ -114,6 +114,13 @@ as "nothing here is verified" when the truth was "nothing is being checked".
 this deployment. The verdicts it filters on come from a service that is deployed
 nowhere — see *Two things to know* above — so an empty list would describe the
 deployment, not the resources. `ownerVerified` is the field that works.
+
+‡ `asset` filters listings to those accepting a given SEP-41 asset (exact,
+case-sensitive match on the contract address). Discovery only — the facilitator
+stays asset-agnostic at settle time and runs no allowlist.
+[`docs/asset-support.md`](./docs/asset-support.md) covers USDC and USDT0,
+including USDT0's clawback/revocability flags and why that risk sits with the
+seller rather than a non-custodial facilitator.
 
 **Smart accounts welcome.** Policy-governed smart-account payments cost ~130k
 stroops of simulation fee (the policy contract runs inside `__check_auth`);
@@ -210,10 +217,18 @@ git config core.hooksPath .githooks   # refuses pushes to a merged PR's branch
 Tests and typecheck:
 
 ```sh
-npm test        # includes wire-conformance tests using the unmodified
+npm test        # includes wire-shape tests driven by the unmodified
                 # canonical HTTPFacilitatorClient + withBazaar client
 npm run typecheck
 ```
+
+These are in-process tests against the canonical client library. They are **not**
+the x402-foundation e2e conformance suite, which needs three funded Stellar
+accounts and has not been run yet.
+[`docs/conformance-report.md`](./docs/conformance-report.md) is the honest
+scorecard: what is verified live against the hosted instance, the settled
+transaction hashes re-checked against Horizon, and the gaps still open —
+the e2e suite, a pubnet deployment, and semantic search ranking.
 
 ## MCP discovery server (for AI agents)
 

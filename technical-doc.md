@@ -30,7 +30,7 @@ Every load-bearing claim in this document, re-verified in one sweep on
 | Canonical testnet USDC end to end, no faucet | tx `f9b743c5…8c98` (ledger 4106526) and `cda3cbaa…50ea` (ledger 4137813) | §8 |
 | Hosted instance live; catalog survives restart | `/health` answered in 42.8 s from cold (the documented ~45 s), non-empty catalog at 19 s uptime | `curl https://vellar-facilitator.onrender.com/health` |
 | `verified_only` refuses honestly rather than serving a misleading empty list | live `400 verified_only_unavailable` with the reason and a pointer to the field that does work | `curl '…/discovery/resources?verified_only=true'` |
-| Tests and types | 379 passed, 4 skipped; `tsc --noEmit` clean | `npm test`, `npm run typecheck` |
+| Tests and types | 578 passed, 4 skipped; `tsc --noEmit` clean | `npm test`, `npm run typecheck` |
 | Pre-mainnet security review complete | every finding carries a final status | `docs/security-audit.md`, `docs/closing-state.md` |
 | Reliability is measured, not asserted | the scheduled settle probe is green on its cron (five runs/day observed), each run settling real payments with a no-retry control arm beside the retry | the repo's Actions tab, `settle-probe.yml` |
 | Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
@@ -269,8 +269,8 @@ it, all encountered firsthand:
   decouples fee payment from sequence numbers — but fee-bump alone raises
   throughput by nothing, since the sequence still comes from the inner source
   account. The throughput mechanism is a pool of channel accounts supplying
-  independent sequence lanes; building that pool is the load-hardening
-  deliverable in §9.
+  independent sequence lanes. **That pool is built and live** — 50 accounts,
+  shipped in `6f5de85`; see §8 for the measured before/after.
 
 ## 8. What's Built (verified on testnet)
 
@@ -291,7 +291,12 @@ Implemented, tested, and live:
 - **Facilitator:** `/verify`, `/settle`, `/supported`. Any SEP-41 token (USDC
   default), classic keypairs and Soroban smart accounts, sponsored fees, raised
   fee ceiling for policy-governed payments, replay resistance via ledger-bounded
-  auth entries. Wire-conformance tested against unmodified canonical clients.
+  auth entries. **Conformance against the x402-foundation canonical client suite
+  has not yet been run** — the wire shape is verified live endpoint by endpoint
+  (`/supported` carries `areFeesSponsored`; every rejection carries a non-null
+  machine-readable reason), but the canonical-client run and the x402 repo's own
+  e2e suite are outstanding. See `docs/conformance-report.md` for the current
+  status, the known gaps, and the plan to close them before mainnet.
 - **Sponsor defense (audit finding F12):** the audit showed sponsor drain is
   *not* self-limiting — a self-dealer minting their own SEP-41 token settles
   self→self at zero cost to themselves while the sponsor pays every network
@@ -313,8 +318,64 @@ Implemented, tested, and live:
   scheduled CI settle probe runs a concurrent no-retry control arm beside the
   retrying facilitator, so the improvement is measured against a true baseline
   instead of asserted.
+- **Throughput — the 50-account channel pool** (`6f5de85`, design in
+  `docs/channel-pool-design.md`). Stellar serialises per source account, so a
+  single-signer facilitator is capped near one settlement per ledger (§7). The
+  pool gives each concurrent settlement its own sequence lane. **Measured, with
+  a negative control rather than an assertion** — 50 true-simultaneous
+  settlements, same accounts, same run:
+
+  | | Run 1 — single signer (control) | Run 2 — channel pool |
+  | --- | --- | --- |
+  | Succeeded | **1 / 50** | **50 / 50** |
+  | `txBadSeq` | **48** | **0** |
+  | p95 latency | 16,998 ms | **11,956 ms** |
+
+  Raw data: `load-test-results-2026-08-31T11-15-47-630Z.json`. Run 1 is what
+  makes Run 2 mean anything: the failure mode was reproduced first, then fixed.
+  A real double-acquisition bug surfaced during this work — each `/settle`
+  consumed two pool slots, silently halving capacity — and was closed
+  structurally with an `AsyncLocalStorage`-scoped capture rather than a second
+  manual `acquire()` (`src/facilitator.ts`). `/health` reports pool state live.
+- **Operational telemetry** (`97107b1`, `f53b11c`, `e4ec7f4`): 11 named
+  `vellar_*` Prometheus metrics (settle/verify counters, settle-duration
+  histogram, the three pool gauges, catalog size, rate-limit rejections, uptime,
+  reverify backlog) on a public `GET /metrics`, scraped by a Grafana Alloy
+  service and forwarded to a Grafana Cloud dashboard. Setup and the public
+  dashboard URL: `docs/grafana-dashboard-setup.md`.
 - **Bazaar:** `/discovery/resources`, `/discovery/search`, auto-cataloging on
   settle, route-template safety guard, catalog persistence.
+- **`EXTENSION-RESPONSES` on `/settle`** (`c771c0d`): a seller learns whether
+  their listing was actually cataloged, and if not, why. Cataloging runs inside
+  an `onAfterSettle` hook that deliberately swallows its own errors so it can
+  never affect a payment, so the outcome is carried out to the route through the
+  same `AsyncLocalStorage` capture pattern the channel pool and RPC-status
+  capture already use. Reasons are a fixed enum, never interpolated text; the
+  header is absent on every path where cataloging never ran.
+- **MCP tools keyed as first-class resources** (`c771c0d`): an MCP server
+  exposes many tools at one URL, so keying on the URL alone silently merged
+  every tool on a server into one catalog entry. MCP resources are now keyed on
+  the spec's `(resource.url, input.toolName)` tuple, separated by U+001F — a
+  separator a seller cannot smuggle, since `new URL()` percent-encodes it and it
+  is stripped from `toolName`. Non-MCP keys are byte-identical to before, so no
+  stored listing migrates.
+- **Asset-aware discovery** (`dfa0aa9`, `c7aedd8`): `GET
+  /discovery/resources?asset=<SAC>` filters listings by accepted asset, and
+  `GET /supported` carries `catalogAssets` — the live set of assets across the
+  catalog, grouped by network, derived per request so a new asset appears with
+  no config change. **The facilitator stays asset-agnostic at settle time**: this
+  is discovery only, and the deliberate decision not to run an asset allowlist
+  (`docs/security-audit.md`, F2) is unchanged. `docs/asset-support.md` documents
+  USDC and USDT0, including USDT0's `auth_revocable` / `auth_clawback_enabled`
+  flags — verified against mainnet Horizon on 2026-09-04 — and why that clawback
+  risk sits with the seller rather than with a non-custodial facilitator.
+- **WebMCP tools** ([`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp),
+  live at [`vellar-webmcp.onrender.com`](https://vellar-webmcp.onrender.com)):
+  browser-native WebMCP tools exposing this facilitator's Bazaar to an agent
+  running in the page — `search_vellar_bazaar`, `pay_and_call`, and
+  `check_vellar_earnings`. Submitted to the WebMCP Challenge hackathon
+  (2026-09-03). Separate repo; it consumes this facilitator's public HTTP API
+  and shares no code with it.
 - **Trust layer:** settlement stats with provenance disclosure
   (`statsSource`, `observedSettlements`), TOFU ownership binding with
   origin-fetch verification and displacement, `ownershipState` tri-state on the
@@ -353,7 +414,7 @@ Implemented, tested, and live:
   manual wiring. This closes the seller onboarding gap: the wallet
   is the x402 payer, this facilitator is verify/settle, the
   extension is how a developer becomes a seller in under a minute.
-- **Test suite and security review:** 379 tests (`vitest run`), including
+- **Test suite and security review:** 578 tests (`vitest run`), including
   mutation-named guards and the wire-conformance suites above; a completed
   pre-mainnet security review with every finding tracked to closure
   (`docs/security-audit.md`, `docs/closing-state.md`) — the F12 sponsor-drain
@@ -424,10 +485,11 @@ launch. Three milestones (final = mainnet, per SCF):
 
 1. **Production hardening.** ~~DB-backed Bazaar catalog~~ — **delivered ahead
    of funding** (libSQL/Turso, live since 2026-08-11, restart-verified).
-   Remaining: operational telemetry + public status dashboard toward the 99%+
-   target (the scheduled settle probe, already delivered, is the first
-   instrument feeding it); load-hardening + sequence-number management under
-   concurrent settlement using the fee-bump path (channel accounts); **a live
+   ~~Operational telemetry + public status dashboard~~ — **delivered**
+   (11 named Prometheus metrics, Grafana Cloud dashboard; §8).
+   ~~Load-hardening + sequence-number management under concurrent settlement~~
+   — **delivered** (the 50-account channel pool; §8).
+   Remaining: **a live
    trustline/payability check on every discovery entry** — read-time
    confirmation that the listed `payTo` currently holds a trustline for the
    priced asset, so a buyer is warned before attempting a settlement that
