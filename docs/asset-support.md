@@ -42,6 +42,11 @@ across networks without fragmenting supply.
 > issuer) can revoke a trustline or claw back a balance from any account holding
 > USDT0.
 >
+> Note: the issuer account `GATISXX6BZ6NC7IKQBY37CJD4SOZL3CYZJWXEDG6JVIY4WBS6KXJHN6Q`
+> has no `home_domain` set, so there is no on-chain SEP-1 `stellar.toml` linking
+> this account to Tether. The attribution to Tether rests on off-chain reputation
+> and the LayerZero/USDT0 documentation, not on-chain proof.
+>
 > The Vellar Facilitator is **non-custodial**: payments flow directly from the
 > payer to the seller's `payTo` address, and the facilitator's sponsor key is
 > used only to pay the network fee (it is passed solely as `feeBumpSigner` and is
@@ -53,11 +58,16 @@ across networks without fragmenting supply.
 >
 > USDC does not carry this risk.
 
-Note on provenance: the issuer address and the `auth_revocable` /
-`auth_clawback_enabled` flags above are properties of the asset itself, published
-by its issuer. They are recorded here for seller awareness and are not asserted
-or verified by this facilitator — confirm them against Horizon before relying on
-them for anything consequential.
+Verified against Stellar mainnet Horizon on 2026-09-04:
+
+- `auth_revocable`: **true**
+- `auth_clawback_enabled`: **true**
+- `auth_required`: **false**
+- Contract `CBSJZEIO5C7KC2SF3MKSNXXJSW5G3VTNBX4ATMKUI3B2MR4JKM4R26YF` confirmed as
+  a genuine SAC (`contractExecutableStellarAsset`, not custom wasm),
+  cryptographically bound to
+  `USDT0:GATISXX6BZ6NC7IKQBY37CJD4SOZL3CYZJWXEDG6JVIY4WBS6KXJHN6Q` via on-ledger
+  `AssetInfo` decoding.
 
 ## Querying by asset
 
