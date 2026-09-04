@@ -511,7 +511,7 @@ Proof (Stellar testnet):
 
 Everything below must be complete before the mainnet tag. The list is
 **sequenced** — each item depends on the previous being stable — and **one of
-the seven is complete today** (item 2). What *is* complete alongside it is the
+the seven is complete today** (item 2); **item 3 is partially addressed.** What *is* complete alongside it is the
 production-hardening work that precedes the list (§8, and the delivered items
 struck through in milestone 1 below).
 
@@ -519,7 +519,7 @@ struck through in milestone 1 below).
 | --- | --- | --- | --- |
 | 1 | External security audit | ⏳ Not started | Longest lead time — start first. Firms covering Stellar/Soroban: OtterSec, Halborn, Cure53, Trail of Bits. |
 | 2 | Channel-account balance monitoring | ✅ Done | Automated via `src/channelMonitor.ts` (commit `c88d79f`). Disables on low balance, auto-enables on recovery, fail-open with a 5-failure staleness limit. |
-| 3 | Semantic search (embeddings + eval harness) | ⏳ Not started | The RFP's highest-weighted requirement. Full plan in §5.1; status in `docs/conformance-report.md` §6.3. |
+| 3 | Semantic search (embeddings + eval harness) | ⚠️ Partial | Enhanced **lexical** search shipped (synonym expansion, stemming, trust ranking, seller tags, eval harness) — commit `7651547`. Full semantic embeddings deferred: no external API dependency, no ongoing cost. Eval harness in `docs/search-eval.md` serves as the regression baseline. **The RFP item remains open** until embeddings are implemented. |
 | 4 | Pubnet deployment + live settlement test | ⏳ Not started | A real `exact`-scheme settled tx hash on pubnet. Closes `docs/conformance-report.md` §6.2. |
 | 5 | `upto` channel-pool integration | ⏳ Blocked | Concurrent `upto` settlements can `txBadSeq` — the scheme shares the sponsor's sequence instead of taking a pool lane. Blocked on the upstream wire format (x402-foundation/x402 #3134). `src/upto.ts`. |
 | 6 | USDT0 mainnet trustlines | ⏳ Not started | Only where a *seller* accepts USDT0 — their `payTo` needs the trustline. Channel accounts need none (they hold no payment asset; §8, `docs/channel-pool-design.md` §5). `docs/asset-support.md`. |
