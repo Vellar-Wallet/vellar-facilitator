@@ -50,9 +50,17 @@ interface ListQuery {
   offset?: string;
   /** Trust-layer filter: "true" keeps only verification-verified entries. */
   verified_only?: string;
+  /** Vellar extension (not an x402 spec filter): keep only listings with an
+   *  accepts entry for this exact asset. Validated by parseAssetFilter. */
+  asset?: string;
 }
 
-interface SearchQuery extends Omit<ListQuery, "offset"> {
+/** `asset` is OMITTED deliberately, alongside `offset`. SearchQuery inherits
+ *  from ListQuery, so a field added there silently reaches /discovery/search
+ *  too — and search is explicitly out of scope for the asset filter. Naming it
+ *  in the Omit is what makes that exclusion survive the next edit to ListQuery,
+ *  instead of depending on someone remembering. */
+interface SearchQuery extends Omit<ListQuery, "offset" | "asset"> {
   query?: string;
   cursor?: string;
 }
@@ -259,7 +267,38 @@ export async function buildServer(
     },
   );
 
-  app.get("/supported", async () => facilitator.getSupported());
+  /**
+   * GET /supported — the x402 surface, plus `catalogAssets`.
+   *
+   * `catalogAssets` is an ADDITIVE Vellar field, not an x402 one: the spec's
+   * `kinds`/`extensions`/`signers` are passed through from
+   * facilitator.getSupported() untouched, so a canonical client reading only
+   * the spec fields sees exactly what it saw before.
+   *
+   * It answers "which assets can I actually pay with here?" — which the spec
+   * fields do not, because a scheme/network pair says nothing about the tokens
+   * sellers have chosen. Derived from the live catalog on every request, never
+   * configured and never cached, so an asset that arrives via a real settlement
+   * shows up with no deploy and no allowlist edit. That is the point: the
+   * facilitator is asset-agnostic (docs/security-audit.md:92), so this reports
+   * what sellers are doing rather than what an operator has permitted.
+   *
+   * BOTH network keys are ALWAYS present, even when empty. A caller must be
+   * able to read `catalogAssets["stellar:testnet"]` and get an array rather
+   * than `undefined`, and an empty array is the honest answer for "no listing
+   * in this catalog accepts anything on that network yet". `assetsByNetwork()`
+   * reports only networks it actually saw, so the two guaranteed keys are
+   * seeded here and any other network the catalog happens to hold is merged on
+   * top rather than dropped.
+   */
+  app.get("/supported", async () => {
+    const catalogAssets: Record<string, string[]> = {
+      "stellar:testnet": [],
+      "stellar:pubnet": [],
+      ...catalog.assetsByNetwork(),
+    };
+    return { ...facilitator.getSupported(), catalogAssets };
+  });
 
   app.post<{ Body: FacilitatorRequestBody }>("/verify", async (request, reply) => {
     // Tranche 1 deliverable 1.2 telemetry (src/metrics.ts). Explicit calls
@@ -697,12 +736,25 @@ export async function buildServer(
     if (q.verified_only === "true" && verifiedOnlyUnanswerable()) {
       return reply.status(400).send(verifiedOnlyRefusal());
     }
+    // Validated BEFORE the catalog is touched, so a malformed value is answered
+    // with a 400 rather than silently behaving like "no filter" — which would
+    // return every listing to a caller who asked for one asset.
+    const assetFilter = parseAssetFilter(q.asset);
+    if (!assetFilter.ok) {
+      return reply.status(400).send({
+        error: "invalid_asset",
+        detail:
+          "asset parameter must be a non-empty string of at most 56 characters " +
+          "with no whitespace or control characters",
+      });
+    }
     const response = catalog.list({
       ...(q.type !== undefined ? { type: q.type } : {}),
       ...(q.payTo !== undefined ? { payTo: q.payTo } : {}),
       ...(q.scheme !== undefined ? { scheme: q.scheme } : {}),
       ...(q.network !== undefined ? { network: q.network } : {}),
       ...(q.extensions !== undefined ? { extensions: q.extensions } : {}),
+      ...(assetFilter.value !== undefined ? { asset: assetFilter.value } : {}),
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.offset !== undefined ? { offset: Number(q.offset) } : {}),
     });
@@ -842,6 +894,49 @@ function buildExtensionResponsesHeader(outcome: CatalogOutcome): string {
     safe.reason = sanitizeExtensionResponsesReason(outcome.reason);
   }
   return JSON.stringify({ bazaar: safe });
+}
+
+/** Longest possible asset filter value. A Stellar contract address (SAC) is
+ *  exactly 56 base32 characters, so anything longer cannot be one. Bounding the
+ *  value keeps an arbitrarily long query string out of the per-request scan. */
+const MAX_ASSET_FILTER_LEN = 56;
+
+/**
+ * Validate the `asset` query param for GET /discovery/resources.
+ *
+ * Returns `{ ok: true, value }` with the trimmed asset, `{ ok: true }` when the
+ * param was absent (no filter), or `{ ok: false }` when it is malformed and the
+ * route must answer 400.
+ *
+ * DELIBERATELY NOT a full Stellar address check. The value is compared by exact
+ * string equality against stored `accepts[].asset` and nothing else — it never
+ * reaches SQL (the catalog filter is an in-memory Map scan; every statement in
+ * store.ts is a literal with bound `?` args), and it never reaches Soroban RPC.
+ * So the only real hazards are an unbounded value and a value that is obviously
+ * not an address at all, both of which are caught here. A well-formed-looking
+ * 56-char string that is not a real SAC is ACCEPTED and simply matches nothing,
+ * which is the honest answer: the facilitator is asset-agnostic and has no
+ * registry of legitimate assets to check against (docs/security-audit.md:92 —
+ * the asset allowlist was evaluated and deliberately not adopted). Rejecting it
+ * would imply an allowlist that does not exist.
+ *
+ * Control characters (NUL included) and internal whitespace are refused rather
+ * than stripped: an address containing them is malformed, and silently
+ * normalising it would let two different inputs collapse onto one filter.
+ */
+export function parseAssetFilter(
+  raw: string | undefined,
+): { ok: true; value?: string } | { ok: false } {
+  if (raw === undefined) return { ok: true };
+  if (typeof raw !== "string") return { ok: false };
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { ok: false };
+  if (trimmed.length > MAX_ASSET_FILTER_LEN) return { ok: false };
+  // Any remaining whitespace is INTERNAL (the ends are already trimmed), and
+  // any control character — including a NUL — is refused outright.
+  // eslint-disable-next-line no-control-regex -- deliberately matching control chars
+  if (/[\s\u0000-\u001f\u007f]/.test(trimmed)) return { ok: false };
+  return { ok: true, value: trimmed };
 }
 
 export function policyBucketKey(payTo: unknown): string {

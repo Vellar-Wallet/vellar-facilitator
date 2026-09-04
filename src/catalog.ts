@@ -1661,7 +1661,7 @@ export class BazaarCatalog {
     params: Pick<
       ListDiscoveryResourcesParams,
       "type" | "payTo" | "scheme" | "network" | "extensions"
-    >,
+    > & { asset?: string },
   ): StoredEntry[] {
     return [...this.entries.values()].filter(({ resource: r }) => {
       if (params.type && r.type !== params.type) return false;
@@ -1669,8 +1669,71 @@ export class BazaarCatalog {
       if (params.scheme && !r.accepts.some((a) => a.scheme === params.scheme)) return false;
       if (params.network && !r.accepts.some((a) => a.network === params.network)) return false;
       if (params.extensions && !(r.extensions && params.extensions in r.extensions)) return false;
+      // Asset filter. `asset` is NOT part of the SDK's own
+      // ListDiscoveryResourcesParams, which is why the parameter type above is
+      // widened locally rather than a plain Pick — the spec has no asset filter
+      // yet, so this is an additive Vellar extension, not a spec field we were
+      // failing to implement.
+      //
+      // Applied LAST, so it narrows whatever the preceding filters left rather
+      // than replacing them: `?asset=X&network=Y` is an AND, never a union.
+      //
+      // EXACT, CASE-SENSITIVE equality against the stored accepts[].asset, the
+      // same shape as the payTo/scheme/network filters above. Stellar contract
+      // addresses are base32 and case-sensitive, so lowercasing either side
+      // would silently match a different (or no) asset. The value is treated as
+      // an OPAQUE string here: it is never parsed, never interpolated into SQL
+      // (list/filter never touch the store at all — this is an in-memory Map
+      // scan), and never sent to Soroban RPC. Format validation lives at the
+      // route, which is the trust boundary that can answer with a 400.
+      if (params.asset && !r.accepts.some((a) => a.asset === params.asset)) return false;
       return true;
     });
+  }
+
+  /**
+   * Every distinct asset present in the catalog, grouped by the network its
+   * accepts entry declares. Powers `catalogAssets` on GET /supported.
+   *
+   * DERIVED AT READ TIME, never stored and never configured: an asset appears
+   * here because a real settlement catalogued a listing that accepts it, and
+   * disappears when the last such listing is evicted. That means a new asset
+   * needs no config change, no allowlist edit and no deploy to become visible —
+   * which is the whole point, and also why this must not be cached.
+   *
+   * Reveals nothing that GET /discovery/resources does not already serve
+   * publicly: every accepts[] block, asset included, is already in that
+   * response. This is strictly an aggregate of data already on the wire.
+   *
+   * Networks the caller did not ask about are still returned (as empty arrays)
+   * by the route — see server.ts. This method reports only what is actually
+   * present, so an empty catalog yields an empty map, not a map of empty
+   * arrays; shaping that into the guaranteed-key response is the route's job.
+   */
+  assetsByNetwork(): Record<string, string[]> {
+    const byNetwork = new Map<string, Set<string>>();
+    for (const { resource } of this.entries.values()) {
+      for (const a of resource.accepts) {
+        // Both fields are validated strings by acceptSchema at ingest and load
+        // (the F6 funnel), but a defensive check costs nothing and keeps a
+        // malformed row from putting `undefined` on the wire.
+        // `network` is a CAIP-2 template type the compiler proves non-empty, so
+        // only `asset` needs the guard. Both are validated strings by
+        // acceptSchema at ingest and load (the F6 funnel); this keeps a
+        // malformed row from putting an empty entry on the wire.
+        if (typeof a.asset !== "string" || a.asset === "") continue;
+        let set = byNetwork.get(a.network);
+        if (!set) byNetwork.set(a.network, (set = new Set()));
+        set.add(a.asset);
+      }
+    }
+    // Sorted for a stable response — an endpoint whose array order changes
+    // between identical requests is needlessly hard to diff or cache.
+    const out: Record<string, string[]> = {};
+    for (const [network, assets] of [...byNetwork.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      out[network] = [...assets].sort();
+    }
+    return out;
   }
 
   /**
