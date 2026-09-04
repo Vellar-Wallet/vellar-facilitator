@@ -26,6 +26,18 @@ data/
 # If you need a scratch file to persist, put it in the session scratchpad OUTSIDE
 # the repo (docs/walkthrough-wallet-spec.md §4), not here. This rule stops an
 # accident; it is not a place to keep secrets.
+# Generated MAINNET keypairs (scripts/gen-mainnet-keys.mjs). This is the one
+# file in this repo that contains REAL mainnet secret keys in plaintext — the
+# sponsor's and all 50 channel accounts'. Committing it hands over every account
+# the facilitator signs with.
+#
+# Listed BEFORE the generator existed, deliberately: a generator that can write
+# an un-ignored secrets file, even for one commit, is the accident this prevents.
+# The script also refuses to run if this rule is missing, so the two cannot drift.
+#
+# The dot prefix keeps it out of a casual `ls`; the glob covers the timestamp.
+scripts/.mainnet-keys-*.json
+
 *provision-tmp*
 *.provision.mjs
 *.scratch.*
