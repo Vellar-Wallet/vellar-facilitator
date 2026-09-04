@@ -121,3 +121,42 @@ Both network keys are always present, even when empty, so a client can read
 request time from the catalog itself — a new asset appears automatically once a
 real settlement catalogs a listing that accepts it, with no config change and no
 deploy.
+
+## Mainnet roadmap
+
+The following USDT0 integrations are scoped for the mainnet launch, not the
+current testnet deployment.
+
+### Channel pool trustlines
+
+The 50 channel accounts that handle concurrent settlements currently hold only
+USDC trustlines. Before USDT0 settlements can process on mainnet, each channel
+account must open a USDT0 trustline. This is a one-time setup step at mainnet
+launch.
+
+### Clawback guard (trust signal)
+
+USDT0 has `auth_clawback_enabled` set by Tether. A seller who accepts USDT0 and
+has their balance clawed back before using it has no recourse. The facilitator
+will surface a clawback warning in the Bazaar listing when a seller's
+`payTo` address is accepting a clawback-enabled asset — giving buyers a visible
+trust signal before paying.
+
+This is **informational, not enforcement**. The facilitator remains
+non-custodial and asset-agnostic at settle time.
+
+### USDT0 payment path in WebMCP
+
+The `vellar-webmcp` `pay_and_call` tool currently funds throwaway wallets with
+USDC only. A USDT0 payment path — acquiring USDT0 via the Stellar DEX instead of
+USDC — will allow agents to pay USDT0-only endpoints autonomously through
+WebMCP.
+
+### Cross-chain payer support
+
+USDT0 maintains a unified supply across 26+ networks via LayerZero's OFT
+standard. A payer on Ethereum, Base, or Arbitrum holds the same USDT0 that lands
+on Stellar. Cross-chain payer support — where an agent originating on another
+chain can pay a Vellar-listed endpoint that settles on Stellar — is a
+longer-term integration dependent on mainnet deployment and LayerZero routing
+being stable on Stellar.
