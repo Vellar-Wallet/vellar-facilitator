@@ -1,3 +1,6 @@
+<img width="5410" height="2088" alt="Full Logo White" src="https://github.com/user-attachments/assets/5482e051-094a-42f7-af68-278888ad2be6" />
+
+
 # vellar-facilitator
 
 An x402 payment facilitator for Stellar with **Bazaar discovery** — verify and
