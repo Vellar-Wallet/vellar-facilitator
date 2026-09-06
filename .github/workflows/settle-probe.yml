@@ -72,10 +72,28 @@ jobs:
       - name: fund sponsor
         run: |
           curl -fsS "https://friendbot.stellar.org/?addr=${{ steps.provision.outputs.SPONSOR_PUBLIC }}" > /dev/null
+      # The 50 channel accounts the pool settles from. CHANNEL_ACCOUNT_SECRET_KEYS
+      # became REQUIRED with no default in 6f5de85 (2026-08-31) and this workflow
+      # was never updated, so the facilitator refused to boot on every scheduled
+      # run from that day — 24 consecutive failures, all reported only as
+      # `curl: (7) ... port 4100`, because the real error went to facilitator.log
+      # and nothing printed it. See the "boot diagnostics" step below.
+      #
+      # Created from the sponsor rather than via 50 friendbot calls: channel
+      # accounts need only the minimum reserve (the sponsor is the feeBumpSigner
+      # — docs/channel-pool-design.md §5/§6), and 50 sequential friendbot calls
+      # would be minutes of wall clock and a fresh rate-limit flake surface.
+      - name: provision channel accounts
+        id: channels
+        run: |
+          SPONSOR_SECRET='${{ steps.provision.outputs.SPONSOR_SECRET }}' \
+            node scripts/provision-channel-accounts.mjs >> "$GITHUB_OUTPUT"
       - name: boot stack
         run: |
           mkdir -p data
-          SPONSOR_SECRET_KEY='${{ steps.provision.outputs.SPONSOR_SECRET }}' PORT=4100 \
+          SPONSOR_SECRET_KEY='${{ steps.provision.outputs.SPONSOR_SECRET }}' \
+            CHANNEL_ACCOUNT_SECRET_KEYS='${{ steps.channels.outputs.CHANNEL_ACCOUNT_SECRET_KEYS }}' \
+            PORT=4100 \
             CATALOG_DB_URL=file:./data/catalog.db npm start > facilitator.log 2>&1 &
           for i in $(seq 1 60); do curl -fsS http://localhost:4100/health >/dev/null 2>&1 && break; sleep 2; done
           cd examples
@@ -84,6 +102,17 @@ jobs:
             node seller.mjs > ../seller.log 2>&1 &
           for i in $(seq 1 90); do curl -fsS http://localhost:4031/whoami >/dev/null 2>&1 && break; sleep 2; done
           curl -fsS http://localhost:4100/health && curl -fsS http://localhost:4031/whoami
+      # WHY THIS STEP EXISTS. The boot failure above was invisible for 24 runs:
+      # the facilitator wrote its exact cause to facilitator.log, the log was
+      # uploaded as an artifact nobody opened, and the run page showed only
+      # "exit code 7". A config error that names itself is worth nothing if the
+      # name never reaches the log an operator actually reads. `if: failure()`
+      # so a healthy run stays quiet.
+      - name: boot diagnostics (on failure)
+        if: failure()
+        run: |
+          echo "───── facilitator.log ─────"; tail -60 facilitator.log || true
+          echo "───── seller.log ─────";      tail -40 seller.log      || true
       - name: probe (burst)
         run: |
           cd examples
