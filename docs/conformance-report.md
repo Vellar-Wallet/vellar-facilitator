@@ -28,7 +28,7 @@ It asks specifically for:
 | C4 | A passing run of the x402 repo's e2e suite for both networks | ⚠️ **partial** — 6/10 passed testnet, 4 unexecuted, pubnet unrun; §6.1 |
 | C5 | A published settled transaction hash per network per scheme | ⚠️ **testnet only** — §4, §5. Pubnet: §6.2 |
 | C6 | A non-null `reason` on every rejection | ✅ verified live, §3.3 |
-| S1 | Bazaar search: "real ranking" with a stated evaluation approach (RFP §3.2) | ⛔ **lexical only** — see §6.3 |
+| S1 | Bazaar search: "real ranking" with a stated evaluation approach (RFP §3.2) | ⚠️ **partial** — hybrid semantic search shipped (`969a56c`). Lexical + Voyage AI `voyage-code-3` embeddings, RRF fusion. Measured: semantic queries MRR 0.717, NDCG@3 0.789. Five of ten semantic queries miss first place. Eval corpus is one seller's demo (19 entries). Not claimed as met until retrieval quality holds across a diverse real-world corpus. See §6.3 |
 
 This document is that artifact. Every claim in it is either a live response
 captured from the running service, or a transaction hash independently
@@ -392,16 +392,28 @@ its sponsor with XLM, provision channel accounts on pubnet, settle one real
 G-10 (the spend ceiling accounted at a ~22× over-estimate) is an open **pubnet
 tuning** decision that should be resolved before a mainnet launch, not after.
 
-### 6.3 Bazaar search ranking is lexical, not semantic — RFP §3.2 ⛔
+### 6.3 Bazaar search ranking is hybrid; not yet claimed as met — RFP §3.2 ⚠️
 
-**The verdict is unchanged: this is lexical retrieval, not the semantic ranking
-the RFP asks to be graded on.** There are **no embeddings and no vector index**
-— the store carries no vector column, no vector extension and no full-text
-index, and scoring is computed in memory at read time. What follows corrects an
-earlier revision of this section that described the retriever as bare
-token/substring matching and stated there was **no documented evaluation
-methodology**. Both understated what had shipped in `e507c6a`, and the second
-is now simply false.
+**Hybrid semantic search shipped in `969a56c` (2026-09-08), and this item is
+still not claimed as met.** Both halves of that sentence matter.
+
+Embeddings exist: Voyage AI `voyage-code-3` (1024 dimensions), stored per entry,
+fused with the lexical ranking below via Reciprocal Rank Fusion. Measured on the
+ten semantic queries that share no vocabulary with any listing, MRR moved
+0.264 → **0.717** and NDCG@3 0.263 → **0.789**, while the original ten
+keyword-shaped queries were left unchanged at 0.950 / 0.963. That last part is
+why hybrid was chosen over replacement.
+
+It is not claimed as met because **five of the ten semantic queries still miss
+first place** (all ten reach the top 3, so the right answers are retrieved but
+not always ranked first), and the eval corpus is a single seller's demo of 19
+entries. A retrieval quality number measured against one seller's catalog
+describes that catalog, not the ranking.
+
+*(This section previously read "lexical, not semantic ⛔" and asserted there
+were no embeddings and no vector index. That was true when written and became
+false on 2026-09-08. An earlier revision before that also understated the
+lexical retriever and wrongly claimed there was no evaluation methodology.)*
 
 **What is actually implemented** (`src/catalog.ts`, `scoreResource` and its
 helpers):
@@ -444,17 +456,23 @@ catalogs most often leave unimplemented:
 **We are not claiming it is done.** Against that bar, what exists is a
 deterministic, testable baseline with a regression gate: it returns sensible
 results for keyword-shaped queries and degrades predictably for conceptual
-ones. A query sharing no literal or synonym token with any listing returns
-**nothing at all** — not a weak ranking, an empty list. That is the failure
-mode semantic retrieval exists to fix, and it is why this stays ⛔.
+ones. Before `969a56c`, a query sharing no literal or synonym token with any
+listing returned **nothing at all**, not a weak ranking but an empty list. That
+was the failure mode semantic retrieval exists to fix, and the vector half now
+fixes it: all ten semantic queries return a relevant result. What remains is
+where they rank.
 
 **Pre-mainnet plan:**
 
-- Replace lexical scoring with **semantic embeddings**
-  (`text-embedding-3-small` or equivalent).
-- Add a **vector index** — in-memory HNSW rebuilt at boot from stored
-  embeddings, or Turso's native vector extension if available. (Neither exists
-  today; this is greenfield on schema and dependencies.)
+- ~~Add semantic embeddings and a vector ranking.~~ **Done** in `969a56c`:
+  Voyage AI `voyage-code-3`, 1024 dimensions, stored per catalog entry, fused
+  with the lexical ranking by RRF. Cosine similarity over an in-memory cache
+  rather than an HNSW index, which is adequate at this catalog size and keeps
+  `search()` synchronous so a Voyage outage degrades ranking instead of hanging
+  the endpoint.
+- **Improve top-1 accuracy.** Five of ten semantic queries reach the top 3 but
+  not first place. This is a reranking problem, not a retrieval one, so more
+  embedding coverage will not fix it.
 - Extend the eval harness beyond one seller's catalog and beyond top-1, with
   documented metrics (**NDCG** or **MRR**) and a published floor that gates the
   build — the shape `docs/search-eval.md` already has, at a scale that measures
