@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
-import { TransactionBuilder } from "@stellar/stellar-sdk";
+import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
@@ -953,12 +953,14 @@ export function policyBucketKey(payTo: unknown): string {
  * NOT validate signatures, sequence, or fees (that is the scheme's re-simulation
  * job). A malformed/garbage string is rejected here so it never reaches an RPC
  * simulation. The passphrase is irrelevant to XDR structure, so any value works.
+ * Networks.TESTNET is used as a required-but-semantically-unused argument — any
+ * passphrase value produces the same structural parse result.
  */
 function isParseableTransactionXdr(payload: PaymentPayload): boolean {
   const tx = (payload as { payload?: { transaction?: unknown } }).payload?.transaction;
   if (typeof tx !== "string" || tx.length === 0) return false;
   try {
-    TransactionBuilder.fromXDR(tx, "Test SDF Network ; September 2015");
+    TransactionBuilder.fromXDR(tx, Networks.TESTNET);
     return true;
   } catch {
     return false;
