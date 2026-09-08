@@ -1718,7 +1718,12 @@ export class BazaarCatalog {
     // ── Lexical ranking. UNCHANGED, and deliberately computed in full even when
     // the vector path is about to run. It scores 10/10 on docs/search-eval.md;
     // the vector ranking is added ALONGSIDE it, never in place of it.
-    const lexical = this.filter(params)
+    // Filtered ONCE and shared with the vector ranking below. Both rankings must
+    // run over the same candidate set anyway (ranking outside the filter would
+    // let a semantic match on an excluded resource take a slot), so filtering
+    // twice would be a full scan of the catalog for no additional information.
+    const candidates = this.filter(params);
+    const lexical = candidates
       .map((entry) => ({ entry, score: scoreResource(entry.resource, tokens, entry.stats) }))
       .filter((s) => s.score > 0)
       .sort(
@@ -1727,7 +1732,7 @@ export class BazaarCatalog {
           b.entry.resource.lastUpdated.localeCompare(a.entry.resource.lastUpdated),
       );
 
-    const fused = this.fuseWithVectorRanking(lexical, params);
+    const fused = this.fuseWithVectorRanking(lexical, candidates, params.query);
     const scored = fused.map((entry) => toItem(entry));
 
     const page = scored.slice(offset, offset + limit);
@@ -1777,9 +1782,10 @@ export class BazaarCatalog {
    */
   private fuseWithVectorRanking(
     lexical: Array<{ entry: StoredEntry; score: number }>,
-    params: SearchDiscoveryResourcesParams,
+    candidates: StoredEntry[],
+    rawQuery: string | undefined,
   ): StoredEntry[] {
-    const query = params.query?.trim() ?? "";
+    const query = rawQuery?.trim() ?? "";
     if (!query || !embeddingsEnabled() || this.embeddings.size === 0) {
       return lexical.map((s) => s.entry);
     }
@@ -1791,9 +1797,11 @@ export class BazaarCatalog {
     }
 
     // The vector ranking runs over the SAME filtered candidate set as the
-    // lexical one, not over the whole catalog. Ranking outside the filter would
-    // let a semantic match on a resource the caller explicitly excluded (wrong
-    // network, wrong payTo) consume a slot in the fused list.
+    // lexical one (handed in by the caller), not over the whole catalog.
+    // Ranking outside the filter would let a semantic match on a resource the
+    // caller explicitly excluded (wrong network, wrong payTo) consume a slot in
+    // the fused list.
+    //
     // Keys come from the entries map itself rather than being re-derived from
     // the resource url. An MCP entry's key is COMPOUND (`url \0 toolName`), so
     // re-deriving it here would mean reconstructing a key inline — the exact
@@ -1802,7 +1810,6 @@ export class BazaarCatalog {
     const keyOf = new Map<StoredEntry, string>();
     for (const [key, entry] of this.entries) keyOf.set(entry, key);
 
-    const candidates = this.filter(params);
     const vectorRanked = candidates
       .map((entry) => {
         const key = keyOf.get(entry);
