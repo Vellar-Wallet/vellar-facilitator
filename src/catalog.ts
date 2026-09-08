@@ -18,6 +18,13 @@ import type {
 import { isIP } from "node:net";
 import { isBlockedAddress } from "./ownership.js";
 import type { OwnershipVerdict } from "./ownership.js";
+import {
+  buildEmbeddingText,
+  cosineSimilarity,
+  embeddingsEnabled,
+  embedQuery,
+  embedTexts,
+} from "./embeddings.js";
 import type { TrustedDiscoveryResource } from "./trust.js";
 
 const DEFAULT_LIMIT = 20;
@@ -38,6 +45,11 @@ const MAX_ACCEPTS = 20;
 /** Max ownership tombstones. At this cap the catalog FREEZES new bindings
  * rather than forgetting ownership — see `frozen`. */
 const MAX_TOMBSTONES = 100_000;
+
+/** Distinct query vectors held in memory. Bounded because the key is
+ *  attacker-supplied text on a public endpoint — see the queryVectors field.
+ *  1024 floats is ~8KB, so this caps the cache at ~8MB. */
+const MAX_QUERY_VECTORS = 1_000;
 /** Longest string that can be a payTo identity. Shared by the catalog and the
  *  spend policy — see BazaarCatalog.canonicalPayTo. */
 export const MAX_PAYTO_LEN = 128;
@@ -605,6 +617,47 @@ export class BazaarCatalog {
    * once per settlement. */
   private readonly warnedUnverifiable = new Set<string>();
 
+  /**
+   * Document vectors, keyed by canonical resource key. Loaded once at boot and
+   * maintained by the fire-and-forget ingest writer.
+   *
+   * WHY IN MEMORY, AND WHY THIS DECIDES search()'s SIGNATURE.
+   *
+   * search() is synchronous and has 12 call sites in the test suite plus one in
+   * server.ts. The alternative was to make it async, which is cheap at the call
+   * sites (server.ts:797 is already an async handler) but expensive in a way
+   * that does not show up in a diff: it would put a NETWORK CALL TO VOYAGE on
+   * the request path of every search, with a vendor outage turning into a hung
+   * discovery endpoint rather than a degraded one.
+   *
+   * Holding the vectors in memory keeps the store out of the hot path entirely.
+   * 1024 floats x 8 bytes is 8KB per entry, so even at the MAX_ENTRIES cap this
+   * is single-digit megabytes, and it is the same order as the entries map
+   * already held beside it.
+   *
+   * That leaves exactly ONE thing that cannot be done synchronously: embedding
+   * the QUERY, which is by definition not known ahead of time. See
+   * searchHybrid() for how that is handled without changing search()'s
+   * signature.
+   */
+  private readonly embeddings = new Map<string, number[]>();
+
+  /**
+   * Query-vector cache, bounded, most-recent-wins. This is what lets the
+   * synchronous search() consult the vector ranking at all: a repeated query
+   * finds its vector already here, and a first-time query warms it in the
+   * background for next time.
+   *
+   * Bounded because it is keyed on ATTACKER-SUPPLIED text. An unbounded map
+   * keyed on the query string is a trivial memory-exhaustion vector: a few
+   * thousand distinct queries would pin megabytes each, and discovery is a
+   * public endpoint.
+   */
+  private readonly queryVectors = new Map<string, number[]>();
+  /** Queries whose embedding is being fetched, so N concurrent identical
+   *  searches make ONE API call rather than N. */
+  private readonly queryInFlight = new Set<string>();
+
   constructor(store?: CatalogStore) {
     this.store = store;
   }
@@ -712,6 +765,24 @@ export class BazaarCatalog {
       if (incomingVerified || existingVerified) catalog.everVerified.add(key);
     }
     await catalog.load(opts.maxEntries ?? MAX_ENTRIES);
+    // Document vectors, loaded ONCE into memory so search() can stay
+    // synchronous. Best-effort by construction: a store that cannot answer here
+    // leaves the map empty and the catalog runs lexical-only, which is a
+    // ranking-quality degradation and not a correctness one. It must not join
+    // ownership in freezing the catalog — semantic search is additive, and
+    // taking discovery down because a vector column would not read would be a
+    // far worse outcome than ranking without it.
+    try {
+      for (const row of (await store.loadEmbeddings()) ?? []) {
+        catalog.embeddings.set(row.resource_key, row.embedding);
+      }
+    } catch (err) {
+      console.warn(
+        `[catalog] embeddings could not be loaded (${String(
+          (err as Error)?.message ?? err,
+        )}) — search runs lexical-only until the next restart`,
+      );
+    }
     return catalog;
   }
 
@@ -1548,6 +1619,11 @@ export class BazaarCatalog {
     }
     this.evictToCap();
     this.save();
+    // Semantic index, updated out of band. AFTER evictToCap() so a resource
+    // that was just evicted is not embedded, and fire-and-forget so the
+    // settlement this call is part of never waits on, or fails because of, an
+    // embedding API.
+    this.embedEntryInBackground(key, candidate.resource);
     // Accepted — "cataloged: true" regardless of isFirstCatalog. A seller
     // reading EXTENSION-RESPONSES cares whether their resource IS in the
     // catalog now, not whether this particular settlement happened to be the
@@ -1639,15 +1715,20 @@ export class BazaarCatalog {
       if (decoded && decoded.k === filterKey) offset = decoded.o;
     }
 
-    const scored = this.filter(params)
+    // ── Lexical ranking. UNCHANGED, and deliberately computed in full even when
+    // the vector path is about to run. It scores 10/10 on docs/search-eval.md;
+    // the vector ranking is added ALONGSIDE it, never in place of it.
+    const lexical = this.filter(params)
       .map((entry) => ({ entry, score: scoreResource(entry.resource, tokens, entry.stats) }))
       .filter((s) => s.score > 0)
       .sort(
         (a, b) =>
           b.score - a.score ||
           b.entry.resource.lastUpdated.localeCompare(a.entry.resource.lastUpdated),
-      )
-      .map((s) => toItem(s.entry));
+      );
+
+    const fused = this.fuseWithVectorRanking(lexical, params);
+    const scored = fused.map((entry) => toItem(entry));
 
     const page = scored.slice(offset, offset + limit);
     const nextOffset = offset + page.length;
@@ -1662,6 +1743,176 @@ export class BazaarCatalog {
         cursor: hasMore ? encodeCursor({ o: nextOffset, k: filterKey }) : null,
       },
     };
+  }
+
+  /**
+   * Fuse the lexical ranking with a vector ranking, if one is available.
+   *
+   * RETURNS THE LEXICAL ORDER UNTOUCHED whenever semantic search cannot
+   * contribute, which is what makes the VOYAGE_API_KEY-unset path
+   * byte-identical to what shipped before. There are four such cases and each
+   * is a normal operating state, not an error:
+   *
+   *   1. no API key           — semantic search was never turned on
+   *   2. empty query          — scoreResource() ranks these by TRUST, not by
+   *                             text. There is no query to embed, and a vector
+   *                             ranking would replace a deliberate "proven
+   *                             endpoints first" ordering with a meaningless
+   *                             similarity to the empty string.
+   *   3. no document vectors  — the backfill has not run yet
+   *   4. query vector not yet cached — see below
+   *
+   * Case 4 is the interesting one, and it is the price of keeping search()
+   * synchronous. The FIRST search for a given query cannot embed it without
+   * blocking, so it returns the lexical ranking and warms the vector in the
+   * background; the next identical query is hybrid. The alternative was making
+   * search() async and paying a Voyage round trip on every request, including
+   * the ones lexical already answers perfectly.
+   *
+   * That tradeoff is honest about what it costs: a cold query is lexical-only.
+   * It is the right trade because the lexical path is not a degraded fallback
+   * here, it is a ranking that already scores 10/10 on the eval, and because
+   * the failure mode of the alternative is a hung endpoint rather than a
+   * slightly worse ordering.
+   */
+  private fuseWithVectorRanking(
+    lexical: Array<{ entry: StoredEntry; score: number }>,
+    params: SearchDiscoveryResourcesParams,
+  ): StoredEntry[] {
+    const query = params.query?.trim() ?? "";
+    if (!query || !embeddingsEnabled() || this.embeddings.size === 0) {
+      return lexical.map((s) => s.entry);
+    }
+
+    const queryVector = this.queryVectors.get(query);
+    if (!queryVector) {
+      this.warmQueryVector(query);
+      return lexical.map((s) => s.entry);
+    }
+
+    // The vector ranking runs over the SAME filtered candidate set as the
+    // lexical one, not over the whole catalog. Ranking outside the filter would
+    // let a semantic match on a resource the caller explicitly excluded (wrong
+    // network, wrong payTo) consume a slot in the fused list.
+    // Keys come from the entries map itself rather than being re-derived from
+    // the resource url. An MCP entry's key is COMPOUND (`url \0 toolName`), so
+    // re-deriving it here would mean reconstructing a key inline — the exact
+    // thing §3.7 forbids, and the thing that would silently miss every MCP
+    // entry's vector.
+    const keyOf = new Map<StoredEntry, string>();
+    for (const [key, entry] of this.entries) keyOf.set(entry, key);
+
+    const candidates = this.filter(params);
+    const vectorRanked = candidates
+      .map((entry) => {
+        const key = keyOf.get(entry);
+        const vector = key ? this.embeddings.get(key) : undefined;
+        return vector ? { entry, similarity: cosineSimilarity(queryVector, vector) } : undefined;
+      })
+      .filter((v): v is { entry: StoredEntry; similarity: number } => v !== undefined)
+      .sort((a, b) => b.similarity - a.similarity);
+
+    if (vectorRanked.length === 0) return lexical.map((s) => s.entry);
+
+    // 1-BASED ranks, because rrfScore()'s k is calibrated against 1-based ranks
+    // — a 0-based rank 0 would give the top hit 1/60 instead of 1/61, a
+    // different and undocumented weighting.
+    const lexicalRank = new Map<StoredEntry, number>();
+    lexical.forEach((s, i) => lexicalRank.set(s.entry, i + 1));
+    const vectorRank = new Map<StoredEntry, number>();
+    vectorRanked.forEach((v, i) => vectorRank.set(v.entry, i + 1));
+
+    // A resource present in one list and absent from the other gets a PENALTY
+    // RANK of (that list's length + 1): it is treated as ranking just past the
+    // end of the list it missed. This is what lets a purely semantic hit — zero
+    // lexical score, so absent from the lexical list entirely — still surface,
+    // which is the entire point of the feature. It also means a resource in
+    // both lists beats one in only a single list, all else equal.
+    const union = new Set<StoredEntry>([...lexicalRank.keys(), ...vectorRank.keys()]);
+    const lexicalMiss = lexical.length + 1;
+    const vectorMiss = vectorRanked.length + 1;
+
+    return [...union]
+      .map((entry) => ({
+        entry,
+        rrf: rrfScore(lexicalRank.get(entry) ?? lexicalMiss, vectorRank.get(entry) ?? vectorMiss),
+      }))
+      .sort(
+        (a, b) =>
+          b.rrf - a.rrf ||
+          // Same tiebreak as the lexical path, so fusion never introduces a
+          // nondeterministic ordering between two equally ranked resources.
+          b.entry.resource.lastUpdated.localeCompare(a.entry.resource.lastUpdated),
+      )
+      .map((r) => r.entry);
+  }
+
+  /**
+   * Fetch a query's vector in the background so the NEXT identical search can
+   * fuse. Fire-and-forget, matching the displacement/reverify pattern: a search
+   * must never fail, or slow down, because an embedding call did.
+   */
+  private warmQueryVector(query: string): void {
+    if (this.queryInFlight.has(query)) return;
+    this.queryInFlight.add(query);
+    void (async () => {
+      try {
+        const vector = await embedQuery(query);
+        // Bounded, oldest-out. Map preserves insertion order, so the first key
+        // is the least recently ADDED — good enough for a cache whose only job
+        // is to make repeated queries hybrid, and far cheaper than tracking
+        // true LRU access times.
+        if (this.queryVectors.size >= MAX_QUERY_VECTORS) {
+          const oldest = this.queryVectors.keys().next().value;
+          if (oldest !== undefined) this.queryVectors.delete(oldest);
+        }
+        this.queryVectors.set(query, vector);
+      } catch (err) {
+        console.warn(
+          `[catalog] could not embed query for semantic search (${String(
+            (err as Error)?.message ?? err,
+          )}) — this query stays lexical-only`,
+        );
+      } finally {
+        this.queryInFlight.delete(query);
+      }
+    })();
+  }
+
+  /**
+   * Embed one freshly cataloged resource and persist the vector.
+   *
+   * FIRE-AND-FORGET, and the caller must keep it that way. This runs after a
+   * SETTLEMENT has already succeeded: the payment is complete and the entry is
+   * cataloged before this is reached, so an embedding failure must be invisible
+   * to the payer. It is caught and warned, never rethrown, and never awaited on
+   * the settle path.
+   */
+  private embedEntryInBackground(key: string, resource: DiscoveryResource): void {
+    if (!embeddingsEnabled()) return;
+    void (async () => {
+      try {
+        const text = buildEmbeddingText({
+          resource: resource.resource,
+          serviceName: resource.serviceName,
+          description: resource.description,
+          tags: resource.tags,
+        });
+        const [vector] = await embedTexts([text]);
+        if (!vector) return;
+        this.embeddings.set(key, vector);
+        // Persisted so a restart does not have to re-embed the whole catalog.
+        // The store call is last: an in-memory vector is useful even if the
+        // write fails, and this process keeps serving hybrid results either way.
+        await this.store?.saveEmbedding(key, vector);
+      } catch (err) {
+        console.warn(
+          `[catalog] could not embed ${key} (${String(
+            (err as Error)?.message ?? err,
+          )}) — it stays searchable lexically and will be picked up by the next backfill`,
+        );
+      }
+    })();
   }
 
   private filter(
@@ -2219,6 +2470,32 @@ function scoreResource(
     }
   }
   return score;
+}
+
+/**
+ * Reciprocal Rank Fusion — combine a lexical ranking and a vector ranking into
+ * one ordering.
+ *
+ * RRF fuses RANKS, never SCORES, and that is the whole reason it is the right
+ * tool here. A lexical score is an unbounded sum of field weights (a strong
+ * match on a long description can reach 30+); a cosine similarity is bounded in
+ * [-1, 1] and, on this model, clusters tightly around 0.4-0.7 even for
+ * unrelated pairs. Adding or averaging those two numbers compares quantities
+ * with no common unit, and whichever one happens to have the larger spread
+ * silently becomes the only one that matters. Ranks are unitless, so neither
+ * side can dominate by accident, and no per-corpus score normalisation has to
+ * be tuned and re-tuned as the catalog grows.
+ *
+ * `k = 60` is the value from the original Cormack et al. paper and the de-facto
+ * default across search stacks. Its effect is to FLATTEN the top of each list:
+ * with k=60 the gap between rank 1 and rank 2 is small (1/61 vs 1/62), so a
+ * resource must rank well in BOTH lists to beat one that is second in both.
+ * That is exactly the behaviour wanted here, because the lexical list is the
+ * one already known to be good and a confident-but-wrong vector hit should not
+ * be able to displace it from a single first place.
+ */
+export function rrfScore(lexicalRank: number, vectorRank: number, k = 60): number {
+  return 1 / (k + lexicalRank) + 1 / (k + vectorRank);
 }
 
 function hashKey(params: SearchDiscoveryResourcesParams): string {

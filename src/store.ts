@@ -96,6 +96,20 @@ export interface CatalogStore {
   /** Replace every binding for a URL with one proven claimant. See the
    *  implementation for why this is neither an UPDATE nor a plain INSERT. */
   displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void>;
+  /**
+   * Attach a semantic embedding to an existing entry.
+   *
+   * An UPDATE, never an INSERT: an embedding for a resource_key with no entry
+   * row is meaningless, and inserting one would create a row whose `payload`
+   * cannot satisfy NOT NULL. A no-op when the entry has since been evicted,
+   * which is the correct outcome for a fire-and-forget writer racing eviction.
+   */
+  saveEmbedding(resourceKey: string, embedding: number[]): Promise<void>;
+  /** Entries with no embedding yet — the backfill worklist. Returns the payload
+   *  so the caller can build embedding text without a second round trip. */
+  getEntriesWithoutEmbeddings(): Promise<Array<{ resource_key: string; payload: string }>>;
+  /** Every stored embedding, for the in-memory search cache. */
+  loadEmbeddings(): Promise<Array<{ resource_key: string; embedding: number[] }>>;
   close(): Promise<void>;
 }
 
@@ -265,6 +279,26 @@ export class LibsqlCatalogStore implements CatalogStore {
     if (!cols.rows.some((r) => r.name === "verified_at")) {
       console.warn("[store] migrating: adding ownership.verified_at (pre-displacement database)");
       await this.run(() => this.client.execute("ALTER TABLE ownership ADD COLUMN verified_at INTEGER"));
+    }
+    // Same reasoning one table over: a database created before semantic search
+    // shipped has the three-column `entry` shape, and every query naming
+    // `embedding` would fail with "no such column" — which classifyStoreError
+    // does NOT treat as retryable, so it would freeze the catalog rather than
+    // degrade to lexical-only.
+    //
+    // TEXT holding a JSON array, not F32_BLOB. @libsql/client is 0.17.4 and its
+    // vector support is not something to depend on for a column that is only
+    // ever read in full and compared in process; JSON.parse round-trips
+    // exactly, and the cost is paid once at boot into the in-memory cache
+    // rather than per query.
+    //
+    // NULLABLE, and that is the degradation story: an entry written before the
+    // backfill ran simply has no vector, drops out of the vector ranking, and
+    // is still found lexically.
+    const entryCols = await this.run(() => this.client.execute("PRAGMA table_info(entry)"));
+    if (!entryCols.rows.some((r) => r.name === "embedding")) {
+      console.warn("[store] migrating: adding entry.embedding (pre-semantic-search database)");
+      await this.run(() => this.client.execute("ALTER TABLE entry ADD COLUMN embedding TEXT"));
     }
   }
 
@@ -449,6 +483,70 @@ export class LibsqlCatalogStore implements CatalogStore {
         "write",
       ),
     );
+  }
+
+  /**
+   * UPDATE, not upsert — see the interface note. The `WHERE resource_key = ?`
+   * makes an embedding for an evicted entry a silent no-op rather than an
+   * error, which is what the fire-and-forget ingest writer needs: it races
+   * evictToCap() by construction, and losing that race is normal operation,
+   * not a fault worth logging.
+   */
+  async saveEmbedding(resourceKey: string, embedding: number[]): Promise<void> {
+    await this.run(() =>
+      this.client.execute({
+        sql: "UPDATE entry SET embedding = ? WHERE resource_key = ?",
+        args: [JSON.stringify(embedding), resourceKey] as InArgs,
+      }),
+    );
+  }
+
+  async getEntriesWithoutEmbeddings(): Promise<Array<{ resource_key: string; payload: string }>> {
+    const res = await this.run(() =>
+      this.client.execute("SELECT resource_key, payload FROM entry WHERE embedding IS NULL"),
+    );
+    return res.rows.map((r) => {
+      const key = r.resource_key;
+      const payload = r.payload;
+      if (typeof key !== "string" || typeof payload !== "string") {
+        throw new StoreInvalidError(new Error("entry row has a non-string resource_key/payload"));
+      }
+      return { resource_key: key, payload };
+    });
+  }
+
+  /**
+   * Every stored vector, parsed.
+   *
+   * A row that will not parse is SKIPPED WITH A WARNING rather than thrown on,
+   * which is a deliberate departure from how loadEntries() treats a bad row.
+   * The difference is what the data is load-bearing for: an unparseable entry
+   * payload is a resource the catalog would otherwise serve wrongly, so it
+   * fails closed. An unparseable embedding costs only that resource's place in
+   * the VECTOR ranking, and it remains fully findable lexically. Failing the
+   * whole load would take semantic search down for every resource because one
+   * row was written by an older model, which is a far worse trade than ranking
+   * one resource by lexical score alone.
+   */
+  async loadEmbeddings(): Promise<Array<{ resource_key: string; embedding: number[] }>> {
+    const res = await this.run(() =>
+      this.client.execute("SELECT resource_key, embedding FROM entry WHERE embedding IS NOT NULL"),
+    );
+    const out: Array<{ resource_key: string; embedding: number[] }> = [];
+    for (const r of res.rows) {
+      const key = r.resource_key;
+      const raw = r.embedding;
+      if (typeof key !== "string" || typeof raw !== "string") continue;
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed) || parsed.length === 0) continue;
+        if (!parsed.every((n) => typeof n === "number" && Number.isFinite(n))) continue;
+        out.push({ resource_key: key, embedding: parsed as number[] });
+      } catch {
+        console.warn(`[store] skipping unparseable embedding for ${key} — it will rank lexically only`);
+      }
+    }
+    return out;
   }
 
   async close(): Promise<void> {

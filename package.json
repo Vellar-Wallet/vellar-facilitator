@@ -10,7 +10,8 @@
     "start": "tsx --env-file-if-exists=.env src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backfill-embeddings": "tsx --env-file-if-exists=.env src/backfill-embeddings.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
@@ -19,12 +20,13 @@
     "@libsql/client": "^0.17.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@stellar/stellar-sdk": "^16.0.1",
-    "prom-client": "^15.1.3",
     "@x402/core": "^2.20.0",
     "@x402/extensions": "^2.20.0",
     "@x402/stellar": "^2.20.0",
     "fastify": "^5.2.0",
+    "prom-client": "^15.1.3",
     "undici": "^8.10.0",
+    "voyageai": "^0.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
