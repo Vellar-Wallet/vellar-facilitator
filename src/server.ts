@@ -7,6 +7,7 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
+import { defaultRpcFor } from "./rpc-defaults.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
@@ -1054,11 +1055,9 @@ if (isDirectRun) {
   const { createTrustResolver } = await import("./trust.js");
   const trust = createTrustResolver({
     verificationApiUrl: config.verificationApiUrl,
-    rpcUrl:
-      config.rpcUrl ??
-      (config.network === "stellar:pubnet"
-        ? "https://mainnet.sorobanrpc.com"
-        : "https://soroban-testnet.stellar.org"),
+    // Was an inline ternary duplicating the same pair a third time (f1d078b).
+    // Now the one shared map, so this cannot drift from upto.ts and bond.ts.
+    rpcUrl: config.rpcUrl ?? defaultRpcFor(config.network),
   });
   // Per-settle spend is estimated at the fee ceiling (worst case) since the real
   // simulated fee is not exposed on the verify response — over-counting fails safe.
