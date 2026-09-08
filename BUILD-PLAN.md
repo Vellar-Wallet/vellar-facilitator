@@ -27,8 +27,8 @@ now proceed in parallel, not sequentially.
       (operational logs only, 30–90 day retention, no PII/tracking)
 - [x] Interest form: maintenance commitment decided — 24 months, real and
       binding
-- [x] Architecture diagram — text-based, core payment flow + Bazaar
-      discovery flow
+- [x] Architecture diagram — Mermaid sequence diagram (payment flow) +
+      flowchart (Bazaar discovery), in technical-doc.md §4 and README.md
 - [x] Solo vs. team framing addressed head-on
 - [ ] Interest form submitted
 - [ ] Invited to submit full Build form (per RFP timeline: interest form →

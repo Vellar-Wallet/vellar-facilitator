@@ -144,6 +144,43 @@ this facilitator.
 6. **Settlement confirms on-chain; seller unlocks the resource.** Facilitator
    returns the tx hash; seller serves the response.
 
+The same flow as a sequence, including the auto-cataloging step that makes
+the resource discoverable (§5):
+
+```mermaid
+sequenceDiagram
+    participant Buyer
+    participant Seller
+    participant Facilitator
+    participant SorobanRPC
+    participant Catalog
+
+    Buyer->>Seller: GET /resource
+    Seller-->>Buyer: 402 + x402 header (amount, payTo, asset)
+    Buyer->>Facilitator: POST /settle (x402 payload)
+    Facilitator->>SorobanRPC: simulateTransaction (re-verify)
+    SorobanRPC-->>Facilitator: simulation result
+    Facilitator->>SorobanRPC: sendTransaction (sponsor fee-bumped)
+    SorobanRPC-->>Facilitator: settlement confirmed
+    Facilitator->>Catalog: auto-catalog resource (Bazaar extension)
+    Facilitator-->>Buyer: 200 + X-PAYMENT-RESPONSE
+    Buyer->>Seller: GET /resource (with proof)
+    Seller-->>Buyer: 200 + resource content
+```
+
+And the discovery loop that closes back on the catalog:
+
+```mermaid
+flowchart LR
+    A[Agent / Buyer] -->|search query| B[/discovery/search]
+    B --> C{Catalog}
+    C -->|ranked results| A
+    A -->|GET resource URL| D[Seller endpoint]
+    D -->|402 challenge| A
+    A -->|POST /settle| E[Facilitator]
+    E -->|settled| C
+```
+
 ## 5. Bazaar Discovery Flow
 
 Instead of an agent needing a resource's URL in advance, it discovers payable

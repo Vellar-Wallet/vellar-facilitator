@@ -296,6 +296,42 @@ repo adds the HTTP service, correct Stellar configuration, the Bazaar catalog
 (storage, filtering, search, persistence), auto-cataloging ingestion, the MCP
 server, and the test suite. Full spec: [`technical-doc.md`](./technical-doc.md).
 
+Payment flow, end to end:
+
+```mermaid
+sequenceDiagram
+    participant Buyer
+    participant Seller
+    participant Facilitator
+    participant SorobanRPC
+    participant Catalog
+
+    Buyer->>Seller: GET /resource
+    Seller-->>Buyer: 402 + x402 header (amount, payTo, asset)
+    Buyer->>Facilitator: POST /settle (x402 payload)
+    Facilitator->>SorobanRPC: simulateTransaction (re-verify)
+    SorobanRPC-->>Facilitator: simulation result
+    Facilitator->>SorobanRPC: sendTransaction (sponsor fee-bumped)
+    SorobanRPC-->>Facilitator: settlement confirmed
+    Facilitator->>Catalog: auto-catalog resource (Bazaar extension)
+    Facilitator-->>Buyer: 200 + X-PAYMENT-RESPONSE
+    Buyer->>Seller: GET /resource (with proof)
+    Seller-->>Buyer: 200 + resource content
+```
+
+Bazaar discovery loop:
+
+```mermaid
+flowchart LR
+    A[Agent / Buyer] -->|search query| B[/discovery/search]
+    B --> C{Catalog}
+    C -->|ranked results| A
+    A -->|GET resource URL| D[Seller endpoint]
+    D -->|402 challenge| A
+    A -->|POST /settle| E[Facilitator]
+    E -->|settled| C
+```
+
 ## Relationship to Vellar
 
 Separate infrastructure from the [Vellar wallet](https://github.com/Vellar-Wallet/vellar-dapp)
