@@ -28,7 +28,10 @@ import {
 } from "@stellar/stellar-sdk";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
+import QRCode from "qrcode";
+import { marked } from "marked";
+import { diffLines } from "diff";
 
 // Auto-load examples/.env.recording so you never have to `source` it. Existing
 // shell env vars still win (loadEnvFile does not override). No-op if absent.
@@ -474,6 +477,233 @@ const routes = {
           fingerprint: "1155d132ea7a2addad9a75277e...",
         },
       },
+    }),
+  },
+
+  // ── ELEVEN CORPUS-EXPANSION ROUTES ───────────────────────────────────────
+  // Added to widen the Bazaar catalog beyond Stellar utilities and generic
+  // text tools, so semantic-vs-lexical search quality becomes measurable.
+  // Same conventions as every route above. serviceName/tags/description are
+  // the fields the search scorer weights (4/3/2), so each is written for a
+  // real agent query rather than padded.
+
+  "GET /qr": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "QR Code Generator",
+    tags: ["qr", "qrcode", "barcode", "image", "generator", "encode", "url", "link"],
+    description:
+      "Generate a QR code data URL for any text or URL. Returns a base64 PNG data URL ready to embed in HTML.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { text: "https://x402.org" },
+      inputSchema: { properties: { text: { type: "string", description: "Text or URL to encode, max 500 chars" } }, required: ["text"] },
+      output: { example: { dataUrl: "data:image/png;base64,iVBORw0KGgo..." } },
+    }),
+  },
+
+  "GET /color": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Color Converter",
+    tags: ["color", "hex", "rgb", "hsl", "convert", "design", "palette", "css"],
+    description:
+      "Convert colors between hex, RGB, and HSL formats. Input any format, get all three back.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { color: "#ff0000" },
+      inputSchema: { properties: { color: { type: "string", description: "A color as #rrggbb, rgb(r,g,b), or hsl(h,s%,l%)" } }, required: ["color"] },
+      output: { example: { hex: "#ff0000", rgb: "rgb(255, 0, 0)", hsl: "hsl(0, 100%, 50%)" } },
+    }),
+  },
+
+  "GET /markdown": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Markdown to HTML Converter",
+    tags: ["markdown", "html", "convert", "document", "format", "render", "text", "processing"],
+    description:
+      "Convert Markdown text to HTML. Supports headings, bold, italic, lists, links, and code blocks.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { markdown: "# Hello\n\nSome **bold** text." },
+      inputSchema: { properties: { markdown: { type: "string", description: "Markdown source, max 5000 chars" } }, required: ["markdown"] },
+      output: { example: { html: "<h1>Hello</h1>\n<p>Some <strong>bold</strong> text.</p>\n" } },
+    }),
+  },
+
+  "GET /diff": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Text Diff",
+    tags: ["diff", "compare", "version", "change", "text", "document", "patch", "delta"],
+    description:
+      "Compare two texts and return a unified diff showing what changed. Useful for comparing versions of documents or code.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { original: "line one", revised: "line two" },
+      inputSchema: { properties: { original: { type: "string" }, revised: { type: "string" } }, required: ["original", "revised"] },
+      output: { example: { diff: "- line one\n+ line two\n", additions: 1, deletions: 1, unchanged: 0 } },
+    }),
+  },
+
+  "GET /regex": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Regex Tester",
+    tags: ["regex", "regexp", "pattern", "match", "test", "developer", "string", "search"],
+    description:
+      "Test a regular expression against input text. Returns all matches with their positions and capture groups.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { pattern: "\\d+", text: "abc123def456", flags: "g" },
+      inputSchema: { properties: { pattern: { type: "string" }, text: { type: "string" }, flags: { type: "string", description: "RegExp flags, default \"g\"" } }, required: ["pattern", "text"] },
+      output: { example: { matches: [{ match: "123", index: 3, groups: [] }], count: 2, valid: true } },
+    }),
+  },
+
+  "GET /lorem": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Lorem Ipsum Generator",
+    tags: ["lorem", "ipsum", "placeholder", "text", "content", "generator", "dummy", "copy"],
+    description:
+      "Generate placeholder lorem ipsum text. Specify how many paragraphs or words you need.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { paragraphs: "2" },
+      inputSchema: { properties: { paragraphs: { type: "string", description: "How many paragraphs, 1 to 10, default 1" } } },
+      output: { example: { text: "Lorem ipsum dolor sit amet...", wordCount: 69, paragraphs: 2 } },
+    }),
+  },
+
+  "GET /csv": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "CSV to JSON Converter",
+    tags: ["csv", "json", "convert", "data", "transform", "spreadsheet", "table", "parse"],
+    description:
+      "Convert CSV data to a JSON array of objects. First row is treated as headers.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { csv: "name,age\nada,36\ngrace,45" },
+      inputSchema: { properties: { csv: { type: "string", description: "CSV text, first row is headers, max 10000 chars" } }, required: ["csv"] },
+      output: { example: { data: [{ name: "ada", age: "36" }], rows: 2, columns: 2 } },
+    }),
+  },
+
+  "GET /password": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Passphrase Generator",
+    tags: ["password", "passphrase", "security", "random", "generate", "entropy", "credential", "authentication"],
+    description:
+      "Generate a cryptographically secure random passphrase. Choose number of words and separator.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { words: "4", separator: "-" },
+      inputSchema: { properties: { words: { type: "string", description: "How many words, 3 to 8, default 4" }, separator: { type: "string", description: "Joiner, default \"-\"" } } },
+      output: { example: { passphrase: "harbor-anchor-copper-lantern", words: 4, entropy: 34.2 } },
+    }),
+  },
+
+  "GET /cron": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Cron Expression Explainer",
+    tags: ["cron", "schedule", "crontab", "explain", "parse", "job", "automation", "timing"],
+    description:
+      "Parse a cron expression and explain it in plain English. Also shows the next 5 scheduled times.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { expression: "0 9 * * 1-5" },
+      inputSchema: { properties: { expression: { type: "string", description: "Standard 5-field cron expression" } }, required: ["expression"] },
+      output: { example: { explanation: "At 09:00, Monday through Friday", next: ["2026-09-09T09:00:00.000Z"] } },
+    }),
+  },
+
+  "GET /units": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Unit Converter",
+    tags: ["units", "convert", "measurement", "length", "mass", "temperature", "volume", "metric", "imperial"],
+    description:
+      "Convert between units of measurement. Supports length, mass, temperature, and volume.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { value: "1", from: "inch", to: "cm" },
+      inputSchema: { properties: { value: { type: "string" }, from: { type: "string" }, to: { type: "string" } }, required: ["value", "from", "to"] },
+      output: { example: { result: 2.54, value: 1, from: "inch", to: "cm", dimension: "length" } },
+    }),
+  },
+
+  "GET /weather": {
+    accepts: {
+      scheme: "exact",
+      payTo: PAYTO,
+      network: "stellar:testnet",
+      price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
+      maxTimeoutSeconds: 120,
+    },
+    serviceName: "Current Weather",
+    tags: ["weather", "temperature", "forecast", "climate", "conditions", "city", "humidity", "wind", "meteorology"],
+    description:
+      "Get current weather conditions for any city. Returns temperature, humidity, wind speed, and conditions.",
+    mimeType: "application/json",
+    extensions: declareDiscoveryExtension({
+      input: { city: "Lagos" },
+      inputSchema: { properties: { city: { type: "string", description: "City name to look up" } }, required: ["city"] },
+      output: { example: { city: "Lagos", temperature: 27.4, unit: "celsius", humidity: 78, windSpeed: 11.2, conditions: "partly cloudy" } },
     }),
   },
 };
@@ -1052,6 +1282,214 @@ app.get(
   ),
 );
 
+// ── Helpers for the eleven corpus-expansion routes ─────────────────────────
+// Kept together and above their handlers, same as HASH_INPUT_MAX_LEN and
+// usdcToStroops sit above theirs.
+
+const QR_TEXT_MAX = 500;
+const MARKDOWN_MAX = 5000;
+const DIFF_SIDE_MAX = 5000;
+const REGEX_TEXT_MAX = 5000;
+const CSV_MAX = 10000;
+const REGEX_MATCH_CAP = 100;
+
+/** One required string query param, bounded. Throws InputError like every
+ *  other validate() in this file. */
+function requireStringParam(req, name, max) {
+  const v = req.query[name];
+  if (v === undefined || v === "") throw new InputError(400, `missing required query param: ${name}`);
+  if (typeof v !== "string") throw new InputError(400, `${name} must be a single string query param`);
+  if (max !== undefined && v.length > max) {
+    throw new InputError(400, `${name} too long (${v.length} chars), max ${max}`);
+  }
+  return v;
+}
+
+/** Parse #rrggbb / #rgb / rgb(r,g,b) / hsl(h,s%,l%) into {r,g,b} 0-255. */
+function parseColor(input) {
+  const t = input.trim().toLowerCase();
+  let m = /^#([0-9a-f]{3})$/.exec(t);
+  if (m) {
+    const [a, b, c] = m[1];
+    return { r: parseInt(a + a, 16), g: parseInt(b + b, 16), b: parseInt(c + c, 16) };
+  }
+  m = /^#([0-9a-f]{6})$/.exec(t);
+  if (m) {
+    return {
+      r: parseInt(m[1].slice(0, 2), 16),
+      g: parseInt(m[1].slice(2, 4), 16),
+      b: parseInt(m[1].slice(4, 6), 16),
+    };
+  }
+  m = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,[^)]*)?\)$/.exec(t);
+  if (m) {
+    const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if ([r, g, b].every((n) => n <= 255)) return { r, g, b };
+    return null;
+  }
+  m = /^hsla?\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)%\s*,\s*(\d+(?:\.\d+)?)%\s*(?:,[^)]*)?\)$/.exec(t);
+  if (m) return hslToRgb(((Number(m[1]) % 360) + 360) % 360, Number(m[2]) / 100, Number(m[3]) / 100);
+  return null;
+}
+
+function hslToRgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const seg = [
+    [c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x],
+  ][Math.floor(h / 60) % 6];
+  return {
+    r: Math.round((seg[0] + m) * 255),
+    g: Math.round((seg[1] + m) * 255),
+    b: Math.round((seg[2] + m) * 255),
+  };
+}
+
+function rgbToHsl({ r, g, b }) {
+  const [rn, gn, bn] = [r / 255, g / 255, b / 255];
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h = Math.round(h * 60);
+  return { h: (h + 360) % 360, s, l };
+}
+
+const LOREM_WORDS =
+  "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure in reprehenderit voluptate velit esse cillum eu fugiat nulla pariatur excepteur sint occaecat cupidatat non proident sunt culpa qui officia deserunt mollit anim id est laborum".split(
+    " ",
+  );
+
+/** RFC4180-ish CSV: handles quoted fields, escaped quotes, and CRLF. */
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+      } else field += ch;
+      continue;
+    }
+    if (ch === '"') inQuotes = true;
+    else if (ch === ",") { row.push(field); field = ""; }
+    else if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (ch !== "\r") field += ch;
+  }
+  if (field !== "" || row.length > 0) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.length > 1 || r[0] !== "");
+}
+
+const PASSPHRASE_WORDS =
+  "anchor amber apple arbor arrow autumn basin beacon bishop blossom bramble breeze bridge bronze cactus canyon carbon cedar cinder cipher citrus clover cobalt comet copper coral cotton crater crimson crystal cypress dahlia damson dapple dawn delta desert diamond dolphin domino dragon driftwood dusk ember emerald ermine falcon fathom feather fennel fern fjord flint forest fossil fountain foxglove garnet ginger glacier granite gravel harbor harvest hazel heather hemlock heron hollow horizon hurricane indigo iris island ivory jasmine jasper jetty juniper kelp kestrel lagoon lantern larch lattice laurel lava ledger lichen lilac linden lantern lupine magnet magnolia mahogany mallow mangrove maple marble marigold marsh meadow mercury meteor mica midnight mineral mirage mist monsoon moraine mosaic moss mulberry nebula nectar needle nettle nickel nimbus nutmeg oasis obsidian ocean olive onyx opal orchard orchid osprey otter oxide oyster paddock pampas papyrus parsley pasture peat pebble pelican pepper petal pewter pigment pillar pine pinnacle piper plateau plover plum pollen pond poplar poppy prairie prism pumice quarry quartz quill quince radish rainbow rapids raven reef reed relic ridge rill rimrock river rosemary rowan rubble ruby rush saffron sage salmon sandstone sapphire savanna scarlet sequoia shale shore sienna silica silt silver sorrel spindle spruce squall starling steppe sterling stone stork storm summit sunset surf swallow sycamore talon tamarind tangerine teal tempest terrace thicket thistle thorn thrush thunder tidal timber topaz torrent tundra turquoise umber valley velvet verbena vermilion vertex vine violet vista walnut warbler waterfall wavelength willow windmill winter wisteria wren yarrow yew zephyr zircon".split(
+    " ",
+  );
+
+const CRON_DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const CRON_MONTH = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+/** Expand one cron field into the sorted set of values it permits. */
+function cronField(spec, min, max) {
+  const out = new Set();
+  for (const part of spec.split(",")) {
+    const [range, stepRaw] = part.split("/");
+    const step = stepRaw === undefined ? 1 : Number(stepRaw);
+    if (!Number.isInteger(step) || step < 1) return null;
+    let lo;
+    let hi;
+    if (range === "*") { lo = min; hi = max; }
+    else if (range.includes("-")) {
+      const [a, b] = range.split("-").map(Number);
+      if (!Number.isInteger(a) || !Number.isInteger(b)) return null;
+      lo = a; hi = b;
+    } else {
+      const v = Number(range);
+      if (!Number.isInteger(v)) return null;
+      lo = v; hi = stepRaw === undefined ? v : max;
+    }
+    if (lo < min || hi > max || lo > hi) return null;
+    for (let v = lo; v <= hi; v += step) out.add(v);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+function describeCronField(values, all, fmt) {
+  if (values.length === all) return null;
+  return values.map(fmt).join(", ");
+}
+
+/** Unit table. Length/mass/volume convert through a base unit; temperature
+ *  needs offsets so it is handled separately. */
+const UNITS = {
+  length: { m: 1, meter: 1, meters: 1, km: 1000, kilometer: 1000, cm: 0.01, mm: 0.001,
+            inch: 0.0254, in: 0.0254, ft: 0.3048, foot: 0.3048, feet: 0.3048,
+            yard: 0.9144, yd: 0.9144, mile: 1609.344, mi: 1609.344 },
+  mass:   { g: 1, gram: 1, grams: 1, kg: 1000, kilogram: 1000, mg: 0.001,
+            lb: 453.59237, pound: 453.59237, oz: 28.349523125, ounce: 28.349523125,
+            stone: 6350.29318, tonne: 1e6, ton: 1e6 },
+  volume: { l: 1, liter: 1, litre: 1, ml: 0.001, cl: 0.01,
+            gallon: 3.785411784, gal: 3.785411784, quart: 0.946352946,
+            pint: 0.473176473, cup: 0.2365882365, floz: 0.0295735295625 },
+};
+const TEMPS = new Set(["c", "celsius", "f", "fahrenheit", "k", "kelvin"]);
+
+function toCelsius(v, u) {
+  if (u === "c" || u === "celsius") return v;
+  if (u === "f" || u === "fahrenheit") return (v - 32) * (5 / 9);
+  return v - 273.15;
+}
+function fromCelsius(c, u) {
+  if (u === "c" || u === "celsius") return c;
+  if (u === "f" || u === "fahrenheit") return c * (9 / 5) + 32;
+  return c + 273.15;
+}
+function dimensionOf(unit) {
+  if (TEMPS.has(unit)) return "temperature";
+  for (const [dim, table] of Object.entries(UNITS)) if (unit in table) return dim;
+  return null;
+}
+
+/** Open-Meteo, the one external dependency among these routes. No API key.
+ *  Bounded by AbortController like fetchHorizon above, so a slow upstream
+ *  cannot hold a paid request open indefinitely. */
+const OPEN_METEO_TIMEOUT_MS = 8000;
+async function fetchJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPEN_METEO_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { accept: "application/json" } });
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true, body: await res.json() };
+  } catch (err) {
+    return { ok: false, timedOut: err?.name === "AbortError" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** WMO weather interpretation codes, the subset Open-Meteo actually returns. */
+const WMO = {
+  0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+  45: "fog", 48: "depositing rime fog", 51: "light drizzle", 53: "moderate drizzle",
+  55: "dense drizzle", 56: "light freezing drizzle", 57: "dense freezing drizzle",
+  61: "slight rain", 63: "moderate rain", 65: "heavy rain",
+  66: "light freezing rain", 67: "heavy freezing rain",
+  71: "slight snow", 73: "moderate snow", 75: "heavy snow", 77: "snow grains",
+  80: "slight rain showers", 81: "moderate rain showers", 82: "violent rain showers",
+  85: "slight snow showers", 86: "heavy snow showers",
+  95: "thunderstorm", 96: "thunderstorm with slight hail", 99: "thunderstorm with heavy hail",
+};
+
 const HASH_INPUT_MAX_LEN = 500;
 
 app.get(
@@ -1216,6 +1654,336 @@ app.get(
     const fingerprint = createHash("sha256").update(uuid, "utf8").digest("hex");
     return { uuid, fingerprint };
   }),
+);
+
+// ── Handlers for the eleven corpus-expansion routes ────────────────────────
+
+app.get(
+  "/qr",
+  handlePaidRoute(
+    "GET /qr",
+    async (req) => ({
+      text: req.query.text,
+      dataUrl: await QRCode.toDataURL(req.query.text, { errorCorrectionLevel: "M", margin: 1 }),
+    }),
+    (req) => { requireStringParam(req, "text", QR_TEXT_MAX); },
+  ),
+);
+
+app.get(
+  "/color",
+  handlePaidRoute(
+    "GET /color",
+    (req) => {
+      const rgb = parseColor(req.query.color);
+      const { h, s, l } = rgbToHsl(rgb);
+      const hex = `#${[rgb.r, rgb.g, rgb.b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+      return {
+        input: req.query.color,
+        hex,
+        rgb: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
+        hsl: `hsl(${h}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`,
+      };
+    },
+    (req) => {
+      const color = requireStringParam(req, "color", 64);
+      if (parseColor(color) === null) {
+        throw new InputError(400, `"${color}" is not a recognised color (expected #rrggbb, rgb(r,g,b), or hsl(h,s%,l%))`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/markdown",
+  handlePaidRoute(
+    "GET /markdown",
+    (req) => ({ html: marked.parse(req.query.markdown) }),
+    (req) => { requireStringParam(req, "markdown", MARKDOWN_MAX); },
+  ),
+);
+
+app.get(
+  "/diff",
+  handlePaidRoute(
+    "GET /diff",
+    (req) => {
+      const parts = diffLines(req.query.original, req.query.revised);
+      let additions = 0;
+      let deletions = 0;
+      let unchanged = 0;
+      let text = "";
+      for (const part of parts) {
+        const lines = part.value.split("\n").filter((l) => l !== "");
+        if (part.added) { additions += lines.length; for (const l of lines) text += `+ ${l}\n`; }
+        else if (part.removed) { deletions += lines.length; for (const l of lines) text += `- ${l}\n`; }
+        else { unchanged += lines.length; for (const l of lines) text += `  ${l}\n`; }
+      }
+      return { diff: text, additions, deletions, unchanged };
+    },
+    (req) => {
+      requireStringParam(req, "original", DIFF_SIDE_MAX);
+      requireStringParam(req, "revised", DIFF_SIDE_MAX);
+    },
+  ),
+);
+
+app.get(
+  "/regex",
+  handlePaidRoute(
+    "GET /regex",
+    (req) => {
+      const flags = typeof req.query.flags === "string" && req.query.flags !== "" ? req.query.flags : "g";
+      const re = new RegExp(req.query.pattern, flags.includes("g") ? flags : `${flags}g`);
+      const matches = [];
+      for (const m of req.query.text.matchAll(re)) {
+        if (matches.length >= REGEX_MATCH_CAP) break;
+        matches.push({ match: m[0], index: m.index, groups: m.slice(1) });
+      }
+      return { pattern: req.query.pattern, flags, matches, count: matches.length, valid: true };
+    },
+    (req) => {
+      const pattern = requireStringParam(req, "pattern", 500);
+      requireStringParam(req, "text", REGEX_TEXT_MAX);
+      const flags = req.query.flags;
+      if (flags !== undefined && typeof flags !== "string") {
+        throw new InputError(400, "flags must be a single string query param");
+      }
+      if (typeof flags === "string" && !/^[dgimsuvy]*$/.test(flags)) {
+        throw new InputError(400, `"${flags}" contains an invalid RegExp flag`);
+      }
+      try {
+        new RegExp(pattern, typeof flags === "string" && flags !== "" ? flags : "g");
+      } catch (err) {
+        throw new InputError(400, `pattern is not a valid regular expression: ${String(err?.message || err)}`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/lorem",
+  handlePaidRoute(
+    "GET /lorem",
+    (req) => {
+      const n = req.query.paragraphs === undefined || req.query.paragraphs === "" ? 1 : Number(req.query.paragraphs);
+      const paragraphs = [];
+      let wordCount = 0;
+      for (let i = 0; i < n; i++) {
+        const len = 35 + ((i * 7) % 30);
+        const words = [];
+        for (let w = 0; w < len; w++) words.push(LOREM_WORDS[(i * 17 + w * 3) % LOREM_WORDS.length]);
+        wordCount += words.length;
+        const sentence = words.join(" ");
+        paragraphs.push(sentence.charAt(0).toUpperCase() + sentence.slice(1) + ".");
+      }
+      return { text: paragraphs.join("\n\n"), wordCount, paragraphs: n };
+    },
+    (req) => {
+      const raw = req.query.paragraphs;
+      if (raw === undefined || raw === "") return;
+      if (typeof raw !== "string") throw new InputError(400, "paragraphs must be a single string query param");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > 10) {
+        throw new InputError(400, `paragraphs must be a whole number between 1 and 10, got "${raw}"`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/csv",
+  handlePaidRoute(
+    "GET /csv",
+    (req) => {
+      const rows = parseCsv(req.query.csv);
+      const headers = rows[0];
+      const data = rows.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
+      return { data, rows: data.length, columns: headers.length, headers };
+    },
+    (req) => {
+      const csv = requireStringParam(req, "csv", CSV_MAX);
+      const rows = parseCsv(csv);
+      if (rows.length < 2) {
+        throw new InputError(400, "csv needs a header row and at least one data row");
+      }
+    },
+  ),
+);
+
+app.get(
+  "/password",
+  handlePaidRoute(
+    "GET /password",
+    (req) => {
+      const words = req.query.words === undefined || req.query.words === "" ? 4 : Number(req.query.words);
+      const separator = typeof req.query.separator === "string" && req.query.separator !== "" ? req.query.separator : "-";
+      const picked = [];
+      for (let i = 0; i < words; i++) picked.push(PASSPHRASE_WORDS[randomInt(PASSPHRASE_WORDS.length)]);
+      return {
+        passphrase: picked.join(separator),
+        words,
+        separator,
+        // Entropy assumes uniform selection WITH replacement from the list,
+        // which is what randomInt gives: log2(listSize) bits per word.
+        entropy: Number((words * Math.log2(PASSPHRASE_WORDS.length)).toFixed(1)),
+        wordlistSize: PASSPHRASE_WORDS.length,
+      };
+    },
+    (req) => {
+      const raw = req.query.words;
+      if (raw !== undefined && raw !== "") {
+        if (typeof raw !== "string") throw new InputError(400, "words must be a single string query param");
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 3 || n > 8) {
+          throw new InputError(400, `words must be a whole number between 3 and 8, got "${raw}"`);
+        }
+      }
+      const sep = req.query.separator;
+      if (sep !== undefined && (typeof sep !== "string" || sep.length > 4)) {
+        throw new InputError(400, "separator must be a string of at most 4 characters");
+      }
+    },
+  ),
+);
+
+app.get(
+  "/cron",
+  handlePaidRoute(
+    "GET /cron",
+    (req) => {
+      const [min, hour, dom, mon, dow] = req.query.expression.trim().split(/\s+/);
+      const mins = cronField(min, 0, 59);
+      const hours = cronField(hour, 0, 23);
+      const doms = cronField(dom, 1, 31);
+      const mons = cronField(mon, 1, 12);
+      const dows = cronField(dow, 0, 6);
+
+      const timeBit =
+        mins.length === 60 && hours.length === 24
+          ? "Every minute"
+          : hours.length === 24
+            ? `At minute ${mins.join(", ")} of every hour`
+            : `At ${hours.flatMap((h) => mins.map((m) => `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`)).slice(0, 6).join(", ")}`;
+      const dowBit = describeCronField(dows, 7, (d) => CRON_DOW[d]);
+      const domBit = describeCronField(doms, 31, (d) => `day ${d}`);
+      const monBit = describeCronField(mons, 12, (m) => CRON_MONTH[m - 1]);
+      const explanation = [timeBit, dowBit && `on ${dowBit}`, domBit && `on ${domBit}`, monBit && `in ${monBit}`]
+        .filter(Boolean)
+        .join(", ");
+
+      // Walk forward minute by minute from the next whole minute. Bounded at
+      // roughly four years so an unsatisfiable expression terminates.
+      const next = [];
+      const cursor = new Date();
+      cursor.setUTCSeconds(0, 0);
+      cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
+      for (let i = 0; i < 2200000 && next.length < 5; i++) {
+        if (
+          mins.includes(cursor.getUTCMinutes()) &&
+          hours.includes(cursor.getUTCHours()) &&
+          doms.includes(cursor.getUTCDate()) &&
+          mons.includes(cursor.getUTCMonth() + 1) &&
+          dows.includes(cursor.getUTCDay())
+        ) {
+          next.push(cursor.toISOString());
+        }
+        cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
+      }
+      return { expression: req.query.expression, explanation, next, timezone: "UTC" };
+    },
+    (req) => {
+      const expr = requireStringParam(req, "expression", 100);
+      const fields = expr.trim().split(/\s+/);
+      if (fields.length !== 5) {
+        throw new InputError(400, `cron expression must have exactly 5 fields (minute hour day-of-month month day-of-week), got ${fields.length}`);
+      }
+      const bounds = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 6]];
+      fields.forEach((f, i) => {
+        if (cronField(f, bounds[i][0], bounds[i][1]) === null) {
+          throw new InputError(400, `field ${i + 1} ("${f}") is not a valid cron field`);
+        }
+      });
+    },
+  ),
+);
+
+app.get(
+  "/units",
+  handlePaidRoute(
+    "GET /units",
+    (req) => {
+      const value = Number(req.query.value);
+      const from = req.query.from.trim().toLowerCase();
+      const to = req.query.to.trim().toLowerCase();
+      const dim = dimensionOf(from);
+      if (dim === "temperature") {
+        const result = fromCelsius(toCelsius(value, from), to);
+        return { result: Number(result.toFixed(6)), value, from, to, dimension: "temperature" };
+      }
+      const table = UNITS[dim];
+      const result = (value * table[from]) / table[to];
+      return {
+        result: Number(result.toFixed(6)),
+        value,
+        from,
+        to,
+        dimension: dim,
+        formula: `x ${Number((table[from] / table[to]).toFixed(6))}`,
+      };
+    },
+    (req) => {
+      const raw = requireStringParam(req, "value", 32);
+      const value = Number(raw);
+      if (!Number.isFinite(value)) throw new InputError(400, `value must be a finite number, got "${raw}"`);
+      const from = requireStringParam(req, "from", 32).trim().toLowerCase();
+      const to = requireStringParam(req, "to", 32).trim().toLowerCase();
+      const fromDim = dimensionOf(from);
+      const toDim = dimensionOf(to);
+      if (fromDim === null) throw new InputError(400, `unknown unit "${from}"`);
+      if (toDim === null) throw new InputError(400, `unknown unit "${to}"`);
+      if (fromDim !== toDim) {
+        throw new InputError(400, `cannot convert ${fromDim} to ${toDim} ("${from}" to "${to}")`);
+      }
+    },
+  ),
+);
+
+app.get(
+  "/weather",
+  handlePaidRoute(
+    "GET /weather",
+    async (req) => {
+      const city = req.query.city.trim();
+      const geo = await fetchJson(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&format=json`,
+      );
+      if (!geo.ok) {
+        throw new Error(geo.timedOut ? "geocoding service timed out" : `geocoding service returned ${geo.status}`);
+      }
+      const place = geo.body?.results?.[0];
+      if (!place) throw new Error(`no city found matching "${city}"`);
+      const wx = await fetchJson(
+        `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}` +
+          `&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code`,
+      );
+      if (!wx.ok) {
+        throw new Error(wx.timedOut ? "weather service timed out" : `weather service returned ${wx.status}`);
+      }
+      const c = wx.body.current;
+      return {
+        city: place.name,
+        country: place.country,
+        temperature: c.temperature_2m,
+        unit: "celsius",
+        humidity: c.relative_humidity_2m,
+        windSpeed: c.wind_speed_10m,
+        conditions: WMO[c.weather_code] ?? `unknown (code ${c.weather_code})`,
+        observedAt: c.time,
+      };
+    },
+    (req) => { requireStringParam(req, "city", 100); },
+  ),
 );
 
 app.listen(PORT, () => {
