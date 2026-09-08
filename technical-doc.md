@@ -29,7 +29,7 @@ Each row names where to check it without trusting this table:
 
 | Claim | Verified | Check it yourself |
 | --- | --- | --- |
-| The full loop works today from a clean run | `./demo.sh` during the sweep settled tx `c5ad0d7b…7f93` (ledger 4249010) and auto-cataloged the resource | `./demo.sh` — one command, no secrets, friendbot-funded |
+| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through `vellar-facilitator.onrender.com` and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§4). **NOT `./demo.sh`** — it has been broken since `6f5de85` (2026-08-31): it never sets `CHANNEL_ACCOUNT_SECRET_KEYS`, which `config.ts:414` now requires, so the local facilitator refuses to boot. Tracked in [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) |
 | Payments settle on-chain; the sponsor pays the fee | tx `1da6f9e6…e039` Horizon-confirmed successful, `fee_account` = this facilitator's sponsor | hashes in §8, stellar.expert or Horizon |
 | Provenance gating works both ways | tx `8bde387b…6faf` settled while attested; the identical payment post-revoke was rejected inside `__check_auth` | §8 |
 | Canonical testnet USDC end to end, no faucet | tx `f9b743c5…8c98` (ledger 4106526) and `cda3cbaa…50ea` (ledger 4137813) | §8 |
@@ -143,6 +143,36 @@ this facilitator.
    the fee from its own account — buyers hold only the payment asset, no XLM.
 6. **Settlement confirms on-chain; seller unlocks the resource.** Facilitator
    returns the tx hash; seller serves the response.
+
+### Time to first settlement
+
+Measured end to end on 2026-09-08 against the hosted testnet facilitator, from
+an empty directory to a settled payment: **188 seconds (3 min 8 s)**.
+
+| Step | Time |
+| --- | --- |
+| Generate a keypair | under 1 s |
+| Fund it with XLM (friendbot) | 7 s |
+| Add the USDC trustline | 5 s |
+| Get testnet USDC (Circle faucet, browser) | 60 s |
+| Run the payment (`buyer-classic.mjs`) | 16 s |
+| **Total, including operator think-time between steps** | **188 s** |
+
+The step times sum to 88 s; the remaining 100 s is the interval between a human
+finishing one step and starting the next, which is why the total is reported as
+measured rather than as the sum. The payment itself, from process start to
+settled hash, is 16 s.
+
+Settled: [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd),
+ledger 4570443, `fee_charged` 23,060 stroops paid by the facilitator's sponsor,
+not the payer.
+
+Two honest qualifiers. The Circle faucet step needs a browser and cannot be
+scripted, so 60 s is a real floor for a first-time developer rather than an
+artifact. And this measures the path against the **hosted** facilitator; running
+a local facilitator additionally requires 50 funded channel accounts, documented
+in [`docs/deploy-runbook.md`](./docs/deploy-runbook.md). `demo.sh` was meant to
+automate that and currently does not (§8).
 
 The same flow as a sequence, including the auto-cataloging step that makes
 the resource discoverable (§5):
@@ -462,8 +492,15 @@ Implemented, tested, and live:
   `USE_USDC=1` — canonical testnet USDC acquired from the DEX with no faucet.
   The seller refuses at boot to write unverifiable entries into shared state,
   and the hosted demo resource is itself payable in USDC by any stranger.
-  `demo.sh` walks a clean clone to a settled transaction hash in one command,
-  with preflight checks that each name the real failure they prevent.
+  `demo.sh` was written to walk a clean clone to a settled transaction hash in
+  one command, with preflight checks that each name the real failure they
+  prevent. It is **currently broken** and does not reach a settlement: the
+  channel-pool change (`6f5de85`, 2026-08-31) made
+  `CHANNEL_ACCOUNT_SECRET_KEYS` a hard boot requirement and the script was
+  never updated, so the facilitator exits at `config.ts:414` and the script
+  reports a misleading "seller did not come up". The working path today is
+  the hosted facilitator plus `examples/buyer-classic.mjs` (§4). Tracked in
+  [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90).
 - **VS Code extension**
   ([`VellarWallet.vellar-x402`](https://marketplace.visualstudio.com/items?itemName=VellarWallet.vellar-x402),
   v0.1.3, MIT, live on the VS Code Marketplace): one command adds a working x402
