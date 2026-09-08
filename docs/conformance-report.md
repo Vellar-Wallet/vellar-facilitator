@@ -210,12 +210,13 @@ inferred from reading source:
 One further upstream PR, in a different repository:
 
 - [stellar/stellar-docs#2836](https://github.com/stellar/stellar-docs/pull/2836)
-  (2026-09-08, **draft**): adds Vellar to a new *Community facilitators*
-  subsection of the x402 facilitators page, stating testnet-only and
-  pre-production status inline. Filed as a draft because it proposes new
-  structure in someone else's documentation rather than filling an existing
-  list, and the PR offers to drop the change if maintainers would rather not
-  carry a community section. Head commit `5d01b36`, GPG-signed and verified.
+  (2026-09-08): **ready for review, signed, 0 reviews.** Adds Vellar to a new
+  *Community facilitators* subsection of the x402 facilitators page, stating
+  testnet-only and pre-production status inline. It proposes new structure in
+  someone else's documentation rather than filling an existing list, so the PR
+  offers to drop the change if maintainers would rather not carry a community
+  section. Head commit `5d01b36`, GPG-signed and verified. Opened as a draft and
+  marked ready the same day.
 
   This is **not** the x402 Foundation listing named as item 7 of the pre-mainnet
   checklist (`technical-doc.md` §9). That one targets `x402-foundation/x402` and
@@ -223,8 +224,8 @@ One further upstream PR, in a different repository:
   listings; neither closes the other.
 
 The upstream tally, stated plainly so it is not read as more than it is: **two
-PRs open (both unreviewed, one a draft) and two issues filed**, of which one
-issue has attracted an independent fix. Nothing has been merged.
+PRs open, both ready for review and both unreviewed, and two issues filed**, of
+which one issue has attracted an independent fix. Nothing has been merged.
 
 ### 5.2 Known `upto` limitation
 
