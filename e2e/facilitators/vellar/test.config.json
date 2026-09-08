@@ -1,0 +1,13 @@
+{
+  "name": "vellar",
+  "type": "facilitator",
+  "language": "typescript",
+  "protocolFamilies": ["stellar"],
+  "x402Versions": [2],
+  "schemes": ["exact"],
+  "extensions": ["bazaar"],
+  "environment": {
+    "required": [],
+    "optional": ["VELLAR_FACILITATOR_URL"]
+  }
+}

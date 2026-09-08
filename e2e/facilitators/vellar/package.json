@@ -1,0 +1,6 @@
+{
+  "name": "@x402/e2e-facilitator-vellar",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "tsx index.ts" }
+}
