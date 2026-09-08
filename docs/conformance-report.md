@@ -159,12 +159,47 @@ from [`tolgayayci/rail402`](https://github.com/tolgayayci/rail402) at commit
   nothing tied that instance's on-chain hash to a reproducible build;
 - re-ran the 17 upstream tests.
 
-The RFP asks for the `upto` scheme to be **authored** as
-`scheme_upto_stellar.md` and contributed upstream via the x402 Technical
-Steering Committee. **That has not been done.** Vetting and independently
-rebuilding someone else's contract is a materially different claim from
-authoring the spec, and this report does not conflate them. Upstreaming through
-the TSC is the next step and remains outstanding.
+The RFP asks for the `upto` scheme to be **authored** and contributed upstream
+via the x402 Technical Steering Committee. Vetting and independently rebuilding
+someone else's contract is a materially different claim from authoring a spec,
+and this report does not conflate them.
+
+**Status: PR [#3428](https://github.com/x402-foundation/x402/pull/3428) open,
+under TSC review** (filed 2026-09-08). *(was: "That has not been done.")*
+
+What was filed is a **convergence document**, not a competing design:
+`specs/schemes/upto/scheme_upto_stellar_interop.md`, 349 lines. It derives
+MUST/SHOULD requirements from agreement across six implementations read in
+source (rail402, #3134, #3098, Rialto, openx402, LumenGate) and names five
+places they diverge as open questions for the TSC, without picking a winner.
+Section 8 credits rail402 as the contract design author; what this team claims
+is the reproducible-build verification and four live testnet settlements, not
+authorship of the contract.
+
+Two things about how it was filed, stated because they bear on how much the
+deliverable can be said to be met:
+
+- **The filename is deliberately not `scheme_upto_stellar.md`.** That path is
+  claimed by [#3134](https://github.com/x402-foundation/x402/pull/3134), and two
+  PRs adding the same new file collide on merge. Filing there would have forced
+  an either/or between documents this one describes as complementary.
+- **No maintainer has replied yet.** We asked on #3134 (2026-09-08) where the
+  work should land and offered to hand it over; the PR was filed before an
+  answer, and states in its body that it will be closed and folded into either
+  existing PR if the TSC prefers. Until a reviewer responds, "open" is the
+  honest status, not "accepted".
+
+Two upstream **issues** are also on record, both reproduced live rather than
+inferred from reading source:
+
+- [#3125](https://github.com/x402-foundation/x402/issues/3125) (2026-08-11):
+  `settle` discards the RPC's submission status, so retryable and terminal
+  failures are indistinguishable to callers. **Someone else is now fixing it**:
+  [#3293](https://github.com/x402-foundation/x402/pull/3293) references it
+  directly.
+- [#3158](https://github.com/x402-foundation/x402/issues/3158) (2026-08-14): the
+  canonical client cannot sign for Soroban smart accounts, which makes an entire
+  payer class (policy-governed agents, passkey wallets) unreachable.
 
 ### 5.2 Known `upto` limitation
 
