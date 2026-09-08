@@ -202,12 +202,12 @@ And the discovery loop that closes back on the catalog:
 
 ```mermaid
 flowchart LR
-    A[Agent / Buyer] -->|search query| B[/discovery/search]
-    B --> C{Catalog}
+    A["Agent / Buyer"] -->|search query| B["/discovery/search"]
+    B --> C{"Catalog"}
     C -->|ranked results| A
-    A -->|GET resource URL| D[Seller endpoint]
+    A -->|GET resource URL| D["Seller endpoint"]
     D -->|402 challenge| A
-    A -->|POST /settle| E[Facilitator]
+    A -->|POST /settle| E["Facilitator"]
     E -->|settled| C
 ```
 
