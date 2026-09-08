@@ -73,6 +73,40 @@ export interface HardeningOptions {
   bodyLimitBytes?: number;
 }
 
+/**
+ * Rate-limit bucket key: the rightmost X-Forwarded-For entry, which on Render is
+ * the address its proxy observed and appended, and is therefore the one part of
+ * the header a client cannot forge. Exported for the D4 tests.
+ *
+ * `xff` is whatever Node parsed the header into: a string, an array when the
+ * header appeared more than once, or undefined. All three are handled, and the
+ * array case takes the last element of the last header for the same
+ * rightmost-wins reason.
+ */
+export function rateLimitKeyFor(xff: string | string[] | undefined, fallback: string): string {
+  const raw = Array.isArray(xff) ? xff[xff.length - 1] : xff;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const parts = raw.split(",");
+    const rightmost = parts[parts.length - 1]!.trim();
+    if (rightmost !== "") return stripPort(rightmost);
+  }
+  return stripPort(fallback);
+}
+
+/**
+ * Drop a trailing port. IPv4 and hostname forms carry it as `addr:port`; a
+ * bracketed IPv6 carries it as `[addr]:port`. A BARE IPv6 (`2001:db8::1`) is
+ * all colons and has no port to strip, so it must be returned untouched, which
+ * is what the bracket and single-colon checks below distinguish.
+ */
+function stripPort(addr: string): string {
+  const bracketed = /^\[(.+)\](?::\d+)?$/.exec(addr);
+  if (bracketed) return bracketed[1]!;
+  const colons = addr.split(":").length - 1;
+  if (colons === 1) return addr.slice(0, addr.indexOf(":"));
+  return addr;
+}
+
 const DEFAULT_RATE_MAX = 60;
 const DEFAULT_BODY_LIMIT = 32 * 1024;
 
@@ -119,14 +153,24 @@ export async function buildServer(
   // one noisy client 429s everyone and an IP-rotating attacker is never
   // partitioned.
   //
-  // Trust exactly ONE hop, never `true`. X-Forwarded-For is client-writable and
-  // Render's proxy APPENDS the true client after whatever the client sent, so
-  // `true` would take the attacker-controlled leftmost entry — letting anyone
-  // mint a fresh rate-limit bucket per request and evade the limit entirely
-  // (strictly worse than the shared-bucket bug). Trusting one hop makes the
-  // address Render's proxy actually observed authoritative. Raise this number
-  // only if you add more trusted proxies in front of the service.
-  const app = Fastify({ logger: true, bodyLimit, trustProxy: 1 });
+  // `trustProxy: 1` USED to be set here, and fastify 5.12.x removed `number`
+  // from the accepted type at the same time as it changed what a hop count
+  // resolves `req.ip` to. Both halves of that change point the same way: a hop
+  // COUNT is no longer a reliable way to get the forwarded client.
+  //
+  // The rate limiter no longer depends on it either way. Its `keyGenerator`
+  // below reads the rightmost X-Forwarded-For entry from the header directly,
+  // which is the value Render's proxy appended and the one a client cannot
+  // forge, so the D4 partitioning property is now owned by that function rather
+  // than by Fastify's ip resolution.
+  //
+  // `trustProxy` stays UNSET (the default, false) rather than being set to
+  // `true`. `true` would make `req.ip` the attacker-controlled LEFTMOST entry,
+  // which is strictly worse than the shared-bucket bug it would appear to fix:
+  // anyone could mint a fresh rate-limit bucket per request. With it unset,
+  // `req.ip` is the proxy address, which is only ever used as the fallback when
+  // no X-Forwarded-For header is present at all, i.e. a direct connection.
+  const app = Fastify({ logger: true, bodyLimit });
   registerBazaar(facilitator, catalog);
 
   // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
@@ -157,6 +201,26 @@ export async function buildServer(
     // gauges, a duration histogram, never an address or a key), so this is
     // about compute-cost/abuse posture, not confidentiality.
     allowList: (req) => req.url === "/health",
+    // D4, second half. `trustProxy: 1` above tells Fastify which hop to trust,
+    // but fastify 5.12.x changed how a hop COUNT resolves `req.ip`: with
+    // `trustProxy: 1` it now returns the PROXY's address for every request
+    // rather than the forwarded client, which silently collapses every client
+    // behind Render into ONE rate-limit bucket. That is precisely the D4
+    // failure the test in src/hardening.test.ts exists to prevent, and it
+    // produces no error, only a wrong bucket.
+    //
+    // So the key is derived from the header directly rather than from whatever
+    // `req.ip` currently resolves to. RIGHTMOST, not leftmost, and the
+    // difference is the whole security property: X-Forwarded-For is
+    // client-writable and Render's proxy APPENDS the address it actually
+    // observed, so the last entry is the one a client cannot forge. Taking the
+    // leftmost would let anyone mint a fresh bucket per request by sending
+    // `X-Forwarded-For: <random>`, which is strictly worse than the shared
+    // bucket (see the trustProxy comment above).
+    //
+    // Falls back to `req.ip` when the header is absent, which is the local and
+    // direct-connection case.
+    keyGenerator: (req) => rateLimitKeyFor(req.headers["x-forwarded-for"], req.ip),
     // vellar_rate_limit_rejections_total (src/metrics.ts) — onExceeded is
     // the correct hook (confirmed against @fastify/rate-limit's own type
     // definitions): it fires exactly when a request is ACTUALLY rejected
