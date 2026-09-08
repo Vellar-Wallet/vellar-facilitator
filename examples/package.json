@@ -15,5 +15,11 @@
     "@x402/stellar": "^2.20.0",
     "express": "^5.2.1",
     "passkey-kit-sdk": "^0.8.0"
+  },
+  "overrides": {
+    "ajv": {
+      "fast-uri": "^3.1.7"
+    },
+    "qs": "^6.16.0"
   }
 }
