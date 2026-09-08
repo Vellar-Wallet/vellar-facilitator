@@ -306,7 +306,17 @@ async function probeOnce(
       method: "GET",
       redirect: "manual", // never follow a redirect into a blocked range
       signal: controller.signal,
-      headers: { accept: "application/json" },
+      // X-Ownership-Probe marks this as a verification probe rather than a
+      // buyer request, so a seller whose route requires query parameters can
+      // answer with its 402 challenge instead of a 400 for missing input.
+      // Without it, every input-taking route is permanently unverifiable: the
+      // verifier never sees the challenge it needs (issue #89).
+      //
+      // It is a HINT, not a credential. A seller that ignores it behaves
+      // exactly as before, and a client that forges it gains nothing, because
+      // the header only ever causes a 402 to be returned earlier. Payment is
+      // still required to get past the gate.
+      headers: { accept: "application/json", "X-Ownership-Probe": "1" },
       dispatcher,
     } as unknown as RequestInit);
 
