@@ -227,11 +227,18 @@ npm run typecheck
 
 These are in-process tests against the canonical client library. They are **not**
 the x402-foundation e2e conformance suite, which needs three funded Stellar
-accounts and has not been run yet.
+accounts. That suite **was** run on 2026-09-08 against the hosted instance
+(upstream HEAD `241df66`): **6 of 10 scenarios passed**, each settling a real
+payment re-checked against Horizon. The other four never executed — the
+`typescript/http/next` and `typescript/mcp` servers fail to start, and they fail
+the same way against the suite's own bundled reference facilitator, so the cause
+is upstream rather than here. The pubnet half remains unrun because there is no
+pubnet deployment.
 [`docs/conformance-report.md`](./docs/conformance-report.md) is the honest
 scorecard: what is verified live against the hosted instance, the settled
-transaction hashes re-checked against Horizon, and the gaps still open —
-the e2e suite, a pubnet deployment, and semantic search ranking.
+transaction hashes re-checked against Horizon, the six e2e hashes with the
+command that produced them, and the gaps still open — a pubnet deployment and
+semantic search ranking.
 
 ## MCP discovery server (for AI agents)
 
