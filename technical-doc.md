@@ -670,8 +670,12 @@ the higher uptime/observability bar production traffic demands.
   an address or a key). The trust layer stores a `payTo` per resource URL because
   ownership binding requires it; that address is on-chain data, not an identity.
 - **Maintenance.** Spec conformance as `@x402/stellar` and the x402 protocol
-  evolve, uptime/telemetry, security patching, and regular community status
-  updates through the award window and beyond.
+  evolve, uptime/telemetry, and security patching through the award window and
+  beyond.
+- **Community updates.** Monthly status updates posted to the SCF community
+  forum and the Vellar GitHub Discussions tab through the award window. Updates
+  will cover: settlement volume, uptime, open issues, and progress against the
+  pre-mainnet checklist (§9).
 
 ## 11. Infrastructure
 

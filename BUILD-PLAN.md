@@ -193,7 +193,8 @@ HTTP history API + public RPC — no cross-repo code dependency._
 
 ## Phase 4 — Ongoing (post-launch)
 
-- [ ] Regular community status updates (RFP requirement, cadence TBD)
+- [x] Regular community status updates — monthly, SCF forum + GitHub
+      Discussions, through award window (technical-doc.md §10)
 - [ ] Spec conformance maintained as `@x402/stellar` and the x402 protocol
       evolve
 - [ ] V2 (CAP-0071-02) credential support added once upstream
