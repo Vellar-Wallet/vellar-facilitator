@@ -78,16 +78,13 @@ import {
   rpc,
   xdr,
 } from "@stellar/stellar-sdk";
+import { DEFAULT_RPC } from "./rpc-defaults.js";
 
 const PASSPHRASES: Record<string, string> = {
   "stellar:testnet": "Test SDF Network ; September 2015",
   "stellar:pubnet": "Public Global Stellar Network ; September 2015",
 };
 
-const DEFAULT_RPC: Record<string, string> = {
-  "stellar:testnet": "https://soroban-testnet.stellar.org",
-  "stellar:pubnet": "https://mainnet.sorobanrpc.com",
-};
 
 /** Only the codes register_settlement can actually return, per
  *  contracts/bond-escrow/src/lib.rs's Error enum (AlreadyInitialized=1,

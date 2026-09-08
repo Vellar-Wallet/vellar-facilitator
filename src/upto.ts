@@ -47,16 +47,13 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { PaymentPayload, PaymentRequirements, Network } from "@x402/core/types";
+import { DEFAULT_RPC } from "./rpc-defaults.js";
 
 const PASSPHRASES: Record<string, string> = {
   "stellar:testnet": "Test SDF Network ; September 2015",
   "stellar:pubnet": "Public Global Stellar Network ; September 2015",
 };
 
-const DEFAULT_RPC: Record<string, string> = {
-  "stellar:testnet": "https://soroban-testnet.stellar.org",
-  "stellar:pubnet": "https://mainnet.sorobanrpc.com",
-};
 
 /** Argument order of the contract's `settle`, per contracts/upto-stellar/src/lib.rs. */
 const ARG = { token: 0, from: 1, to: 2, max: 3, expiration: 4, nonce: 5, actual: 6, hook: 7 } as const;
