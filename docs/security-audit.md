@@ -1028,7 +1028,7 @@ change.
 | **G-6** | `MAX_ENTRIES` not enforced on the load path | **open** — a large `CATALOG_FILE` is an unbounded startup memory load. |
 | **G-7** | Bootstrap-derived bindings are seeded in memory but not written | **open** — undercuts the one-boot bootstrap procedure; runbook §2 tells the operator to verify the file before removing the flag. |
 | **G-8** | Tombstone cap is a one-way freeze with no reset path | **open** — deliberate fail-closed, but the absence of a reset needs an operator procedure (runbook §3 says escalate). |
-| **G-9** | `verified_only` silently ignored when no trust resolver is injected | **open** — not reachable in production; `server.ts` always constructs one. |
+| **G-9** | `verified_only` silently ignored when no trust resolver is injected | **CLOSED-BY-TEST 2026-08-14.** Fixed in `9504135` ("refuse `verified_only` honestly"). `server.ts` does always construct a resolver, but `hasVerdictSource` is `Boolean(verificationApiUrl)` (`trust.ts`), so an unconfigured deployment now REFUSES `verified_only=true` with `400 verified_only_unavailable` on both discovery routes rather than silently ignoring it. Covered by `src/server.pagination.test.ts:44-128`, including the no-resolver-at-all case this row once called unreachable. *(was: open — not reachable in production. That status stayed here long after the fix landed; the status was stale, not the finding. See `closing-state.md` §1.)* |
 | **F4-ts** | Verification API is not deployed at all; the worker-service has never run hosted | **external, blocked on wallet-repo M5** — not a missing field. Chain: badge ← worker deployed ← `ATTESTOR_SECRET_KEY` ← M5 multisig attestor. |
 | **G-10** | The spend ceiling throttles honest throughput **22× earlier than sponsor exposure requires** | **open — pubnet tuning, deliberately NOT changed.** Spend is accounted at the ESTIMATE (500,000) while the measured CHARGED fee is 22,579, so the ceiling refuses the 101st settle in a window having actually spent **~0.23 XLM of the 5 XLM it names — 4.5%**. It **fails safe**, and the over-count is deliberate (`server.ts:344`: the real simulated fee is not exposed on the verify response). But the dial does not mean what its name implies. Fixing it means either exposing the bid to the policy or setting the estimate from measurement — both are pubnet decisions with real downside if the estimate ever *under*-counts, which is why nothing is being changed on the strength of one wallet's measurement. |
 | **G-13** | Facilitator error bodies did not conform to the x402 `SettleResponse` / `VerifyResponse` schemas | **CLOSED-BY-TEST 2026-08-11.** All six error paths now carry the required fields — `success`/`transaction`/`network` on `/settle` (§5.3), `isValid` on `/verify` (§5.4) — with the legacy `error`/`reason` kept alongside so the change is strictly additive. This is what makes `HTTPFacilitatorClient` build a structured `SettleError` instead of a generic throw, so **#28's seller-side workaround becomes partly redundant**: the seller no longer has to dig a reason out of an error string, though its empty-body guard stays as defence for other facilitators. *(was: open — conformance, not convenience)* The spec (`specs/x402-specification-v2.md` §5.3) marks `success`, `transaction` and `network` **Required**, with `errorReason` optional. Our refusals return `{error, reason}` and omit all three. That is why `HTTPFacilitatorClient` cannot build a structured `SettleError` and degrades to a generic throw — the seller-side symptom fixed in #28 was this, seen from the other end. **Conformance is the argument, not error ergonomics.** Deliberately NOT changed: it alters what every x402 client receives, so it is an owner decision rather than a maintenance one. |
@@ -1479,7 +1479,7 @@ Listed so they are not lost; none is fixed on this branch.
 | **G-6** | `MAX_ENTRIES` is enforced only on the write path. `load()` sets every valid row with no bound, so a large `CATALOG_FILE` is an unbounded startup memory load. | Real; the F3 bound is a write-path bound only. |
 | **G-7** | `bindLoadedEntry` seeds `this.ownership` but never calls `saveOwnership()`, so bindings derived during a `CATALOG_OWNERSHIP_BOOTSTRAP` run live only in memory unless some later binding incidentally flushes. | Real, and it undercuts the documented one-boot bootstrap procedure. |
 | **G-8** | The tombstone cap is a one-way door: at `MAX_TOMBSTONES` all new bindings are refused permanently, with no reset short of deleting the ownership file — which itself trips the fail-closed guard. | Known and deliberate (fail-closed by design), but the *absence of any reset path* is worth an explicit operator procedure. |
-| **G-9** | `if (!trust) return response` in both discovery routes returns unfiltered results *before* filtering, so `verified_only=true` is silently ignored when no resolver is injected. | **Not reachable in production** — `src/server.ts` always constructs a resolver, and an unset `VERIFICATION_API_URL` yields one that answers `"unknown"` rather than `undefined`. Test-only shape; worth a guard so it stays that way. |
+| **G-9** | `if (!trust) return response` in both discovery routes returns unfiltered results *before* filtering, so `verified_only=true` is silently ignored when no resolver is injected. | **CLOSED-BY-TEST 2026-08-14** in `9504135`. The guard this row asked for was written: an unconfigured deployment now refuses `verified_only=true` with `400 verified_only_unavailable` instead of serving an unfiltered list, and `src/server.pagination.test.ts:44-128` covers the no-resolver case. *(was: "Not reachable in production … worth a guard so it stays that way.")* |
 
 ---
 
@@ -1487,6 +1487,24 @@ Listed so they are not lost; none is fixed on this branch.
 
 **Status: NO-GO on two hard blockers.** Neither is a code defect; both are
 deployment facts. Everything the audit itself raised is closed or triaged.
+
+> **On the blocker count — this document says two, `closing-state.md` §6 says
+> four, and both are correct.** The two below are the *deployment-substrate*
+> blockers this audit raised: the things about where the service runs and what
+> funds it. `closing-state.md` §6 lists four *cutover gates* — G-14 actually
+> deployed, F12 demonstrated or accepted as unproven in writing, thresholds
+> reviewed against real traffic, and hosting that does not sleep. The lists
+> overlap in exactly one item: B1 (no persistent disk) and that section's
+> hosting gate are the same free-tier fact reached from two directions —
+> here because bindings do not survive a restart, there because
+> `ownerVerified` silently fails for a merchant whose host is asleep. B2
+> (sponsor key and funding) has no counterpart there; its G-14/F12/threshold
+> gates have no counterpart here. A third list, `docs/mainnet-deployment-checklist.md`,
+> tracks the mechanical steps — funded mainnet accounts, fresh keypair
+> generation, env and database provisioning. The counts differ because the
+> three lists answer different questions, not because any of them is wrong.
+> Anyone reconciling them should read all three rather than assume a
+> contradiction.
 
 ### Blockers — must be true before `STELLAR_NETWORK=pubnet`
 

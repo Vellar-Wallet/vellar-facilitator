@@ -97,14 +97,16 @@ See docs/decisions.md._
 - [ ] Extend channel-account pool to UptoStellarScheme
       (src/upto.ts:219) — currently a documented limitation,
       see docs/channel-pool-design.md §8
-- [ ] Channel-account balance monitoring job (src/channelPool.ts's
-      disable()/enable() are fully implemented and exported but never
-      called anywhere in production code today — found in the channel-pool
-      security review). Without it, a channel account that drops toward
-      the Stellar minimum reserve is never proactively pulled from
-      rotation the way docs/channel-pool-design.md §5 describes; it stays
-      `available` and keeps getting acquired until a settlement using it
-      fails on-chain.
+- [x] Channel-account balance monitoring job — done, c88d79f (2026-09-04,
+      PR #81). src/channelMonitor.ts now calls src/channelPool.ts's
+      disable()/enable() in production: an account drifting toward the
+      Stellar minimum reserve is pulled from rotation proactively, and
+      auto-enabled on recovery, fail-open with a 5-failure staleness
+      limit. Closes the gap found in the channel-pool security review,
+      where those methods were implemented and exported but never called,
+      so a low-balance account stayed `available` and kept being acquired
+      until a settlement using it failed on-chain. Matches technical-doc.md
+      §9 pre-mainnet item 2; see docs/channel-pool-design.md §5.
 - [ ] Migrate src/metrics.ts off `prom-client` (deprecated by its own
       maintainers as of the version pinned for Tranche 1's telemetry
       deliverable, 1.2) to `@prometheus-io/client`, the maintainer-named
