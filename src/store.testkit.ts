@@ -72,6 +72,15 @@ export class FailingStore implements CatalogStore {
   displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void> {
     return this.inner.displaceOwnership(resourceKey, newPayTo, at);
   }
+  saveEmbedding(resourceKey: string, embedding: number[]): Promise<void> {
+    return this.inner.saveEmbedding(resourceKey, embedding);
+  }
+  getEntriesWithoutEmbeddings(): Promise<Array<{ resource_key: string; payload: string }>> {
+    return this.inner.getEntriesWithoutEmbeddings();
+  }
+  loadEmbeddings(): Promise<Array<{ resource_key: string; embedding: number[] }>> {
+    return this.inner.loadEmbeddings();
+  }
   close(): Promise<void> {
     return this.inner.close();
   }
