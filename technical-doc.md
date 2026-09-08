@@ -171,8 +171,8 @@ Two honest qualifiers. The Circle faucet step needs a browser and cannot be
 scripted, so 60 s is a real floor for a first-time developer rather than an
 artifact. And this measures the path against the **hosted** facilitator; running
 a local facilitator additionally requires 50 funded channel accounts, documented
-in [`docs/deploy-runbook.md`](./docs/deploy-runbook.md). `demo.sh` was meant to
-automate that and currently does not (§8).
+in [`docs/deploy-runbook.md`](./docs/deploy-runbook.md), which `demo.sh` now
+provisions automatically for a local run (§8).
 
 The same flow as a sequence, including the auto-cataloging step that makes
 the resource discoverable (§5):
@@ -492,15 +492,22 @@ Implemented, tested, and live:
   `USE_USDC=1` — canonical testnet USDC acquired from the DEX with no faucet.
   The seller refuses at boot to write unverifiable entries into shared state,
   and the hosted demo resource is itself payable in USDC by any stranger.
-  `demo.sh` was written to walk a clean clone to a settled transaction hash in
-  one command, with preflight checks that each name the real failure they
-  prevent. It is **currently broken** and does not reach a settlement: the
-  channel-pool change (`6f5de85`, 2026-08-31) made
-  `CHANNEL_ACCOUNT_SECRET_KEYS` a hard boot requirement and the script was
-  never updated, so the facilitator exits at `config.ts:414` and the script
-  reports a misleading "seller did not come up". The working path today is
-  the hosted facilitator plus `examples/buyer-classic.mjs` (§4). Tracked in
-  [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90).
+  `demo.sh` walks a clean clone to a settled transaction hash in one command,
+  with preflight checks that each name the real failure they prevent. It
+  generates and friendbot-funds the 50 channel accounts the settlement pool
+  requires, so no account has to exist beforehand. Last verified end to end on
+  2026-09-08: settled
+  [`8043da50…e68f`](https://stellar.expert/explorer/testnet/tx/8043da503258007485f68fe0e1d65a4ed336a988bd820868375f8435c35be68f)
+  (ledger 4575125) from a clean run.
+
+  It was **broken between 2026-08-31 and 2026-09-08**, which is recorded rather
+  than quietly fixed because the docs claimed otherwise for that whole window:
+  the channel-pool change (`6f5de85`) made `CHANNEL_ACCOUNT_SECRET_KEYS` a hard
+  boot requirement and the script was never updated, so the facilitator exited
+  at `config.ts:414` and the script reported a misleading "seller did not come
+  up". Fixed in
+  [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90); the
+  failure message now distinguishes a dead facilitator from a dead seller.
 - **VS Code extension**
   ([`VellarWallet.vellar-x402`](https://marketplace.visualstudio.com/items?itemName=VellarWallet.vellar-x402),
   v0.1.3, MIT, live on the VS Code Marketplace): one command adds a working x402

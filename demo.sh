@@ -30,15 +30,59 @@ PAYER_SECRET=$(grep -oE '^PAYER_SECRET=\S+' <<<"$PROV" | cut -d= -f2)
 SPONSOR=$(node -e 'const{Keypair}=require("@stellar/stellar-sdk");const k=Keypair.random();console.log(k.secret()+" "+k.publicKey())')
 curl -fsS "https://friendbot.stellar.org/?addr=${SPONSOR#* }" >/dev/null
 
+# The settlement pool. src/config.ts requires EXACTLY 50 distinct funded
+# classic secrets, none of them the sponsor's, and there is no
+# "pool disabled" fallback: settling every payment from one signer under
+# concurrency is the txBadSeq bug the pool exists to close
+# (docs/channel-pool-design.md §1). Before this block existed the facilitator
+# exited at boot and demo.sh reported "seller did not come up", which is the
+# seller failing to reach a facilitator that was already dead (issue #90).
+#
+# Keys live in a shell variable and are never written to disk. They are
+# throwaway testnet accounts good for one demo run, so a file would be a
+# gitignore liability for no benefit.
+say "2b/5  Provisioning 50 channel accounts (friendbot, ~5 at a time)"
+CHANNEL_KEYS=$(node -e '
+const { Keypair } = require("@stellar/stellar-sdk");
+const N = 50, CONCURRENCY = 5;
+const pairs = Array.from({ length: N }, () => Keypair.random());
+let done = 0;
+async function fund(kp) {
+  // Friendbot occasionally 503s or times out under burst. Retry a few times
+  // rather than failing the whole demo on one flaky request.
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const res = await fetch(`https://friendbot.stellar.org/?addr=${kp.publicKey()}`);
+      if (res.ok) { process.stderr.write(`\r  funded ${++done}/${N}`); return; }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500 * attempt));
+  }
+  throw new Error(`friendbot failed for ${kp.publicKey()} after 4 attempts`);
+}
+(async () => {
+  const queue = [...pairs];
+  await Promise.all(
+    Array.from({ length: CONCURRENCY }, async () => {
+      while (queue.length) await fund(queue.shift());
+    }),
+  );
+  process.stderr.write("\n");
+  console.log(pairs.map((k) => k.secret()).join(","));
+})().catch((e) => { console.error(e.message); process.exit(1); });
+') || die "could not fund the 50 channel accounts (friendbot may be rate-limiting; re-run once)"
+[ "$(tr -cd , <<<"$CHANNEL_KEYS" | wc -c)" -eq 49 ] || die "expected 50 channel keys, got $(( $(tr -cd , <<<"$CHANNEL_KEYS" | wc -c) + 1 ))"
+
 say "3/5  Booting facilitator (:4100) + seller (:4031)"
 mkdir -p data
-SPONSOR_SECRET_KEY="${SPONSOR%% *}" PORT=4100 CATALOG_DB_URL=file:./data/catalog.db npm start >demo-facilitator.log 2>&1 &
+SPONSOR_SECRET_KEY="${SPONSOR%% *}" CHANNEL_ACCOUNT_SECRET_KEYS="$CHANNEL_KEYS" \
+  PORT=4100 CATALOG_DB_URL=file:./data/catalog.db npm start >demo-facilitator.log 2>&1 &
 FAC_PID=$!
 for i in $(seq 1 60); do curl -fsS localhost:4100/health >/dev/null 2>&1 && break; sleep 2; done
 (cd examples && FACILITATOR_URL=http://localhost:4100 SELLER_PORT=4031 PAYTO="$PAYTO" ASSET="$ASSET" node seller.mjs >../demo-seller.log 2>&1) &
 SEL_PID=$!
 trap 'kill $FAC_PID $SEL_PID 2>/dev/null || true' EXIT
 for i in $(seq 1 90); do curl -fsS localhost:4031/whoami >/dev/null 2>&1 && break; sleep 2; done
+curl -fsS localhost:4100/health >/dev/null 2>&1 || die "the FACILITATOR did not come up — see demo-facilitator.log (it exits at boot on a config error, and the seller then has nothing to reach)"
 curl -fsS localhost:4031/whoami >/dev/null || die "seller did not come up — see demo-seller.log"
 
 say "4/5  Paying (official x402 client; submission retries are internal now)"
