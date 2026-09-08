@@ -201,13 +201,13 @@ export async function buildServer(
     // gauges, a duration histogram, never an address or a key), so this is
     // about compute-cost/abuse posture, not confidentiality.
     allowList: (req) => req.url === "/health",
-    // D4, second half. `trustProxy: 1` above tells Fastify which hop to trust,
-    // but fastify 5.12.x changed how a hop COUNT resolves `req.ip`: with
-    // `trustProxy: 1` it now returns the PROXY's address for every request
-    // rather than the forwarded client, which silently collapses every client
-    // behind Render into ONE rate-limit bucket. That is precisely the D4
-    // failure the test in src/hardening.test.ts exists to prevent, and it
-    // produces no error, only a wrong bucket.
+    // D4, second half. This USED to rely on `trustProxy: 1` (see the Fastify()
+    // call above, where it is now deliberately unset). fastify 5.12.x changed
+    // how a hop COUNT resolves `req.ip`: it began returning the PROXY's address
+    // for every request rather than the forwarded client, which silently
+    // collapses every client behind Render into ONE rate-limit bucket. That is
+    // precisely the D4 failure the test in src/hardening.test.ts exists to
+    // prevent, and it produces no error, only a wrong bucket.
     //
     // So the key is derived from the header directly rather than from whatever
     // `req.ip` currently resolves to. RIGHTMOST, not leftmost, and the
