@@ -990,7 +990,11 @@ if (isDirectRun) {
   const { createTrustResolver } = await import("./trust.js");
   const trust = createTrustResolver({
     verificationApiUrl: config.verificationApiUrl,
-    rpcUrl: config.rpcUrl ?? "https://soroban-testnet.stellar.org",
+    rpcUrl:
+      config.rpcUrl ??
+      (config.network === "stellar:pubnet"
+        ? "https://mainnet.sorobanrpc.com"
+        : "https://soroban-testnet.stellar.org"),
   });
   // Per-settle spend is estimated at the fee ceiling (worst case) since the real
   // simulated fee is not exposed on the verify response — over-counting fails safe.
