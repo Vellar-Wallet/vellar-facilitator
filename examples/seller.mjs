@@ -855,6 +855,17 @@ class InputError extends Error {
  * malformed/unpaid request from ever reaching the 402 challenge, so nobody is
  * asked to pay for a request that could never succeed.
  *
+ * ONE EXCEPTION, and it is narrow: a request carrying NO input at all (no query
+ * params, no body) skips validation and falls through to the payment gate, so a
+ * bare GET answers 402 rather than 400. That is what the facilitator's F11
+ * Layer 2 ownership verifier sends — a bare GET with `accept: application/json`
+ * and no query string (src/ownership.ts) — and a 400 leaves it unable to see
+ * the 402 challenge it needs, so an input-taking route can never be
+ * ownership-verified. A request with SOME input still validates before paying,
+ * which is the case the paragraph above exists for: partial or malformed input
+ * is refused for free. Only the zero-input probe is let through, and it cannot
+ * settle anything, because it still has to pay to get past the gate.
+ *
  * `buildResult(req)` runs AFTER settlement and must be synchronous-or-async;
  * if it throws (a bug, or an external dependency like Horizon failing in a
  * way `validate` couldn't have caught up front — e.g. Horizon timing out on a
@@ -863,7 +874,12 @@ class InputError extends Error {
  */
 function handlePaidRoute(routePattern, buildResult, validate) {
   return async (req, res) => {
-    if (validate) {
+    // Zero-input probe: no query params and no body fields. Skipping validation
+    // here is what lets a bare GET reach the payment gate and answer 402.
+    const hasInput =
+      Object.keys(req.query ?? {}).length > 0 ||
+      (req.body != null && typeof req.body === "object" && Object.keys(req.body).length > 0);
+    if (validate && hasInput) {
       try {
         await validate(req);
       } catch (err) {
