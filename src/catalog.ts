@@ -1716,7 +1716,7 @@ export class BazaarCatalog {
     }
 
     // ── Lexical ranking. UNCHANGED, and deliberately computed in full even when
-    // the vector path is about to run. It scores 10/10 on docs/search-eval.md;
+    // the vector path is about to run. It scores 9-10/10 on docs/search-eval.md;
     // the vector ranking is added ALONGSIDE it, never in place of it.
     // Filtered ONCE and shared with the vector ranking below. Both rankings must
     // run over the same candidate set anyway (ranking outside the filter would
@@ -1776,7 +1776,7 @@ export class BazaarCatalog {
    *
    * That tradeoff is honest about what it costs: a cold query is lexical-only.
    * It is the right trade because the lexical path is not a degraded fallback
-   * here, it is a ranking that already scores 10/10 on the eval, and because
+   * here, it is a ranking that already scores 9-10/10 on the eval, and because
    * the failure mode of the alternative is a hung endpoint rather than a
    * slightly worse ordering.
    */

@@ -31,7 +31,11 @@ that something did.
 | `daily saying` | `/quote` | synonym: `saying` → `quote` |
 | `motivation` | `/quote` | direct match on tag + description |
 
-**Last measured: 10/10** on the implementation at the head of this branch.
+**Last measured: 10/10** on the implementation at the head of this branch,
+against the 8-endpoint demo catalog. The baseline table further down re-measures
+these same ten queries against a larger 19-entry corpus, where they score 9/10 —
+the difference is the corpus, not a regression: the extra entries introduce a
+competing match for `stellar balance`.
 
 ## Beyond top-1
 
@@ -50,7 +54,7 @@ tests rather than by this table:
 ## The semantic set
 
 Ten queries that share **no token** with any catalog entry. They exist to
-measure the gap the lexical eval above cannot see: the table above is 10/10
+measure the gap the lexical eval above cannot see: that table scores 9-10/10
 precisely because every one of its queries has a synonym mapping or a stem that
 reaches the target, and a query with neither returns an empty list rather than a
 weak ranking.
@@ -97,24 +101,46 @@ getting them onto the first screen.
 Measured against a 19-entry catalog on the same shape of data, with the same
 scorer, changing only whether `VOYAGE_API_KEY` is set.
 
-| Query set | Metric | Lexical (baseline) | Hybrid (RRF) |
-| --- | --- | --- | --- |
-| Original 10 | top-1 | 9/10 | see below |
-| Original 10 | MRR | 0.950 | see below |
-| Original 10 | NDCG@3 | 0.963 | see below |
-| Semantic 10 | top-1 | 2/10 | see below |
-| Semantic 10 | MRR | 0.264 | see below |
-| Semantic 10 | NDCG@3 | 0.263 | see below |
+| Query set | Metric | Lexical (baseline) | Hybrid (RRF) | Change |
+| --- | --- | --- | --- | --- |
+| Original 10 | top-1 | 9/10 | 9/10 | unchanged |
+| Original 10 | MRR | 0.950 | 0.950 | unchanged |
+| Original 10 | NDCG@3 | 0.963 | 0.963 | unchanged |
+| Semantic 10 | top-1 | 2/10 | **5/10** | +3 |
+| Semantic 10 | MRR | 0.264 | **0.717** | +0.453 |
+| Semantic 10 | NDCG@3 | 0.263 | **0.789** | +0.526 |
 
-**The semantic row is the whole point of the comparison.** Lexical search gets
+**The original set does not move, and that is the first thing to check.** The
+whole risk of adding a second ranking signal is that it degrades the queries the
+first one already answers. It does not: all three metrics are identical to the
+baseline, and the one query that was not top-1 before (`stellar balance`, which
+ranks `/stroops` above `/inspect`) is not top-1 after either. RRF's flat top
+(k=60) is what buys this, and the fusion is only consulted at all when a query
+vector is available.
+
+**The semantic set is the whole point of the comparison.** Lexical search gets
 2/10 top-1 on queries that share no vocabulary with the catalog, and four of the
-ten (`secure login credential`, `when does this job run`, plus two others) return
-results that do not contain the answer anywhere in the top 10. Two of the ten
-score by accident rather than by understanding: `change color format` hits
-`/color`'s tag `convert`, and `render documentation` hits `/markdown`'s tag
-`render`. The rest are misses, and several return a confidently wrong first
-result (`barcode for a link` returns `/weather`), which is worse for an agent
-than returning nothing.
+ten (`secure login credential`, `when does this job run`, `filler text for
+design`, `imperial to metric`) return results that do not contain the answer
+anywhere in the top 10 — an empty or wrong list, not a weak ranking. The two it
+does get are accidents of vocabulary rather than understanding: `change color
+format` hits `/color`'s tag `convert`, and `render documentation` hits
+`/markdown`'s tag `render`. Several of the misses return a confidently wrong
+first result (`barcode for a link` returns `/weather`), which is worse for an
+agent than returning nothing.
+
+Under hybrid ranking **every one of the ten reaches the top 3**, which is why
+NDCG@3 roughly triples while top-1 only goes from 2 to 5. That gap between the
+two metrics is the honest read of this change: it reliably gets the right answer
+onto the first screen, and it does not yet reliably get it into first place.
+`find pattern in string` still puts `/cron` above `/regex`, and `parse
+spreadsheet data` still puts `/weather` above `/csv`. Closing that is a
+reranking problem, not a retrieval one.
+
+Caveat on the corpus: these were measured against a 19-entry catalog whose
+descriptions were authored for this eval. The relative movement is the
+meaningful part; the absolute numbers will shift as real endpoints are added,
+and the table should be re-measured when they are.
 
 ## Hybrid architecture
 
