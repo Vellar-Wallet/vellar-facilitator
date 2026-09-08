@@ -333,12 +333,44 @@ tuning** decision that should be resolved before a mainnet launch, not after.
 
 ### 6.3 Bazaar search ranking is lexical, not semantic — RFP §3.2 ⛔
 
-Bazaar search is currently **lexical** — weighted token/substring matching over
-`serviceName` (4), `tags` (3), `description` (2), and the resource URL (1), plus
-the stringified `extensions.bazaar` blob for MCP entries (`scoreResource` in
-`src/catalog.ts`). There are **no embeddings, no vector index, and no documented
-evaluation methodology**. The store carries no vector column, no vector
-extension, and no full-text index; search is computed in memory at read time.
+**The verdict is unchanged: this is lexical retrieval, not the semantic ranking
+the RFP asks to be graded on.** There are **no embeddings and no vector index**
+— the store carries no vector column, no vector extension and no full-text
+index, and scoring is computed in memory at read time. What follows corrects an
+earlier revision of this section that described the retriever as bare
+token/substring matching and stated there was **no documented evaluation
+methodology**. Both understated what had shipped in `e507c6a`, and the second
+is now simply false.
+
+**What is actually implemented** (`src/catalog.ts`, `scoreResource` and its
+helpers):
+
+| Stage | Detail |
+| --- | --- |
+| Tokenization | Query and field text split on the same path, so both sides normalise identically |
+| Synonym expansion | **8 bidirectional groups**, expanded once per query rather than per entry. The map is *derived* from the group list rather than written twice, so a pair cannot drift in one direction |
+| Stemming | A deliberately minimal **Porter-style stemmer, 6 suffix rules** (`tion`/`sion`, `ing`, `ly`, `ed`, `er`, plural `s` with an `ss` exemption). One rule fires per call. Applied to **both** sides — stemming the query against an unstemmed field breaks matches that previously worked |
+| Field weighting | `serviceName` ×4, `tags` ×3, `description` ×2, resource URL ×1, plus the stringified `extensions.bazaar` blob for MCP entries |
+| Trust ranking | `settlements × 2 + uniquePayers` — volume weighted double breadth. These are the same numbers `toItem()` surfaces as `trust`, so the ranking agrees with what the wire reports. An empty query ranks by this rather than by recency, and excludes entries with no settlements |
+| Seller tags | Demo seller endpoints carry tags so keyword-shaped queries reach them |
+
+Order matters and is enforced: expansion runs **before** stemming, because the
+synonym map is keyed on whole words — stemming first would look up `convers`
+and miss `conversion`.
+
+**Evaluation methodology — it exists** ([`docs/search-eval.md`](./search-eval.md)):
+**10 ground-truth queries, last measured 10/10**, each row naming the mechanism
+it exercises so a regression identifies its own cause rather than only its
+existence. Executed by `npm test` via `src/catalog.test.ts` → *"search quality
+— synonyms, stemming, trust ranking"*, so a ranking regression fails the build.
+Two properties beyond top-1 are covered by tests rather than the table: one
+query must reach **two** distinct endpoints through two different mechanisms,
+and an empty query must rank by trust rather than recency.
+
+That document states its own limits, and they are real: the set is
+**hand-authored against the demo catalog (8 endpoints on `vellar-seller-demo`)**,
+so it measures one seller's demo. There is **no NDCG and no MRR** — top-1
+correctness on a fixed set is a regression gate, not a quality metric.
 
 The RFP names this its highest-weighted requirement and the one existing
 catalogs most often leave unimplemented:
@@ -348,10 +380,12 @@ catalogs most often leave unimplemented:
 > evaluate result quality over time. It is the hardest part of the scope and the
 > part existing catalogs most often leave unimplemented."
 
-**We are not claiming it is done.** What exists is a deterministic, testable
-baseline that returns sensible results for keyword-shaped queries and degrades
-predictably for conceptual ones — not the semantic ranking the RFP asks to be
-graded on.
+**We are not claiming it is done.** Against that bar, what exists is a
+deterministic, testable baseline with a regression gate: it returns sensible
+results for keyword-shaped queries and degrades predictably for conceptual
+ones. A query sharing no literal or synonym token with any listing returns
+**nothing at all** — not a weak ranking, an empty list. That is the failure
+mode semantic retrieval exists to fix, and it is why this stays ⛔.
 
 **Pre-mainnet plan:**
 
@@ -360,8 +394,10 @@ graded on.
 - Add a **vector index** — in-memory HNSW rebuilt at boot from stored
   embeddings, or Turso's native vector extension if available. (Neither exists
   today; this is greenfield on schema and dependencies.)
-- Build an **eval harness** with a fixed query set and documented quality
-  metrics (**NDCG** or **MRR**).
+- Extend the eval harness beyond one seller's catalog and beyond top-1, with
+  documented metrics (**NDCG** or **MRR**) and a published floor that gates the
+  build — the shape `docs/search-eval.md` already has, at a scale that measures
+  quality rather than only regression.
 - Document the **quality-tracking process** so ranking regressions are caught
   before deployment, not after.
 - **Target: complete before mainnet launch, not after.**
