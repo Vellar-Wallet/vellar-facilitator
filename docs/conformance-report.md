@@ -176,6 +176,11 @@ Section 8 credits rail402 as the contract design author; what this team claims
 is the reproducible-build verification and four live testnet settlements, not
 authorship of the contract.
 
+The head commit is [`eefd56d`](https://github.com/x402-foundation/x402/pull/3428/commits)
+and is **GPG-signed and verified** (`verified: true`, `reason: valid` per the
+GitHub API). The repo's `verified-commits-required` bot flagged the first,
+unsigned push; the commit was re-signed and force-pushed. That check now passes.
+
 Two things about how it was filed, stated because they bear on how much the
 deliverable can be said to be met:
 
@@ -195,8 +200,9 @@ inferred from reading source:
 - [#3125](https://github.com/x402-foundation/x402/issues/3125) (2026-08-11):
   `settle` discards the RPC's submission status, so retryable and terminal
   failures are indistinguishable to callers. **Someone else is now fixing it**:
-  [#3293](https://github.com/x402-foundation/x402/pull/3293) references it
-  directly.
+  [#3293](https://github.com/x402-foundation/x402/pull/3293) by `wakqasahmed`
+  references it directly, so the issue produced a community fix rather than
+  sitting unread.
 - [#3158](https://github.com/x402-foundation/x402/issues/3158) (2026-08-14): the
   canonical client cannot sign for Soroban smart accounts, which makes an entire
   payer class (policy-governed agents, passkey wallets) unreachable.

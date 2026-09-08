@@ -156,12 +156,21 @@ See docs/decisions.md._
       transfer event. Per the explorer's own attribution breakdown at time
       of writing, 6 of 4,799 indexed testnet payments carry a known
       facilitator, and all six are ours.
-- [ ] Upstream contribution to PR #3134 — paused by user direction
-      2026-08-21: independent-implementor review findings (signed-vs-
-      unsigned hook, custody-window economics per LumenGate's measured
-      escrow-vs-allowance benchmark, the auto-revoke tree-shape interop gap,
-      rail402's nonce-TTL replay fix as a spec test vector) ready to draft
-      whenever resumed
+- [x] Upstream contribution — RESUMED and SHIPPED 2026-09-08. The review
+      findings paused on 2026-08-21 (signed-vs-unsigned hook, custody-window
+      economics per LumenGate's measured escrow-vs-allowance benchmark, the
+      auto-revoke tree-shape interop gap, rail402's nonce-TTL replay fix as a
+      spec test vector) became a 349-line convergence document, filed as
+      x402-foundation/x402 PR #3428 at
+      specs/schemes/upto/scheme_upto_stellar_interop.md. Head commit eefd56d,
+      GPG-signed and verified. Filed at a distinct filename to avoid an add/add
+      collision with #3134's path, after asking the maintainers on #3134 where
+      the work should land; the PR offers to close and fold into either existing
+      PR if the TSC prefers. Open, zero reviews. See
+      docs/conformance-report.md §5.1.
+- [ ] TSC review of #3428 — open, awaiting a reviewer. "Contributed" is not the
+      same as "accepted", and the RFP deliverable is not closed until a
+      maintainer acts on it.
 
 ## Phase 5 — Trust layer — BUILT 2026-08-01 (gate overridden user-directed, same day as design)
 
