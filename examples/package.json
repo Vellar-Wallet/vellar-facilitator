@@ -13,8 +13,11 @@
     "@x402/core": "^2.20.0",
     "@x402/extensions": "^2.20.0",
     "@x402/stellar": "^2.20.0",
+    "diff": "^9.0.0",
     "express": "^5.2.1",
-    "passkey-kit-sdk": "^0.8.0"
+    "marked": "^18.0.12",
+    "passkey-kit-sdk": "^0.8.0",
+    "qrcode": "^1.5.4"
   },
   "overrides": {
     "ajv": {
