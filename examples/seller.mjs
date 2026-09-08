@@ -1093,7 +1093,26 @@ class InputError extends Error {
  */
 function handlePaidRoute(routePattern, buildResult, validate) {
   return async (req, res) => {
-    if (validate) {
+    // Issue #89. The facilitator's Layer 2 ownership verifier fetches this
+    // resource with a bare GET and needs to see the 402 challenge to confirm
+    // the payTo it settled against (src/ownership.ts). A route that requires
+    // query parameters would answer 400 for missing input and the challenge
+    // would never be reached, so such a route could never be ownership
+    // verified. The verifier identifies itself with X-Ownership-Probe.
+    //
+    // AND `!presentedPayment` is the whole safety property, not a detail. The
+    // earlier attempt at this (7f03234, reverted in 96f06fe) skipped validation
+    // for every bare GET, which let a buyer with no parameters reach the
+    // payment gate, settle on-chain, and then fail inside buildResult with
+    // handler_failed: money gone, nothing returned. Three real settlements did
+    // exactly that. Requiring the absence of payment means a probe can only
+    // ever READ the challenge; anything carrying payment still validates first,
+    // so the loss path cannot be re-entered by forging the header.
+    const presentedPaymentHeader =
+      req.get("PAYMENT-SIGNATURE") || req.get("X-PAYMENT") || undefined;
+    const isOwnershipProbe = req.get("X-Ownership-Probe") === "1" && !presentedPaymentHeader;
+
+    if (validate && !isOwnershipProbe) {
       try {
         await validate(req);
       } catch (err) {
