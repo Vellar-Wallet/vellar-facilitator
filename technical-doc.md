@@ -661,9 +661,14 @@ the higher uptime/observability bar production traffic demands.
   funds. Verification is re-simulation-based and independently reproducible by
   anyone running the same open-source code. No exclusivity claim — competing
   Stellar facilitators are a healthy outcome, not a threat.
-- **Privacy.** Operational logs only (requests, errors, latency) for a bounded
-  retention window; no PII, no buyer-identity tracking. Wallet addresses and
-  amounts are already public on-chain once settled.
+- **Privacy.** Operational logs only (requests, errors, latency), retained
+  30–90 days and then discarded. Wallet addresses and amounts are already public
+  on-chain once settled, so the facilitator republishes nothing that settlement
+  did not already make public. Not collected, at all: buyer identity, payment
+  history linked to an individual, cookies, and any analytics beyond the
+  operational metrics on `/metrics` (counts, gauges, a duration histogram, never
+  an address or a key). The trust layer stores a `payTo` per resource URL because
+  ownership binding requires it; that address is on-chain data, not an identity.
 - **Maintenance.** Spec conformance as `@x402/stellar` and the x402 protocol
   evolve, uptime/telemetry, security patching, and regular community status
   updates through the award window and beyond.
