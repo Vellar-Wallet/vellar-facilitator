@@ -1,9 +1,11 @@
 # Conformance report — x402 `exact` and `upto` on Stellar
 
 **Facilitator:** `https://vellar-facilitator.onrender.com`
-**Report date:** 2026-09-03
-**Status:** partial — see [§6 Known gaps](#6-known-gaps). Two of the RFP's
-conformance line items are **not yet satisfied** and are named plainly below.
+**Report date:** 2026-09-03; e2e suite run added 2026-09-08
+**Status:** partial — see [§6 Known gaps](#6-known-gaps). The e2e suite has now
+been run against the live facilitator (§6.1): **C1 is satisfied on testnet**
+with six Horizon-confirmed settlements, and **C4 is partial**. Pubnet (§6.2)
+and semantic search (§6.3) remain unsatisfied and are named plainly below.
 
 ---
 
@@ -20,10 +22,10 @@ It asks specifically for:
 
 | # | RFP requirement | Status |
 |---|---|---|
-| C1 | An unmodified canonical client completing a payment end to end on both networks | ⛔ **not done** — see §6.1 |
+| C1 | An unmodified canonical client completing a payment end to end on both networks | ✅ **testnet** — 6 settled txs, §6.1. Pubnet: ⛔ §6.2 |
 | C2 | `/supported` emitting the Stellar `extra` contract including `areFeesSponsored` | ✅ verified live, §3.1 |
 | C3 | The spec `payload: {transaction}` format accepted verbatim | ✅ verified live, §3.2 / §5 |
-| C4 | A passing run of the x402 repo's e2e suite for both networks | ⛔ **not done** — see §6.1 |
+| C4 | A passing run of the x402 repo's e2e suite for both networks | ⚠️ **partial** — 6/10 passed testnet, 4 unexecuted, pubnet unrun; §6.1 |
 | C5 | A published settled transaction hash per network per scheme | ⚠️ **testnet only** — §4, §5. Pubnet: §6.2 |
 | C6 | A non-null `reason` on every rejection | ✅ verified live, §3.3 |
 | S1 | Bazaar search: "real ranking" with a stated evaluation approach (RFP §3.2) | ⛔ **lexical only** — see §6.3 |
@@ -175,56 +177,138 @@ production-ready.
 
 ## 6. Known gaps
 
-### 6.1 The x402 e2e suite has not been run — C1, C4 ⛔
+### 6.1 The x402 e2e suite — RUN 2026-09-08 — C1 ✅ testnet, C4 ⚠️ partial
 
-**Suite location and command, confirmed:**
+**The suite has now been run against the live facilitator.** Six scenarios
+settled real payments end to end through
+`https://vellar-facilitator.onrender.com`; four never executed because two
+upstream server components fail to start in this environment. Both halves are
+recorded below, and the four non-executing scenarios are **not** counted as
+passes.
 
-- Repo: `https://github.com/x402-foundation/x402` (HEAD `626df07` at the time of writing)
-- Suite: `e2e/`, entrypoint `e2e/test.ts`, run with `pnpm test` from `e2e/`
-- Stellar catalog: `e2e/config/mechanisms_stellar.json`, declaring routes
-  `/exact/stellar` and `/exact/stellar/upfront` (scheme `exact`, `sdks:
-  ["typescript"]`, extension `bazaar`), with `testnet` (`stellar:testnet`) and
-  `mainnet` (`stellar:pubnet`) both defined
-- Targeting an external facilitator: the resource server reads `FACILITATOR_URL`
-  from the environment (`e2e/src/server-env.ts:70`), so the live URL can be used
-  directly without writing a proxy
+**Suite version:** `x402-foundation/x402` HEAD **`241df66`** ("Enforce
+file-size and complexity limits with coverage thresholds", #3393). *(This
+supersedes the `626df07` cited in earlier revisions of this section.)*
 
-**Why it was not run.** The suite requires three funded Stellar testnet accounts
-— client, server, facilitator — declared `required: true` in the catalog:
-
-```
-SERVER_STELLAR_ADDRESS
-CLIENT_STELLAR_PRIVATE_KEY
-FACILITATOR_STELLAR_PRIVATE_KEY
-```
-
-Per `e2e/README.md`, the client and server accounts additionally need a **USDC
-trustline** and **testnet USDC from the Circle faucet**; the facilitator account
-needs XLM only.
-
-This repository holds only `SPONSOR_SECRET_KEY`. The harness gate was run to
-confirm the blocker empirically rather than assume it:
-
-```
-$ npx tsx scripts/ci-select-families.ts
-No protocol families have all required wallet secrets configured.
-Set variables in e2e/.env or export them in your shell.
-```
-
-**This is an environment gap, not a defect in the facilitator** — but it is
-also not evidence of conformance, and it is the single most load-bearing item
-the RFP asks for. It cannot be closed by any amount of internal testing.
-
-**Plan to close.** Provision three dedicated Stellar testnet accounts, add USDC
-trustlines to client and server, fund the client from the Circle faucet, then:
+**Command:**
 
 ```bash
-cd e2e && cp .env-local .env    # fill in the three STELLAR keys
-FACILITATOR_URL=https://vellar-facilitator.onrender.com \
-  pnpm test --testnet --min --families=stellar --versions=2
+cd e2e
+pnpm test --testnet --min --families=stellar --versions=2 --facilitators=vellar
 ```
 
-Capture the full output verbatim into §3 of this document.
+#### C1 — unmodified canonical client, end to end — ✅ **testnet**
+
+An unmodified stock `@x402/*` TypeScript client completed payment against the
+live facilitator across three server frameworks and both HTTP client libraries.
+Every hash below was re-verified against Horizon after the run — `successful:
+true`, and `fee_account` equal to the facilitator's own sponsor
+`GBUCR6H22CZC5OYHBJIEUS2JFZBOB63AHEGTCV6UEPMD2TMLKG2ZMIW4` rather than the
+payer. That is `areFeesSponsored: true` demonstrated on-chain **by an external
+suite this project does not control**, not by our own assertion.
+
+| # | Client → Server → Route | Tx | Ledger |
+|---|---|---|---|
+| 1 | `fetch` → `express` → `/exact/stellar` | [`b6712023…3ca4`](https://stellar.expert/explorer/testnet/tx/b6712023355eaae20636da32a23909d0c74204ed0f6e46a6c6a10c06f4223ca4) | 4561546 |
+| 2 | `axios` → `express` → `/exact/stellar/upfront` | [`55c3026d…132b`](https://stellar.expert/explorer/testnet/tx/55c3026db406de06d3e24e93ec3a3c57f87ac10bd9bbbc10ab60cb78fc79132b) | 4561549 |
+| 5 | `fetch` → `hono` → `/exact/stellar/upfront` | [`ed32fe90…c670`](https://stellar.expert/explorer/testnet/tx/ed32fe90f4bb2d882919601f5b8706da6cf8420a9f91ee3f765223a9a6c8c670) | 4561559 |
+| 6 | `axios` → `hono` → `/exact/stellar` | [`555d7538…a733`](https://stellar.expert/explorer/testnet/tx/555d7538c0c81e590a2a32a1c9039bea412dcca23d72baae82711b38856fa733) | 4561562 |
+| 7 | `fetch` → `fastify` → `/exact/stellar/upfront` | [`22b97394…61c3`](https://stellar.expert/explorer/testnet/tx/22b97394a8bd99eeacf113cad9d13e390dd8b664cb163be9982e868ffed361c3) | 4561568 |
+| 8 | `axios` → `fastify` → `/exact/stellar` | [`b401ff7b…8a4a`](https://stellar.expert/explorer/testnet/tx/b401ff7bc5c6c5774781588b4f16c2f4a4dff5ae235fa63c7129024d1eeb8a4a) | 4561571 |
+
+All six charged `fee_charged: 23059` stroops to the sponsor, in consecutive
+ledgers 4561546–4561571.
+
+**The exact boundary of this claim:** testnet only, `exact` scheme only, over
+`express` / `hono` / `fastify` with the `fetch` and `axios` clients. It does
+**not** extend to pubnet (§6.2), to the `upto` scheme (which the upstream
+Stellar catalog does not declare), or to the MCP transport (below).
+
+#### C4 — a passing run of the e2e suite for both networks — ⚠️ **partial**
+
+```
+✅ Passed: 6    ❌ Failed: 4    📈 Total: 10    ⏱️ 3.25 min
+
+Breakdown by server:
+  typescript/http/express  ✅ 2 / ❌ 0 (100%)
+  typescript/http/hono     ✅ 2 / ❌ 0 (100%)
+  typescript/http/fastify  ✅ 2 / ❌ 0 (100%)
+  typescript/http/next     ✅ 0 / ❌ 2 (0%)
+  typescript/mcp           ✅ 0 / ❌ 2 (0%)
+```
+
+C4 is **not** claimed as satisfied, for two independent reasons:
+
+1. **Four of ten scenarios never executed.** Tests 3, 4, 9 and 10 failed with
+   `Error: Server failed to start` — `typescript/http/next` and
+   `typescript/mcp` exit non-zero during startup. No payment was attempted and
+   **no request reached the facilitator** on those four.
+2. **The pubnet half was not run.** There is no pubnet deployment (§6.2), so
+   the mainnet side of "both networks" remains unrun and unclaimed.
+
+**Why the four failures are not attributable to this facilitator — with a
+control.** The suite was first run against its own bundled reference
+facilitator (`--facilitators=typescript`) as a negative control, on the same
+machine, with the same accounts, in the same session. That baseline produced
+the **identical** failure set: 6 passed, 4 failed, same two servers, same
+`Server failed to start` error. A component that fails the same way against
+the upstream reference implementation is an environment/upstream build problem,
+not a Vellar defect. The `next` failure in particular matches the Next.js build
+issue already recorded upstream.
+
+This is stated as a control result rather than an assertion precisely because
+"our thing failed but it isn't our fault" is the kind of claim that needs
+evidence rather than confidence.
+
+#### Reproducing this run
+
+The proxy configuration used to target the hosted facilitator as an *external*
+facilitator is committed in this repo at
+[`e2e/facilitators/vellar/`](../e2e/facilitators/vellar/), with step-by-step
+instructions in its `README.md`. Copy that directory into a clone of
+`x402-foundation/x402` at `e2e/facilitators/external-proxies/local/vellar/`
+and follow the README.
+
+#### Corrections to the previous version of this section
+
+The previous revision of §6.1 described a reproduction path that had never been
+executed. Attempting it surfaced four errors, recorded here rather than quietly
+fixed, because a set of instructions that has not been run is a claim and not
+evidence:
+
+1. **`FACILITATOR_URL` alone does not point the suite at an external
+   facilitator.** The previous text said the live URL "can be used directly
+   without writing a proxy." It cannot. `FACILITATOR_URL` tells the *resource
+   server* which facilitator to call; it does not change which facilitator the
+   harness starts. A first run with it set still launched the bundled
+   `typescript` facilitator on port 4027 and tested against that. Per
+   `e2e/facilitators/external-proxies/README.md`, external facilitators live in
+   a proxy directory with a `test.config.json`, are "not selected by default",
+   and "require explicit selection" via `--facilitators=<name>`. **Following the
+   old instructions verbatim would have produced a green run that never
+   contacted this facilitator** — a passing result that proved nothing. That is
+   the failure mode `closing-state.md` §3.2 names, reached through a
+   documentation error rather than a code one.
+2. **`scripts/ci-select-families.ts` does not read `e2e/.env`.** It reads
+   `process.env` only. The previous section quoted its "No protocol families
+   have all required wallet secrets configured" output as empirical proof that
+   the wallets were missing. That output was reproduced here with all three keys
+   correctly present in `e2e/.env`; it resolved to `stellar` only after the
+   variables were `export`ed. The message distinguishes "not exported" from "not
+   available" not at all. The earlier conclusion happened to be true, but this
+   check could not have established it.
+3. **`pnpm install:all` inside `e2e/` is not sufficient.** The e2e workspace
+   references `../typescript/packages/*`, and those packages need their own
+   `pnpm install && pnpm build` in the parent `typescript/` directory first.
+   Without it `@x402/express` does not resolve. `setup.sh` skips them because
+   they carry no `install.sh`, `go.mod` or `pyproject.toml`.
+4. **`pnpm build` in `typescript/` does not complete on a normal machine.**
+   `@x402/evm` exhausts the JS heap (`ERR_WORKER_OUT_OF_MEMORY`) and aborts the
+   turbo run before `@x402/stellar` is compiled. Turbo reported "18 successful,
+   20 total" while every `dist/` directory was empty — tasks counted, nothing
+   emitted. Build the needed subgraph instead:
+   `npx turbo run build --filter=@x402/stellar...`, optionally with
+   `NODE_OPTIONS=--max-old-space-size=8192`.
 
 ### 6.2 No pubnet (mainnet) deployment — C1, C4, C5 ⛔
 
