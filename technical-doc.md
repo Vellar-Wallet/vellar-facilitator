@@ -668,7 +668,50 @@ the higher uptime/observability bar production traffic demands.
   evolve, uptime/telemetry, security patching, and regular community status
   updates through the award window and beyond.
 
-## 11. Non-Goals
+## 11. Infrastructure
+
+What runs where, at what cost. The full operator guide is
+[`docs/deploy-runbook.md`](./docs/deploy-runbook.md); this section is the
+summary.
+
+**Three services, all on Render's free tier**, defined in `render.yaml`:
+
+| Service | Runtime | Role |
+| --- | --- | --- |
+| `vellar-facilitator` | node | The facilitator itself: `/verify`, `/settle`, `/supported`, discovery, MCP, `/metrics` |
+| `vellar-seller-demo` | node | A public demo merchant with eight paid routes, so ownership verification can be exercised against a real hostname with a valid certificate |
+| `vellar-alloy` | docker | Grafana Alloy, which scrapes `/metrics` and pushes to Grafana Cloud. Grafana Cloud's Prometheus is push-based and cannot scrape an arbitrary public URL itself |
+
+**Persistence** is libSQL/Turso, a managed cloud database, not a disk. That is
+deliberate: a Render disk costs money and activates three findings (G-5, G-6,
+G-7) that stay dormant without one, while an external store gives durability
+without them. The container is disposable; the data is not.
+
+**Observability** is 11 named `vellar_*` Prometheus metrics on a public,
+unauthenticated `GET /metrics`, scraped by Alloy and forwarded to a Grafana
+Cloud dashboard.
+
+**Cost today: nothing.** Every service is on the free tier and the Turso and
+Grafana Cloud usage sits inside their free allowances. A move to Render's
+`starter` plan (~$7/mo) was approved and rescinded the same day for budget;
+`render.yaml` carries the one-line change behind an explicit billing warning.
+This is a stated constraint rather than an oversight, and it has a cost:
+
+**Cold start is ~45 seconds.** The free tier spins a service down after ~15
+minutes idle, and spin-down destroys the container rather than pausing it, so
+the first request after idle pays a full boot. Measured at 42.8 s live and 35.7 s
+in an earlier run. The catalog survives it because the data is in Turso, but the
+latency is real and is the single most visible limitation of the hosted
+instance.
+
+**To run your own instance** you need the 25 environment variables enumerated in
+`docs/deploy-runbook.md`, of which three carry real authority and are never in
+git: `SPONSOR_SECRET_KEY`, `CATALOG_DB_AUTH_TOKEN`, and `GRAFANA_API_TOKEN`.
+Everything else has a documented default or is optional. `VERIFICATION_API_URL`
+is deliberately unset, which is why every trust verdict degrades to `unknown`
+(§6).
+
+## 12. Non-Goals
 
 - Not a Vellar wallet feature; ships no changes to the wallet SDK or app.
 - No claim of exclusivity — see §10.
