@@ -18,3 +18,16 @@ our build the same way.
 
 Local changes: **none**. `diff` this directory against the pinned upstream
 path to confirm — any divergence is a defect in this statement.
+
+Three paths here are absent upstream and none of them is a change to vendored
+code: this file, `UPSTREAM_PIN`, and `test_snapshots/`. The last is generated
+Soroban test-runner output from executing the upstream test suite; it is build
+output rather than authored content, and it is untracked, so it is not part of
+the committed vendored tree. `diff -ru` reports all three as "Only in ." and
+still exits 0, since they are additions and not content differences. To compare
+only the vendored files:
+
+```sh
+diff -ru -x test_snapshots -x PROVENANCE.md -x UPSTREAM_PIN -x target \
+  <pinned-upstream>/contracts/upto-stellar contracts/upto-stellar
+```
