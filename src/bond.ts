@@ -1,6 +1,7 @@
 // Provider bond escrow wiring for Stellar — calls OUR deployed bond-escrow contract, built
 // from original source (contracts/bond-escrow/, deployment record in
-// docs/bond-escrow-deployment.md), unlike upto.ts's vendored settlement contract.
+// docs/bond-escrow-deployment.md). The `upto` settlement contract is likewise Vellar's own:
+// contracts/upto-vellar/, MIT licensed, record in docs/upto-vellar-deployment.md.
 //
 // This file wires ONE entry point so far: register_settlement. The design document
 // (docs/proposal-provider-bond.md, Section 6) locks that registration must be synchronous,
