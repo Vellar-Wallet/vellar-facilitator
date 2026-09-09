@@ -113,19 +113,43 @@ on-ledger by `0 <= actual <= max` before any transfer occurs.
 is facilitator-supplied, not client-signed, which is exactly why the contract
 enforces the ceiling rather than trusting it.
 
-Three limitations, stated because they matter:
+Limitations and provenance, stated because they matter:
 
 - **`upto` does not use the channel pool.** It takes the sponsor's sequence
   number directly, so concurrent `upto` settlements can fail with `txBadSeq`.
   This is item 5 on the pre-mainnet checklist and is upstream-blocked.
 - **The wire format is EXPERIMENTAL**, pending
   [x402-foundation/x402#3134](https://github.com/x402-foundation/x402/pull/3134).
-- **The contract is ours.** The `upto` settlement contract deployed by Vellar
-  (`CCZL7CTRS…`) is Vellar's own MIT-licensed implementation, written from the
-  x402 `upto` specification with a design brief committed before the
-  implementation (`contracts/upto-vellar/DESIGN.md`). The facilitator repo also
-  retains `contracts/upto-stellar/`, a vendored Apache-2.0 upstream contract,
-  for reference. `upto` should not be described as production-ready.
+- **The deployed contract is Vellar's own.**
+  `CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN` is an MIT-licensed
+  implementation written from the x402 `upto` scheme description, not derived
+  from existing code. The design brief was committed at **12:30Z on 2026-09-09**
+  (`f95e099`), before the first line of Rust at **13:02Z** (`109a063`), so the
+  ordering is checkable in the history rather than asserted. The first on-chain
+  settlement confirmed it works end to end: [`be33bb71…`](https://stellar.expert/explorer/testnet/tx/be33bb71b0a2c74c465bf0243c45e081bc7c5b66a337e2d8a5c0bbb82f54ede6),
+  ledger 4587956, **0.01 USDC settled against a 0.05 USDC ceiling** — the gap
+  between ceiling and charge being the property that distinguishes `upto` from
+  `exact`. Full record: [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md).
+- **It is not clean-room, and is not described as such.** This repo also retains
+  `contracts/upto-stellar/`, rail402's contract vendored verbatim at pinned
+  commit `ff504b85` (Apache-2.0, `PROVENANCE.md`), and the authors read it. What
+  the history supports is spec-driven design recorded before implementation,
+  with the differences named deliberately — not the absence of access to a
+  reference. The vendored contract is kept for reference and comparison and is
+  no longer the deployed one.
+- **A first deployment was superseded the same day.** `CDLSHRYCP…` used a direct
+  `transfer` and could not settle at all: a Soroban auth entry commits to exact
+  argument values, so a signature covering the ceiling cannot authorize a
+  transfer of the metered actual. All 15 of its tests passed, because they used
+  `mock_all_auths()`, which cannot detect that mismatch. Recorded rather than
+  quietly replaced.
+- **The hosted facilitator serves this contract.** `GET /supported` on
+  `vellar-facilitator.onrender.com` returns `CCZL7CTRS…`, confirmed live on
+  2026-09-09. Settling against it required `src/upto.ts` to accept a 7-argument
+  `settle` ABI alongside the vendored contract's 8-argument one, since this
+  contract omits `hook` entirely. `upto` still should not be described as
+  production-ready: it does not use the channel pool, and the wire format is
+  EXPERIMENTAL, per the two bullets above.
 
 ---
 
@@ -497,8 +521,20 @@ docs PR to `x402-foundation/x402` gated on mainnet settlement; the separate
 
 ## 11. Licence and Open Source
 
-**Apache-2.0** throughout: `package.json`, `LICENSE`, and both Soroban crates
-(`contracts/bond-escrow`, `contracts/upto-stellar`).
+**Apache-2.0** for the facilitator itself: `package.json` and `LICENSE`.
+
+The three Soroban crates are **not** uniformly Apache-2.0, so they are
+enumerated rather than summarised. Each row is the `license` field declared in
+that crate's own `Cargo.toml`:
+
+| Crate | Licence | Why |
+| --- | --- | --- |
+| `contracts/upto-vellar` | **MIT** | Vellar-authored, the deployed `upto` contract (§3.2) |
+| `contracts/upto-stellar` | Apache-2.0 | Vendored verbatim from rail402, retained for reference, no longer deployed |
+| `contracts/bond-escrow` | Apache-2.0 | Vellar-authored |
+
+MIT and Apache-2.0 are both permissive and compatible; the split is a fact about
+authorship, not a constraint on use.
 
 The RFP names AGPL-3.0 as disqualifying. A full audit found **zero** copyleft
 licences:
@@ -515,7 +551,8 @@ licences:
 
 No AGPL, GPL, LGPL, EUPL or SSPL anywhere, and no package without a declared
 licence. `@openzeppelin/relayer-*` does not appear in the dependency tree at
-all, not in `package-lock.json`, not in `examples/`, not in either `Cargo.lock`.
+all, not in `package-lock.json`, not in `examples/`, not in any of the three
+`Cargo.lock` files.
 
 Verify it:
 
