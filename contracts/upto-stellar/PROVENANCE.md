@@ -1,3 +1,7 @@
+> **Not deployed.** This contract is retained for the 8-arg ABI compatibility
+> path in `src/upto.ts`. The deployed contract is `upto-vellar` — see
+> [`docs/upto-vellar-deployment.md`](../../docs/upto-vellar-deployment.md).
+
 # Provenance — x402 `upto` settlement contract
 
 **Vendored, not authored here.** This crate is rail402's `upto` settlement

@@ -346,6 +346,29 @@ and [vellar-sdk](https://github.com/Vellar-Wallet/vellar-sdk) (the x402
 **payer** side). Any x402 client can use this facilitator — Vellar wallets and
 non-Vellar wallets alike. Shared expertise, not shared code.
 
+## upto settlement contract
+
+The deployed `upto` contract is
+[`CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN`](docs/upto-vellar-deployment.md),
+Vellar's own **MIT-licensed** implementation of the x402 `upto` scheme, built
+from [`contracts/upto-vellar/`](contracts/upto-vellar/). The design brief was
+committed before the implementation, and the ordering is checkable in the git
+history. First settlement verified on-chain at ledger 4587956: 0.01 USDC settled
+against a 0.05 USDC ceiling, which is the metered-billing property `upto` exists
+for.
+
+[`contracts/upto-stellar/`](contracts/upto-stellar/) is rail402's contract
+(Apache-2.0), retained for the 8-argument ABI compatibility path in
+`src/upto.ts`. It is **not deployed**.
+
+`upto` is still **EXPERIMENTAL** and should not be described as
+production-ready: it does not use the channel pool, so concurrent `upto`
+settlements can fail with `txBadSeq`, and the upstream wire format is still in
+review ([x402#3134](https://github.com/x402-foundation/x402/pull/3134)).
+
 ## License
 
-Apache-2.0
+Apache-2.0 for the facilitator itself. The Soroban crates differ:
+`contracts/upto-vellar` is **MIT**, `contracts/upto-stellar` and
+`contracts/bond-escrow` are Apache-2.0. Each crate's `Cargo.toml` is the
+authority.

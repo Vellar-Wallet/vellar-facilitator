@@ -151,27 +151,53 @@ Two further settlements (`f558307e…`, `12f0fa5c…`) are recorded in
 service that classifies raw Stellar ledger data and does not read anything this
 facilitator reports about itself.
 
-### 5.1 Provenance — stated plainly
+### 5.1 The deployed contract
 
-The `upto` Soroban contract in `contracts/upto-stellar/` is **vendored verbatim**
-from [`tolgayayci/rail402`](https://github.com/tolgayayci/rail402) at commit
-`ff504b85ac065369dc985759afe4164a4541d861` (Apache-2.0). See that directory's
-`PROVENANCE.md`.
+The deployed `upto` contract is
+`CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN`, wasm hash
+`92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8`, **MIT
+licensed**. It is **Vellar's own implementation**, written from the x402 `upto`
+scheme description. The design brief at `contracts/upto-vellar/DESIGN.md` was
+committed at **12:30Z on 2026-09-09** (`f95e099`), before the first line of Rust
+at **13:02Z** (`109a063`), so the ordering is checkable in the history rather
+than asserted. First on-chain settlement:
+[`be33bb71…`](https://stellar.expert/explorer/testnet/tx/be33bb71b0a2c74c465bf0243c45e081bc7c5b66a337e2d8a5c0bbb82f54ede6),
+ledger 4587956, **0.01 USDC settled against a 0.05 USDC ceiling**. Verify:
 
-**It was not authored by this team.** What this team did:
+```bash
+stellar contract fetch \
+  --id CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN \
+  --network testnet \
+  --rpc-url https://soroban-testnet.stellar.org \
+  --network-passphrase "Test SDF Network ; September 2015" \
+  --out-file fetched.wasm
+shasum -a 256 fetched.wasm
+# 92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8
+```
 
-- reviewed the source line by line before vendoring;
-- built it independently and verified the wasm hash reproducibly
-  (`c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9`), matching
-  what the chain actually runs;
-- deployed its own instance rather than trusting rail402's deployed one, because
-  nothing tied that instance's on-chain hash to a reproducible build;
-- re-ran the 17 upstream tests.
+Full record, including the superseded first deployment `CDLSHRYCP…` and why it
+could not settle: [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md).
+
+**It is not clean-room, and is not described as such.** This repo also retains
+`contracts/upto-stellar/`, rail402's contract
+([`tolgayayci/rail402`](https://github.com/tolgayayci/rail402), Apache-2.0,
+pinned at `ff504b85ac065369dc985759afe4164a4541d861`), and its authors read it
+before designing this one. It is retained for the 8-argument ABI compatibility
+path in `src/upto.ts` and is **not deployed**. What the history supports is
+spec-driven design recorded before implementation, with the differences named
+deliberately — not the absence of access to a reference.
+
+What this team previously did with the vendored contract, recorded because the
+settlements in §5 above were made through it: reviewed the source line by line
+before vendoring; built it independently and verified its wasm hash reproducibly
+(`c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9`); deployed
+its own instance rather than trusting rail402's; and re-ran the 17 upstream
+tests.
 
 The RFP asks for the `upto` scheme to be **authored** and contributed upstream
-via the x402 Technical Steering Committee. Vetting and independently rebuilding
-someone else's contract is a materially different claim from authoring a spec,
-and this report does not conflate them.
+via the x402 Technical Steering Committee. Authoring a contract implementation
+and authoring a spec are different claims, and this report does not conflate
+them: the contract above is ours, the spec contribution is the PR that follows.
 
 **Status: PR [#3428](https://github.com/x402-foundation/x402/pull/3428) open,
 under TSC review** (filed 2026-09-08). *(was: "That has not been done.")*
