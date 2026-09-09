@@ -110,7 +110,7 @@ as "nothing here is verified" when the truth was "nothing is being checked".
 | `POST /settle` | Submit the payment on-chain, sponsoring the network fee — buyers hold only the payment asset, no XLM |
 | `GET /supported` | Advertise scheme/network/extensions/signers to sellers, plus `catalogAssets` — the live set of assets the catalog actually holds, grouped by network |
 | `GET /discovery/resources` | List cataloged x402 resources (filters: `type`, `payTo`, `scheme`, `network`, `extensions`, `asset`‡, `verified_only`†; `limit`/`offset`) |
-| `GET /discovery/search` | Keyword search over the catalog — tokenized and relevance-scored, not semantic (`query`, same filters, cursor-paginated) |
+| `GET /discovery/search` | Hybrid search over the catalog — a lexical scorer (synonyms, stemming, weighted fields) fused with Voyage AI embeddings by RRF (`query`, same filters, cursor-paginated) |
 | `GET /health` | Liveness, plus the deployed `commit`, `uptimeSeconds`, `catalogSize`, `catalogFrozen` when bindings are frozen, and `unverifiableEntries` when any seller advertises an address the facilitator cannot fetch |
 
 † `verified_only` is **refused with a 400** (`verified_only_unavailable`) on

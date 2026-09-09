@@ -8,11 +8,12 @@ Support." This document governs this repo (`vellar-facilitator`). It is
 separate infrastructure from the Vellar wallet product; the two share x402
 domain expertise, not code.
 
-**Status: live on Stellar testnet, 578 tests passing. Production-hardened —
+**Status: live on Stellar testnet, 670 tests passing. Production-hardened —
 the channel pool (50 accounts; 50/50 under load), telemetry (11 Prometheus
 metrics), the deploy runbook, and the RFP gap fixes are all shipped.
-Pre-mainnet: the external security audit, semantic search, and the pubnet
-deployment remain — see the checklist at the top of §9.**
+Pre-mainnet: the external security audit and the pubnet deployment remain, and
+semantic search is shipped but not yet claimed as met — see the checklist at the
+top of §9.**
 The facilitator, Bazaar discovery, the MCP server, and the trust layer are
 implemented, tested, and deployed at `https://vellar-facilitator.onrender.com`,
 with on-chain settlements to show for it (§8). The pre-mainnet security review
@@ -32,13 +33,13 @@ Each row names where to check it without trusting this table:
 
 | Claim | Verified | Check it yourself |
 | --- | --- | --- |
-| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through `vellar-facilitator.onrender.com` and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§4). **NOT `./demo.sh`** — it has been broken since `6f5de85` (2026-08-31): it never sets `CHANNEL_ACCOUNT_SECRET_KEYS`, which `config.ts:414` now requires, so the local facilitator refuses to boot. Tracked in [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) |
+| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through `vellar-facilitator.onrender.com` and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§4), or `./demo.sh` for the full local loop — the latter was broken from `6f5de85` until [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) was fixed and merged, and now provisions the 50 channel accounts `config.ts` requires |
 | Payments settle on-chain; the sponsor pays the fee | tx `1da6f9e6…e039` Horizon-confirmed successful, `fee_account` = this facilitator's sponsor | hashes in §8, stellar.expert or Horizon |
 | Provenance gating works both ways | tx `8bde387b…6faf` settled while attested; the identical payment post-revoke was rejected inside `__check_auth` | §8 |
 | Canonical testnet USDC end to end, no faucet | tx `f9b743c5…8c98` (ledger 4106526) and `cda3cbaa…50ea` (ledger 4137813) | §8 |
 | Hosted instance live; catalog survives restart | `/health` answered in 42.8 s from cold (the documented ~45 s), non-empty catalog at 19 s uptime | `curl https://vellar-facilitator.onrender.com/health` |
 | `verified_only` refuses honestly rather than serving a misleading empty list | live `400 verified_only_unavailable` with the reason and a pointer to the field that does work | `curl '…/discovery/resources?verified_only=true'` |
-| Tests and types | 578 passed, 4 skipped; `tsc --noEmit` clean | `npm test`, `npm run typecheck` |
+| Tests and types | 670 passed, 4 skipped; `tsc --noEmit` clean. Plus 105 Rust contract tests (89 bond-escrow, 16 upto-vellar) | `npm test`, `npm run typecheck`, `cargo test` in each `contracts/*` |
 | Pre-mainnet security review complete | every finding carries a final status | `docs/security-audit.md`, `docs/closing-state.md` |
 | Reliability is measured, not asserted | the scheduled settle probe is green on its cron (five runs/day observed), each run settling real payments with a no-retry control arm beside the retry | the repo's Actions tab, `settle-probe.yml` |
 | Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
@@ -239,39 +240,65 @@ An **MCP discovery server** wraps this so an LLM tool-use loop can call
 `x402_search_resources` / `x402_list_resources` as MCP tools, not just raw HTTP.
 Both are wire-compatible with the canonical `@x402/extensions` bazaar client.
 
-### 5.1 Search ranking — lexical today, semantic before mainnet
+### 5.1 Search ranking — hybrid lexical + semantic
 
 **Stated plainly, because this is the part of the scope most often overclaimed.**
-Ranking today is **lexical**: weighted token/substring matching over
-`serviceName` (4), `tags` (3), `description` (2) and the resource URL (1), plus
-the stringified `extensions.bazaar` blob for MCP entries (`scoreResource`,
-`src/catalog.ts`). Results are computed in memory at read time. There are **no
-embeddings, no vector index, and no documented evaluation methodology** — the
-store has no vector column, no vector extension and no full-text index.
+Ranking is **hybrid**: a lexical scorer and a vector ranking run independently
+and are fused by Reciprocal Rank Fusion (`src/catalog.ts`, `src/embeddings.ts`).
 
-That baseline is deterministic and testable, and it answers keyword-shaped
-queries well. It is **not** the semantic ranking the RFP asks to be graded on,
-and it is not described here as if it were:
+**Lexical.** Weighted token/substring matching over `serviceName` (4), `tags`
+(3), `description` (2) and the resource URL (1), plus the stringified
+`extensions.bazaar` blob for MCP entries. Query tokens are expanded through 8
+bidirectional synonym groups and then stemmed by a 6-rule Porter-style stemmer,
+in that order — the synonym map is keyed on whole words, so stemming first would
+look up `convers` and miss `conversion`.
+
+**Semantic.** Voyage AI `voyage-code-3`, 1024 dimensions, cosine similarity over
+embeddings stored per catalog entry. Embeddings are generated fire-and-forget on
+ingest and never block settlement, and `search()` stays synchronous over an
+in-memory cache, so a Voyage outage degrades ranking rather than hanging the
+endpoint.
+
+**Fusion.** RRF with `k=60`, consulted only when a query vector is available.
+The lexical scorer was **not** replaced, deliberately: the whole risk of adding a
+second signal is that it regresses the queries the first one already answers.
+
+**Measured** (`docs/search-eval.md`, same catalog and scorer, changing only
+whether `VOYAGE_API_KEY` is set):
+
+| Query set | Metric | Lexical | Hybrid |
+| --- | --- | --- | --- |
+| Original 10 | MRR / NDCG@3 | 0.950 / 0.963 | 0.950 / 0.963 (unchanged) |
+| Semantic 10 | MRR | 0.264 | **0.717** |
+| Semantic 10 | NDCG@3 | 0.263 | **0.789** |
+
+The semantic set is ten queries sharing no vocabulary with any catalog entry.
+Before the vector half, such a query returned **nothing at all** — an empty list,
+not a weak ranking. All ten now return a relevant result.
+
+**Why this is still not claimed as complete.** The RFP asks for both real
+ranking and a stated evaluation approach:
 
 > "Search quality is a deliverable, not a detail: this means real ranking, and
 > submissions must describe both their retrieval approach and how they will
 > evaluate result quality over time."
 
-**Pre-mainnet commitment — the next major engineering investment, not a
-post-launch nice-to-have:**
+Both exist now. What is not yet good enough is the *result*: **five of ten
+semantic queries reach the top 3 but not first place**, and the eval corpus is a
+single seller's demo of 19 entries. A retrieval number measured against one
+seller's catalog describes that catalog, not the ranking. Remaining work, and it
+is reranking rather than more embedding coverage:
 
-- Semantic embeddings (`text-embedding-3-small` or equivalent) replacing the
-  lexical scorer.
-- A vector index — in-memory HNSW rebuilt at boot from stored embeddings, or
-  Turso's native vector extension if available. Both are greenfield: no schema,
-  dependency or model runtime for this exists today.
-- An eval harness over a fixed query set, reporting **NDCG** or **MRR**.
-- A documented quality-tracking process, so a ranking regression is caught
-  before it deploys.
+- Improve top-1 accuracy on conceptual queries.
+- Extend the eval harness beyond one seller's catalog, with a published floor
+  that gates the build.
+- Document the quality-tracking process so a ranking regression is caught before
+  it deploys.
 
 Sequenced **before** a mainnet tag, alongside the pubnet deployment itself. Full
 status and the reviewer-facing framing: `docs/conformance-report.md` §6.3. This
-is item 3 in the pre-mainnet checklist (§9 — Before mainnet).
+is item 3 in the pre-mainnet checklist (§9 — Before mainnet), which stays
+**partial** for the reasons above rather than because the mechanism is missing.
 
 ## 6. Trust Layer
 
@@ -525,7 +552,8 @@ Implemented, tested, and live:
   manual wiring. This closes the seller onboarding gap: the wallet
   is the x402 payer, this facilitator is verify/settle, the
   extension is how a developer becomes a seller in under a minute.
-- **Test suite and security review:** 578 tests (`vitest run`), including
+- **Test suite and security review:** 670 tests (`vitest run`) plus 105 Rust
+  contract tests, including
   mutation-named guards and the wire-conformance suites above; a completed
   pre-mainnet security review with every finding tracked to closure
   (`docs/security-audit.md`, `docs/closing-state.md`) — the F12 sponsor-drain
