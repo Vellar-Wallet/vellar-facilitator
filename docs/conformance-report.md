@@ -241,6 +241,20 @@ inferred from reading source:
 - [#3158](https://github.com/x402-foundation/x402/issues/3158) (2026-08-14): the
   canonical client cannot sign for Soroban smart accounts, which makes an entire
   payer class (policy-governed agents, passkey wallets) unreachable.
+  ([#3159](https://github.com/x402-foundation/x402/issues/3159) is the same
+  report filed an hour later and closed as a duplicate; #3158 is the open one.)
+
+  **The payer that works around it is published.** `vellar-mcp-x402-payer` on
+  [npm](https://www.npmjs.com/package/vellar-mcp-x402-payer)
+  ([source](https://github.com/Vellar-Wallet/vellar-sdk/tree/main/packages/mcp-x402-payer))
+  registers its own `SchemeNetworkClient` rather than waiting on the fix, so
+  smart-account payers reach this facilitator today. Its README carries the
+  on-chain demonstration that the budget is enforced by the chain and not by
+  the process: a 0.1 USDC payment under a 0.5 USDC on-chain cap settled
+  (`9e1f3acf…`, ledger 4141211), and a 0.6 USDC payment over that cap was
+  refused inside `__check_auth` with nothing spent — with the payer's own
+  in-process limits deliberately set *above* the cap so they could not be what
+  refused it. That evidence lives in the SDK repo, not this one.
 
 One further upstream PR, in a different repository:
 

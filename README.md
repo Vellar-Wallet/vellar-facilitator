@@ -259,7 +259,19 @@ official `withBazaar` client. Point any MCP client at it:
 }
 ```
 
-## Using it
+**This server finds resources; it does not pay for them.** It holds no keys, by
+design — the facilitator is neutral infrastructure that strangers point wallets
+at, so giving it custody would invert its trust model.
+
+The **payer** side is published separately as
+[`vellar-mcp-x402-payer`](https://www.npmjs.com/package/vellar-mcp-x402-payer)
+on npm (source:
+[`packages/mcp-x402-payer`](https://github.com/Vellar-Wallet/vellar-sdk/tree/main/packages/mcp-x402-payer)
+in the `vellar-sdk` repo). It runs locally beside the agent, holds exactly one
+key, and enforces a spend limit — on-chain via a Vellar smart account's policy
+when configured with one, and in-process otherwise. Its README is explicit that
+only the first is a defence against a compromised agent. An agent typically
+connects to both: this one to discover, that one to pay.
 
 **[`docs/using-it.md`](./docs/using-it.md)** — how to point at a running
 facilitator, split by role:
