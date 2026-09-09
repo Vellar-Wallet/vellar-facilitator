@@ -13,8 +13,9 @@
 //! The security properties worth stating up front, because they are what a
 //! reviewer should check first:
 //!
-//! - **No custody** (SR-1). Value moves directly from payer to recipient in a
-//!   single cross-contract call. This contract never holds a balance.
+//! - **No custody** (SR-1). Value moves from payer to recipient within a single
+//!   invocation. The contract acts as the *spender* of a same-call allowance and
+//!   never holds a balance of its own.
 //! - **No admin, no upgrade** (SR-1, SR-3). There is one state-changing entry
 //!   point and no privileged caller. The deployer has no standing after deploy.
 //! - **The buyer authorizes the ceiling, not the charge** (SR-2). `actual_amount`
@@ -150,12 +151,56 @@ impl UptoVellar {
             env.storage().temporary().extend_ttl(&key, ttl, ttl);
         }
 
-        // FR-6 / SR-1: one direct transfer, payer to recipient. No `approve` +
-        // `transfer_from` (OQ-3) — the transfer is atomic within the invocation
-        // that already carries the buyer's authorization, so an allowance would be
-        // written and consumed in the same call for no gain. This contract is
-        // never a party to the transfer and never holds a balance.
-        token::Client::new(&env, &token).transfer(&from, &to, &actual_amount);
+        // FR-6 / OQ-3: `approve` then `transfer_from`. NOT a direct transfer.
+        //
+        // CORRECTION (2026-09-09). The first version of this contract called
+        // `transfer(&from, &to, &actual_amount)` directly, on the reasoning that
+        // an allowance written and consumed in the same invocation was redundant.
+        // That reasoning was wrong, and the contract could not settle at all.
+        //
+        // Why it fails: a Soroban authorization entry commits to EXACT argument
+        // values. The buyer signs at simulation time, when the only amount known
+        // is the ceiling, so the signed tree contains a sub-invocation for
+        // `transfer(from, to, MAX)`. The facilitator then executes the settlement
+        // with the metered `actual`, producing `transfer(from, to, ACTUAL)`. The
+        // two do not match and the host refuses with
+        // `Error(Auth, InvalidAction)` — "Unauthorized function call for address".
+        // Reproduced on testnet against the superseded deployment CDLSHRYCP…;
+        // see docs/upto-vellar-deployment.md.
+        //
+        // Why this works: `approve` is signed for `max_amount`, which IS known at
+        // signing time, so the signed sub-invocation and the executed one agree.
+        // The subsequent `transfer_from` is made by THIS CONTRACT as the spender
+        // drawing on that allowance, and therefore needs no buyer signature at
+        // all. That indirection is precisely the mechanism that lets `actual`
+        // differ from the ceiling. It is not ceremony.
+        //
+        // OQ-2 follows from this and resolves to `max_amount`: the approval must
+        // match what the buyer signed, so it cannot be narrowed to `actual`.
+        //
+        // SR-1 still holds. The contract is the *spender* of an allowance, never
+        // the holder of funds: `transfer_from` moves value from `from` straight to
+        // `to`, and the contract's own balance is untouched (asserted by TR-15).
+        //
+        // The allowance is left at its post-draw value rather than being reset.
+        // Resetting would need a SECOND `approve` sub-invocation, which the buyer
+        // did not sign and therefore cannot be authorized here. It is bounded in
+        // both directions anyway: it expires at `expiration_ledger`, and the nonce
+        // consumed above makes this authorization single-use, so no second
+        // settlement can draw on the remainder.
+        let client = token::Client::new(&env, &token);
+        client.approve(
+            &from,
+            &env.current_contract_address(),
+            &max_amount,
+            &expiration_ledger,
+        );
+        client.transfer_from(
+            &env.current_contract_address(),
+            &from,
+            &to,
+            &actual_amount,
+        );
 
         // FR-7: emit AFTER the transfer, so the event is only ever observed for a
         // settlement that actually completed.

@@ -56,6 +56,12 @@ const server = new rpc.Server(RPC_URL);
 //    tuple excludes actual, so the signature below stays valid when the
 //    facilitator swaps in the real actual at settlement.
 const nonce = crypto.randomBytes(32);
+// UPTO_NO_HOOK=1 targets the 7-argument ABI of contracts/upto-vellar/, which
+// omits `hook` entirely (its DESIGN.md FR-2/SR-4). Default is the 8-argument
+// ABI of the vendored contract, whose trailing `hook` must be None.
+// Sending the wrong arity fails at the Soroban VM with MismatchingParameterLen,
+// before anything is submitted or spent.
+const NO_HOOK = process.env.UPTO_NO_HOOK === "1";
 const args = [
   nativeToScVal(ASSET, { type: "address" }), // token
   nativeToScVal(payer.publicKey(), { type: "address" }), // from
@@ -64,7 +70,7 @@ const args = [
   null, // expiration_ledger — set below
   nativeToScVal(nonce, { type: "bytes" }), // nonce
   nativeToScVal(MAX, { type: "i128" }), // actual_amount (placeholder)
-  xdr.ScVal.scvVoid(), // hook: None
+  ...(NO_HOOK ? [] : [xdr.ScVal.scvVoid()]), // hook: None (8-arg ABI only)
 ];
 const latest = (await server.getLatestLedger()).sequence;
 const expirationLedger = latest + 60; // ~5 min — well inside the contract's 24h bound

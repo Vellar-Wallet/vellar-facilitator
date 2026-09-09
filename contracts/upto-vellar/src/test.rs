@@ -16,7 +16,7 @@
 extern crate std;
 
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Events, Ledger},
+    testutils::{Address as _, AuthorizedFunction, Events, Ledger, MockAuth, MockAuthInvoke},
     token, Address, BytesN, Env, IntoVal, Symbol,
 };
 
@@ -546,4 +546,121 @@ fn auth_is_bound_to_ceiling_args() {
             expected_args,
         )),
     );
+
+    // The sub-invocation the buyer authorizes must be `approve` for the CEILING,
+    // never `transfer` for the actual.
+    //
+    // This assertion exists because its absence is what let the first deployment
+    // ship broken. A Soroban auth entry commits to exact argument values: the
+    // buyer signs at simulation time knowing only the ceiling, so a signed
+    // `transfer(from, to, MAX)` cannot authorize the executed
+    // `transfer(from, to, ACTUAL)`. `approve(from, contract, MAX, expiry)` is
+    // signable because MAX is known when signing; the contract then draws
+    // `actual` via `transfer_from` as the spender, needing no signature.
+    assert_eq!(invocation.sub_invocations.len(), 1, "exactly one sub-invocation");
+    let sub = &invocation.sub_invocations[0];
+    let approve_args: soroban_sdk::Vec<soroban_sdk::Val> = (
+        f.payer.clone(),
+        f.contract_id.clone(),
+        1_000_i128, // the CEILING, not the 600 actually charged
+        EXPIRY,
+    )
+        .into_val(&f.env);
+    assert_eq!(
+        sub.function,
+        AuthorizedFunction::Contract((
+            f.token_id.clone(),
+            Symbol::new(&f.env, "approve"),
+            approve_args,
+        )),
+        "the buyer must authorize approve(ceiling), not transfer(actual)",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TR-16 — actual < max settles under REAL auth, not mocked auth
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tr16_actual_below_ceiling_settles_under_real_auth() {
+    // The regression test for the defect that broke the first deployment.
+    //
+    // Every other test here uses `mock_all_auths()`, which authorizes whatever is
+    // asked and therefore CANNOT detect an argument mismatch between the signed
+    // auth tree and the executed calls. That is exactly the failure the first
+    // contract had: 15 green tests, and it could not settle a single payment
+    // on-chain.
+    //
+    // `mock_auths` is the difference: it authorizes one EXACT invocation tree and
+    // refuses anything else, so if the contract's calls drift from what the buyer
+    // signed, this test fails the way testnet did.
+    let env = Env::default();
+    let contract_id = env.register(UptoVellar, ());
+    let client = UptoVellarClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(issuer.clone());
+    let token_id = sac.address();
+    let token = token::Client::new(&env, &token_id);
+
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // Minting needs the issuer's auth; keep that separate from the settle auth
+    // under test.
+    env.mock_all_auths();
+    token::StellarAssetClient::new(&env, &token_id).mint(&payer, &START_BALANCE);
+
+    let n = nonce(&env, 32);
+    const CEILING: i128 = 1_000;
+    const ACTUAL: i128 = 250; // deliberately NOT the ceiling
+
+    let settle_args: soroban_sdk::Vec<soroban_sdk::Val> = (
+        token_id.clone(),
+        payer.clone(),
+        recipient.clone(),
+        CEILING,
+        EXPIRY,
+        n.clone(),
+    )
+        .into_val(&env);
+    let approve_args: soroban_sdk::Vec<soroban_sdk::Val> = (
+        payer.clone(),
+        contract_id.clone(),
+        CEILING, // signed at the ceiling: the actual is not known at signing time
+        EXPIRY,
+    )
+        .into_val(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &payer,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "settle",
+            args: settle_args,
+            sub_invokes: &[MockAuthInvoke {
+                contract: &token_id,
+                fn_name: "approve",
+                args: approve_args,
+                sub_invokes: &[],
+            }],
+        },
+    }]);
+
+    client.settle(
+        &token_id,
+        &payer,
+        &recipient,
+        &CEILING,
+        &EXPIRY,
+        &n,
+        &ACTUAL,
+    );
+
+    // The buyer signed 1000 and was charged 250. That gap is the whole point of
+    // the scheme, and it is the thing the direct-transfer version could not do.
+    assert_eq!(token.balance(&payer), START_BALANCE - ACTUAL);
+    assert_eq!(token.balance(&recipient), ACTUAL);
+    assert_eq!(token.balance(&contract_id), 0, "SR-1 holds under real auth too");
+    assert!(client.is_used(&payer, &n));
 }

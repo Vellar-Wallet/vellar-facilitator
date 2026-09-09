@@ -25,7 +25,8 @@
 //     the signed tuple, making it a hostile-callee surface aimed at the
 //     sponsor (a panicking/CPU-burning hook reverts a settle after transfer or
 //     burns sponsored fees). Nothing we run needs it; refusing is cheaper than
-//     defending.
+//     defending. `contracts/upto-vellar/` takes that position further and omits
+//     the argument from its ABI entirely — see the ARG COUNT note below.
 //   - `verify` simulates at the CEILING, not the eventual actual. That is the
 //     question verify can actually answer before metering ("could the full
 //     authorization settle?") and it is deliberately conservative: a buyer
@@ -55,9 +56,28 @@ const PASSPHRASES: Record<string, string> = {
 };
 
 
-/** Argument order of the contract's `settle`, per contracts/upto-stellar/src/lib.rs. */
+/** Argument order of the contract's `settle`. Identical for both supported ABIs:
+ *  the hook is a TRAILING argument, so every index below is unaffected by its
+ *  absence — `actual` is at 6 either way. */
 const ARG = { token: 0, from: 1, to: 2, max: 3, expiration: 4, nonce: 5, actual: 6, hook: 7 } as const;
-const SETTLE_ARG_COUNT = 8;
+
+/** Two contract ABIs are accepted, distinguished only by argument count.
+ *
+ *  8 — `contracts/upto-stellar/` (vendored rail402, deployed as CDHPA64M…):
+ *      trailing `hook`, which this facilitator REFUSES rather than defends
+ *      against (see the header).
+ *  7 — `contracts/upto-vellar/` (deployed as CDLSHRYCP…): no `hook` in the ABI
+ *      at all, per that contract's DESIGN.md FR-2/SR-4. An argument that is
+ *      parsed but never honoured is a surface a caller can reason wrongly
+ *      about, so it was omitted rather than accepted and ignored.
+ *
+ *  The count is the whole discriminator, and it is safe as one: `settle` is the
+ *  only function either contract exposes, and the contract address is already
+ *  pinned to `this.contractId` above this check. A 7-arg payload aimed at the
+ *  8-arg contract fails at the Soroban VM with `MismatchingParameterLen`
+ *  regardless of what this code does. */
+const SETTLE_ARG_COUNT_WITH_HOOK = 8;
+const SETTLE_ARG_COUNT_NO_HOOK = 7;
 
 export interface UptoSchemeOptions {
   /** Our deployed settlement contract (C…). See docs/upto-deployment.md. */
@@ -162,11 +182,19 @@ export class UptoStellarScheme {
     if (ic.functionName().toString() !== "settle")
       return "invalid_upto_stellar_wrong_function";
     const args = ic.args();
-    if (args.length !== SETTLE_ARG_COUNT)
+    if (
+      args.length !== SETTLE_ARG_COUNT_WITH_HOOK &&
+      args.length !== SETTLE_ARG_COUNT_NO_HOOK
+    )
       return "invalid_upto_stellar_wrong_argument_count";
 
-    // The hook is refused, not defended — see the header.
-    if (args[ARG.hook]!.switch() !== xdr.ScValType.scvVoid())
+    // The hook is refused, not defended — see the header. On the 7-arg ABI there
+    // is no hook argument to inspect, and its ABSENCE is the stronger form of the
+    // same position: a caller cannot supply what the contract will not accept.
+    if (
+      args.length === SETTLE_ARG_COUNT_WITH_HOOK &&
+      args[ARG.hook]!.switch() !== xdr.ScValType.scvVoid()
+    )
       return "invalid_upto_stellar_hook_not_supported";
 
     let token: string, payer: string, to: string, max: bigint;
@@ -204,7 +232,13 @@ export class UptoStellarScheme {
     return actual;
   }
 
-  /** Rebuild from the sponsor with `actual` in arg 6, then simulate. */
+  /** Rebuild from the sponsor with `actual` in arg 6, then simulate.
+   *
+   *  The rebuilt invocation preserves the ORIGINAL argument count: this copies
+   *  the parsed args and overwrites index 6 in place, never appending. A 7-arg
+   *  authorization is therefore resubmitted as 7 args and an 8-arg one as 8, so
+   *  the rebuild always matches the ABI of the contract actually being called.
+   *  Appending a hook here would break the 7-arg contract at the VM. */
   private async buildAndSimulate(parsed: ParsedSettle, actual: bigint) {
     const args = [...parsed.args];
     args[ARG.actual] = nativeToScVal(actual, { type: "i128" });

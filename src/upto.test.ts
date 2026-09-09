@@ -48,6 +48,8 @@ interface TxOverrides {
   token?: string;
   payTo?: string;
   max?: bigint;
+  /** Build the 7-argument ABI (contracts/upto-vellar/), omitting `hook`. */
+  noHook?: boolean;
 }
 
 /** A structurally valid client transaction, offline. `auth` defaults to one
@@ -62,7 +64,7 @@ function clientTx(o: TxOverrides = {}): string {
     nativeToScVal(12345, { type: "u32" }),
     nativeToScVal(Buffer.alloc(32, 7), { type: "bytes" }),
     nativeToScVal(1_000_000n, { type: "i128" }),
-    o.hook ?? xdr.ScVal.scvVoid(),
+    ...(o.noHook ? [] : [o.hook ?? xdr.ScVal.scvVoid()]),
   ];
   const ic = new xdr.InvokeContractArgs({
     contractAddress: Address.fromString(o.contract ?? CONTRACT).toScAddress(),
@@ -163,6 +165,74 @@ describe("upto parseAndValidate — the gate in front of the network", () => {
     expect(scheme().parseAndValidate(payload(clientTx({ auth: false })), reqs())).toBe(
       "invalid_upto_stellar_no_authorization",
     );
+  });
+});
+
+describe("upto ABI — 7-arg (upto-vellar) and 8-arg (upto-stellar) both settle", () => {
+  // contracts/upto-vellar/ omits `hook` from its ABI entirely (DESIGN.md
+  // FR-2/SR-4), so its `settle` takes 7 arguments. The vendored contract takes
+  // 8. `hook` is the TRAILING argument, so every other index is unchanged and
+  // `actual` stays at 6 on both — which is what makes supporting both cheap.
+
+  // T-1
+  it("accepts the 7-arg ABI and extracts the same payer and ceiling", () => {
+    const r = scheme().parseAndValidate(payload(clientTx({ noHook: true })), reqs());
+    expect(typeof r).not.toBe("string");
+    if (typeof r !== "string") {
+      expect(r.payer).toBe(PAYER);
+      expect(r.max).toBe(1_000_000n);
+      expect(r.args).toHaveLength(7);
+    }
+  });
+
+  // T-2
+  it("still accepts the 8-arg ABI unchanged", () => {
+    const r = scheme().parseAndValidate(payload(clientTx()), reqs());
+    expect(typeof r).not.toBe("string");
+    if (typeof r !== "string") {
+      expect(r.payer).toBe(PAYER);
+      expect(r.max).toBe(1_000_000n);
+      expect(r.args).toHaveLength(8);
+    }
+  });
+
+  // T-3 / T-4 — the count is a whitelist of exactly {7, 8}, not a minimum.
+  it.each([
+    ["6 args (one short of the 7-arg ABI)", 6],
+    ["9 args (one past the 8-arg ABI)", 9],
+    ["5 args", 5],
+    ["0 args", 0],
+  ] as const)("refuses %s", (_n, count) => {
+    const args = Array.from({ length: count }, () => xdr.ScVal.scvVoid());
+    expect(scheme().parseAndValidate(payload(clientTx({ args: [...args] })), reqs())).toBe(
+      "invalid_upto_stellar_wrong_argument_count",
+    );
+  });
+
+  it("still refuses a non-void hook on the 8-arg ABI", () => {
+    // The 7-arg path must not have weakened the 8-arg hook check: a hostile hook
+    // is still refused where the argument exists.
+    const hooked = clientTx({ hook: nativeToScVal(OTHER_CONTRACT, { type: "address" }) });
+    expect(scheme().parseAndValidate(payload(hooked), reqs())).toBe(
+      "invalid_upto_stellar_hook_not_supported",
+    );
+  });
+
+  it("applies every requirement mismatch check to the 7-arg ABI too", () => {
+    // The validation after the count check is shared, but assert it rather than
+    // assume it: a 7-arg payload must not bypass asset/payTo/ceiling agreement.
+    expect(
+      scheme().parseAndValidate(payload(clientTx({ noHook: true, max: 999_999n })), reqs()),
+    ).toBe("invalid_upto_stellar_ceiling_mismatch");
+    expect(
+      scheme().parseAndValidate(
+        payload(clientTx({ noHook: true, payTo: Keypair.random().publicKey() })),
+        reqs(),
+      ),
+    ).toBe("invalid_upto_stellar_payto_mismatch");
+    expect(
+      scheme().parseAndValidate(payload(clientTx({ noHook: true, auth: false })), reqs()),
+    ).toBe("invalid_upto_stellar_no_authorization");
   });
 });
 

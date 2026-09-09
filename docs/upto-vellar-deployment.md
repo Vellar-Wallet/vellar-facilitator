@@ -4,38 +4,94 @@
 
 | Field | Value |
 |-------|-------|
-| Contract ID | `CDLSHRYCP543HUKCGYGQHT2BSXUG2BVEZLCUHZVYV2O7XOTF6UTUH5OI` |
-| Wasm hash | `62ae27cf3bd07a1c144fbcd887dd9edcffd7ac4852544c1ce735ff8f2f5692a8` |
+| Contract ID | `CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN` |
+| Wasm hash | `92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8` |
 | Network | `stellar:testnet` |
 | Deployed | 2026-09-09 |
 | Deployer | `GA47SADPR4XBBEOJR3WOOZOXT7SEUXGYRMO66PXOINPILE3TFSZDZPKT` |
-| Deployment tx | [`c08a072d…`](https://stellar.expert/explorer/testnet/tx/c08a072d1736e130279ae06b17d639472bd7fe368a34fd480499dcdc3b2b5e3d) |
+| Status | **Deployed, first settlement confirmed on-chain** |
 
 Deployment is **two** transactions, and both are recorded because the wasm hash
 this document asserts is established by the first, not the second:
 
-| Step | Tx | Ledger | Fee charged |
-|---|---|---|---|
-| Upload wasm | [`a96e2a38…`](https://stellar.expert/explorer/testnet/tx/a96e2a3834555936aa1f2d4879b1676f44a63589e53178835445ca8a5b7ada50) | 4587142 | 2,665,382 stroops |
-| Create contract | [`c08a072d…`](https://stellar.expert/explorer/testnet/tx/c08a072d1736e130279ae06b17d639472bd7fe368a34fd480499dcdc3b2b5e3d) | 4587143 | 19,484 stroops |
+| Step | Tx | Ledger |
+|---|---|---|
+| Upload wasm | [`cc6243aa…`](https://stellar.expert/explorer/testnet/tx/cc6243aad7cd74d07d0545c287e656008a0ff2491c458117c4a32e99acf03991) | — |
+| Create contract | [`5cdd248d…`](https://stellar.expert/explorer/testnet/tx/5cdd248deb6dc9667b02452cc990661bba4776880db653caa058a9907f882aa1) | — |
 
-Both `successful: true`, Horizon-confirmed, 2026-09-09T13:08Z.
+## The superseded first deployment
 
-**On the deployer.** This is a dedicated one-time keypair, deliberately **not**
-the facilitator's payment sponsor
-(`GBUCR6H22CZC5OYHBJIEUS2JFZBOB63AHEGTCV6UEPMD2TMLKG2ZMIW4`). Contract
-deployment history stays distinct from payment sponsorship, the same separation
-the original `upto` contract used (deployed from `GBOC2UOB…`, see
-[`upto-deployment.md`](./upto-deployment.md)). The sponsor's balance is the
-hosted service's availability; it should not also appear in permanent chain
-history as a contract deployer.
+**`CDLSHRYCP543HUKCGYGQHT2BSXUG2BVEZLCUHZVYV2O7XOTF6UTUH5OI` (wasm
+`62ae27cf…`) was deployed earlier the same day and is superseded. It could not
+settle a payment.** It is recorded here rather than quietly replaced, because a
+deployment record that hides a failed deployment is not a record.
 
-The deployer key was generated and written directly to a mode-600 file under
-`.e2e-local/` (gitignored) in a single step, so it never passed through a shell
-argument or a transcript. It has no continuing role: the contract has no admin,
-no owner and no upgrade path (`DESIGN.md` SR-3), so this account holds **no
-privilege whatsoever** over the deployed contract. Nothing is lost if the key is
-discarded.
+**The defect.** That version moved funds with a direct
+`transfer(from, to, actual_amount)`. A Soroban authorization entry commits to
+**exact argument values**. The buyer signs at simulation time, when the only
+amount known is the ceiling, so the signed tree contained
+`transfer(from, to, 500000)`. The facilitator then executed the settlement with
+the metered actual, producing `transfer(from, to, 100000)`. The two did not
+match and the host refused:
+
+```
+Error(Auth, InvalidAction)
+[Failed Diagnostic Event] contract:CBIELTK6…,
+  topics:[error, Error(Auth, InvalidAction)],
+  data:["Unauthorized function call for address", GDZ7SANN…]
+```
+
+**Why it was not caught before deploying.** All 15 tests passed. Every one used
+`mock_all_auths()`, which authorizes whatever is asked and therefore cannot
+detect a mismatch between the signed auth tree and the executed calls. The
+contract was verifiably correct against its own tests and unable to settle a
+single payment. Nothing was spent on the failure: it surfaced at simulation.
+
+**The fix.** `approve` + `transfer_from`. The buyer's auth entry covers
+`approve(from, contract, max_amount, expiration_ledger)`, and `max_amount` **is**
+known at signing time, so the signed and executed sub-invocations agree. The
+contract then draws `actual_amount` via `transfer_from` as the spender, which
+needs no buyer signature. That indirection is the mechanism that lets `actual`
+differ from the ceiling; it is not ceremony. `DESIGN.md` OQ-3 and OQ-2 are
+resolved accordingly, with the original reasoning kept and marked wrong.
+
+**The regression test.** TR-16 uses `mock_auths` — one exact authorized tree,
+everything else refused — rather than `mock_all_auths`. Reverting the contract to
+a direct transfer fails TR-16 and the auth-binding assertion, confirmed by
+mutation. The test gap that allowed the first deployment is closed.
+
+## First on-chain settlement
+
+| Field | Value |
+|-------|-------|
+| Tx hash | [`be33bb71…`](https://stellar.expert/explorer/testnet/tx/be33bb71b0a2c74c465bf0243c45e081bc7c5b66a337e2d8a5c0bbb82f54ede6) |
+| Ledger | 4587956 |
+| Successful | `true` |
+| Payer | `GDZ7SANN7AXJEM5OUCEXNZRX7TQXGXNDVM22G2AK3CFM4VAGWIE7IEON` |
+| Recipient | `GD5EANBVMBT62T7FNFHYPYNIYXMPBG37CHPEY7KHE3LRHNTHLWGTLROC` |
+| Ceiling signed | 500,000 (0.05 USDC) |
+| Actual settled | 100,000 (0.01 USDC) |
+| Fee charged | 40,144 stroops |
+| Fee account | `GBOC2UOB7UI3LW2JDRSJQVCGI7SN7QD7AWELYCSNFY6GEWD4EPED6U3Y` |
+| Date | 2026-09-09T14:16:07Z |
+
+Asset: canonical testnet USDC
+(`CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`).
+
+**The actual is 20% of the ceiling, and that is the point.** The buyer
+authorized 0.05 USDC and was charged 0.01. The merchant's USDC balance moved by
+exactly 0.01 (confirmed on Horizon after settlement), so the remaining 0.04 of
+authorized headroom was never drawn. This is the property that distinguishes
+`upto` from `exact`, and it is the property the superseded contract could not
+deliver.
+
+The fee was paid by the facilitator's sponsor, not the payer — `areFeesSponsored`
+demonstrated on-chain rather than asserted.
+
+**Facilitator support.** Settling against this contract required `src/upto.ts` to
+accept a 7-argument `settle` ABI alongside the vendored contract's 8-argument
+one, since this contract omits `hook` entirely (`DESIGN.md` FR-2/SR-4). The
+`examples/upto-buyer.mjs` flag `UPTO_NO_HOOK=1` builds the 7-argument form.
 
 ## Reproduce the wasm hash
 
@@ -43,11 +99,11 @@ discarded.
 cd contracts/upto-vellar
 stellar contract build
 shasum -a 256 target/wasm32v1-none/release/x402_upto_vellar.wasm
-# expect 62ae27cf3bd07a1c144fbcd887dd9edcffd7ac4852544c1ce735ff8f2f5692a8
+# expect 92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8
 ```
 
 Toolchain: `rustc 1.96.0` / `stellar-cli 26.1.0` / `wasm32v1-none`.
-Built size: 3,936 bytes (4,238 before optimization).
+Built size: 4,162 bytes (4,519 before optimization).
 
 Reproducibility is not claimed beyond this toolchain. A different rustc or
 stellar-cli version may produce a different hash; that is a property of the
@@ -58,7 +114,7 @@ this repository to the bytes the chain runs.
 
 ```bash
 stellar contract fetch \
-  --id CDLSHRYCP543HUKCGYGQHT2BSXUG2BVEZLCUHZVYV2O7XOTF6UTUH5OI \
+  --id CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN \
   --network testnet \
   --rpc-url https://soroban-testnet.stellar.org \
   --network-passphrase "Test SDF Network ; September 2015" \
@@ -68,21 +124,34 @@ shasum -a 256 fetched.wasm
 # must match the hash above
 ```
 
-**Verified 2026-09-09.** The fetched bytes, the locally built artifact, and the
-hash recorded in this document are all
-`62ae27cf3bd07a1c144fbcd887dd9edcffd7ac4852544c1ce735ff8f2f5692a8`. This does
-not rest on the CLI's own report of what it uploaded: the bytes were fetched
-back from the network and hashed independently.
+**Verified 2026-09-09.** The fetched bytes and the locally built artifact are
+both `92365d9e…`. This does not rest on the CLI's report of what it uploaded:
+the bytes were fetched back from the network and hashed independently.
 
 The deployed contract exports exactly two functions, `settle` and `is_used`,
 which is `DESIGN.md` FR-1 confirmed by the build rather than by inspection.
 
+## On the deployer
+
+A dedicated one-time keypair, deliberately **not** the facilitator's payment
+sponsor (`GBUCR6H22CZC5OYHBJIEUS2JFZBOB63AHEGTCV6UEPMD2TMLKG2ZMIW4`). Contract
+deployment history stays distinct from payment sponsorship, the same separation
+the original vendored `upto` contract used. The same deployer signed both the
+superseded and the current deployment.
+
+The key was generated and written directly to a mode-600 file under
+`.e2e-local/` (gitignored) in a single step, so it never passed through a shell
+argument or a transcript. It has no continuing role: the contract has no admin,
+no owner and no upgrade path (`DESIGN.md` SR-3), so this account holds **no
+privilege whatsoever** over the deployed contract. Nothing is lost if the key is
+discarded.
+
 ## Design
 
 Written from [`contracts/upto-vellar/DESIGN.md`](../contracts/upto-vellar/DESIGN.md),
-committed (`f95e099`) **before** the implementation (`109a063`). See that file
-for the full requirements and the reasoning behind each decision, including the
-open questions that were resolved before any Rust was written.
+committed (`f95e099`) **before** the implementation (`109a063`). The FR-6
+correction that produced this deployment is recorded in that file alongside the
+original, wrong reasoning.
 
 Key differences from the vendored reference in
 [`contracts/upto-stellar/`](../contracts/upto-stellar/):
@@ -93,33 +162,19 @@ Key differences from the vendored reference in
   indexer can classify by event rather than by invocation shape, and can see the
   authorized headroom that went unspent.
 - **Nonce TTL set to `expiration_ledger` with no buffer.** FR-5 refuses any
-  settlement past expiry regardless of nonce state, so retaining the record past
-  that point would pay state rent to defend an unreachable attack.
-- **Negative `actual_amount` rejected explicitly.** A negative value satisfies
-  `actual <= max` trivially, and SEP-41 tokens are not uniformly required to
-  reject it.
-- **Direct `transfer`, not `approve` + `transfer_from`.** The transfer is atomic
-  within the invocation that already carries the buyer's authorization.
+  settlement past expiry regardless of nonce state.
+- **Negative `actual_amount` rejected explicitly.**
 - **Nonce keyed on `(from, nonce)`**, so two payers drawing the same random
   nonce is a collision rather than a lockout.
-- **15 tests**, including balance assertions on every rejection path (TR-14) and
-  a zero-balance assertion on the contract itself (TR-15).
+- **16 tests**, including balance assertions on every rejection path (TR-14), a
+  zero-balance assertion on the contract itself (TR-15), and TR-16 under real
+  auth.
 
-### On the test suite
+## Integration status
 
-The suite was mutation-tested against four deliberate defects. Three were caught
-immediately. The fourth was not: deleting the negative-amount check left TR-11
-green, because the token also rejects a negative transfer and both rejections
-revert the invocation identically. TR-11 now asserts the contract's own panic
-message, so the check itself is the subject under test rather than the token's
-behaviour. This is recorded because a suite that passes against a broken
-contract is worse than no suite.
-
-## Status
-
-**Deployed, not integrated.** The facilitator's `UPTO_CONTRACT_ID` still points
-at the original vendored contract
-(`CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S`). This contract has
-not settled a live payment, and switching to it is a separate decision that
-needs an end-to-end settlement against it first. Nothing in this document should
-be read as saying it is in production use.
+**Not integrated into the hosted facilitator.** The live instance at
+`vellar-facilitator.onrender.com` still advertises the vendored contract
+`CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S`. The settlement above
+was run against a local facilitator configured with
+`UPTO_CONTRACT_ID=CCZL7CTRS…`. Switching the hosted instance is a separate
+decision.

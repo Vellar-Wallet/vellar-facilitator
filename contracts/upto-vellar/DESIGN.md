@@ -90,15 +90,48 @@ The invocation is rejected when the current ledger sequence exceeds
 The contract moves funds through the SEP-41 interface and does not assume a
 specific token contract.
 
-**Mechanism:** a single `transfer(from, to, actual_amount)` on the token,
-authorized by the buyer's auth entry on the `settle` invocation (SR-2). An
-`approve` + `transfer_from` pair is **not** used, because the transfer happens
-atomically inside the same invocation that carries the buyer's authorization:
-the approval would be written and consumed in the same call, adding a storage
-write and a second cross-contract call for no gain in safety.
+**Mechanism:** `approve(from, contract, max_amount, expiration_ledger)`, which
+the buyer's auth entry covers, followed by
+`transfer_from(contract, from, to, actual_amount)`, which this contract makes as
+the spender and which needs no buyer signature.
 
-This is recorded as **OQ-3** rather than settled silently, because it differs
-from the request that prompted this brief and it changes what OQ-2 means.
+> **Correction (2026-09-09).** This section originally specified a single direct
+> `transfer(from, to, actual_amount)`, on the reasoning that an allowance written
+> and consumed in the same invocation was redundant. **That reasoning was wrong,
+> and the resulting contract could not settle a payment at all.**
+>
+> A Soroban authorization entry commits to **exact argument values**. The buyer
+> signs at simulation time, when the only amount known is the ceiling, so the
+> signed tree contains `transfer(from, to, MAX)`. The facilitator then executes
+> the settlement with the metered amount, producing `transfer(from, to, ACTUAL)`.
+> The two do not match, and the host refuses with `Error(Auth, InvalidAction)` —
+> *"Unauthorized function call for address"*.
+>
+> This was not caught before deployment: all 15 tests used `mock_all_auths()`,
+> which authorizes whatever is asked and therefore cannot detect an argument
+> mismatch. It surfaced on the first real testnet settlement against
+> `CDLSHRYCP…`, which is now superseded. See
+> [`docs/upto-vellar-deployment.md`](../../docs/upto-vellar-deployment.md).
+>
+> `approve` + `transfer_from` is the mechanism that resolves it, not ceremony:
+> `approve` is signed for `max_amount`, which **is** known at signing time, so
+> the signed and executed sub-invocations agree; the contract then draws
+> `actual_amount` as spender. The indirection is exactly what allows `actual` to
+> differ from the ceiling.
+>
+> **OQ-3 is resolved: `approve` + `transfer_from`. OQ-2 follows and resolves to
+> `max_amount`** — the approval must match what the buyer signed, so it cannot be
+> narrowed to `actual`.
+>
+> The regression test is **TR-16**, which uses `mock_auths` (one exact authorized
+> tree) rather than `mock_all_auths`. Reverting the contract to a direct transfer
+> fails TR-16 and the auth-binding test, verified by mutation.
+
+The allowance is left at its post-draw value rather than reset. Resetting would
+require a **second** `approve` sub-invocation, which the buyer did not sign and
+which therefore cannot be authorized. It is bounded in both directions anyway:
+it expires at `expiration_ledger`, and the consumed nonce (FR-4) makes the
+authorization single-use, so no second settlement can draw the remainder.
 
 ### FR-7 — settlement event
 
@@ -192,26 +225,29 @@ self-contained: once the authorization has expired, FR-5 rejects the
 transaction regardless of nonce state, so retaining the nonce past that point
 protects nothing.
 
-### OQ-2 — approval amount
+### OQ-2 — approval amount — **RESOLVED: `max_amount`**
 
-Only meaningful if OQ-3 resolves toward `approve` + `transfer_from`. If the
-contract transfers directly (FR-6 as written), there is no approval and this
-question does not arise.
+The earlier reasoning here was that `actual_amount` is tighter and there is no
+case for approving the larger figure. That is wrong for the same reason the
+direct transfer was wrong: **the approval is the thing the buyer signs**, and at
+signing time the only amount known is the ceiling. Approving `actual` would
+require the buyer to have signed an amount that did not exist yet.
 
-If an approval is used: `max_amount` is what the buyer authorized;
-`actual_amount` is what will actually move. Approving `actual_amount` is
-tighter, and there is no case in which approving the larger figure is needed,
-since the transfer follows immediately in the same invocation.
+The tightness that was wanted is still there, just enforced elsewhere: the
+contract draws only `actual_amount` via `transfer_from`, and FR-3 bounds that
+on-ledger. The allowance is a ceiling, not a disbursement.
 
-### OQ-3 — direct transfer or approve + transfer_from
+### OQ-3 — direct transfer or approve + transfer_from — **RESOLVED: `approve` + `transfer_from`**
 
-FR-6 is written for a direct `transfer`. The alternative pairs `approve` with
-`transfer_from`. The direct transfer is fewer moving parts, one cross-contract
-call instead of two, and no intermediate allowance state; the pair is the
-familiar pattern from token standards where the spender acts later, which is
-not the case here.
+Not a preference. A direct transfer **cannot work** for this scheme, because a
+Soroban auth entry commits to exact argument values and the buyer cannot sign an
+amount that is not determined until settlement. See the correction under FR-6.
 
-Resolving this settles OQ-2.
+The original argument for the direct transfer — fewer moving parts, no
+intermediate allowance state — was sound engineering reasoning applied to a
+constraint that had been misunderstood. It is recorded rather than deleted
+because the mistake is instructive: the atomicity of the invocation was never
+the issue, the *signability* of the arguments was.
 
 ## What is distinct here
 
