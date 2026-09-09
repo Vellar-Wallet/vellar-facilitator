@@ -1,6 +1,7 @@
 // `upto` scheme facilitator for Stellar — verify/settle against OUR deployed
-// settlement contract, built from pinned source (contracts/upto-stellar/,
-// provenance in PROVENANCE.md, deployment record in docs/upto-deployment.md).
+// settlement contract: `contracts/upto-vellar/`, Vellar-authored and MIT
+// licensed, deployed as CCZL7CTRS… (design brief in that directory's
+// DESIGN.md, deployment record in docs/upto-vellar-deployment.md).
 //
 // The scheme: the buyer authorizes a CEILING — `require_auth_for_args` over
 // (token, to, max_amount, expiration_ledger, nonce), deliberately excluding
@@ -21,12 +22,14 @@
 //
 // Two deliberate positions, both from the cross-implementation contract review
 // (2026-08-21):
-//   - The settlement HOOK is refused (`hook` must be None). It sits outside
-//     the signed tuple, making it a hostile-callee surface aimed at the
-//     sponsor (a panicking/CPU-burning hook reverts a settle after transfer or
-//     burns sponsored fees). Nothing we run needs it; refusing is cheaper than
-//     defending. `contracts/upto-vellar/` takes that position further and omits
-//     the argument from its ABI entirely — see the ARG COUNT note below.
+//   - There is no settlement HOOK. Earlier upto designs carried a trailing
+//     `hook` argument outside the signed tuple, which is a hostile-callee
+//     surface aimed at the sponsor (a panicking or CPU-burning hook reverts a
+//     settle after transfer, or burns sponsored fees). This facilitator used to
+//     accept the argument and refuse any non-None value; `contracts/upto-vellar/`
+//     removes it from the ABI entirely (DESIGN.md FR-2/SR-4), which is the
+//     stronger form of the same position — a caller cannot supply what the
+//     contract will not accept.
 //   - `verify` simulates at the CEILING, not the eventual actual. That is the
 //     question verify can actually answer before metering ("could the full
 //     authorization settle?") and it is deliberately conservative: a buyer
@@ -56,30 +59,21 @@ const PASSPHRASES: Record<string, string> = {
 };
 
 
-/** Argument order of the contract's `settle`. Identical for both supported ABIs:
- *  the hook is a TRAILING argument, so every index below is unaffected by its
- *  absence — `actual` is at 6 either way. */
-const ARG = { token: 0, from: 1, to: 2, max: 3, expiration: 4, nonce: 5, actual: 6, hook: 7 } as const;
+/** Argument order of `settle` in `contracts/upto-vellar/`. */
+const ARG = { token: 0, from: 1, to: 2, max: 3, expiration: 4, nonce: 5, actual: 6 } as const;
 
-/** Two contract ABIs are accepted, distinguished only by argument count.
+/** `settle(token, from, to, max_amount, expiration_ledger, nonce, actual_amount)`.
  *
- *  8 — `contracts/upto-stellar/` (vendored Apache-2.0 upstream, retained for
- *      reference, deployed as CDHPA64M…): trailing `hook`, which this
- *      facilitator REFUSES rather than defends against (see the header).
- *  7 — `contracts/upto-vellar/` (Vellar-authored, MIT, the contract this
- *      facilitator deploys as CCZL7CTRS… — see docs/upto-vellar-deployment.md;
- *      CDLSHRYCP… was a superseded first deployment): no `hook` in the ABI
- *      at all, per that contract's DESIGN.md FR-2/SR-4. An argument that is
- *      parsed but never honoured is a surface a caller can reason wrongly
- *      about, so it was omitted rather than accepted and ignored.
- *
- *  The count is the whole discriminator, and it is safe as one: `settle` is the
- *  only function either contract exposes, and the contract address is already
- *  pinned to `this.contractId` above this check. A 7-arg payload aimed at the
- *  8-arg contract fails at the Soroban VM with `MismatchingParameterLen`
- *  regardless of what this code does. */
-const SETTLE_ARG_COUNT_WITH_HOOK = 8;
-const SETTLE_ARG_COUNT_NO_HOOK = 7;
+ *  Seven, with no trailing `hook`: the deployed contract omits it from the ABI
+ *  entirely (DESIGN.md FR-2/SR-4). This facilitator previously also accepted an
+ *  8-argument form for the vendored `contracts/upto-stellar/` contract, refusing
+ *  any non-None hook. That branch was removed once the hosted instance cut over,
+ *  because it was unreachable: the contract-address pin in `parseAndValidate`
+ *  runs before this check, so a payload naming any other contract is refused
+ *  first. The vendored source is kept on disk as the evidence behind the
+ *  settlement hashes in docs/upto-deployment.md, not as a supported
+ *  configuration. */
+const SETTLE_ARG_COUNT = 7;
 
 export interface UptoSchemeOptions {
   /** Our deployed settlement contract (C…). See docs/upto-deployment.md. */
@@ -184,20 +178,8 @@ export class UptoStellarScheme {
     if (ic.functionName().toString() !== "settle")
       return "invalid_upto_stellar_wrong_function";
     const args = ic.args();
-    if (
-      args.length !== SETTLE_ARG_COUNT_WITH_HOOK &&
-      args.length !== SETTLE_ARG_COUNT_NO_HOOK
-    )
+    if (args.length !== SETTLE_ARG_COUNT)
       return "invalid_upto_stellar_wrong_argument_count";
-
-    // The hook is refused, not defended — see the header. On the 7-arg ABI there
-    // is no hook argument to inspect, and its ABSENCE is the stronger form of the
-    // same position: a caller cannot supply what the contract will not accept.
-    if (
-      args.length === SETTLE_ARG_COUNT_WITH_HOOK &&
-      args[ARG.hook]!.switch() !== xdr.ScValType.scvVoid()
-    )
-      return "invalid_upto_stellar_hook_not_supported";
 
     let token: string, payer: string, to: string, max: bigint;
     try {
@@ -237,10 +219,10 @@ export class UptoStellarScheme {
   /** Rebuild from the sponsor with `actual` in arg 6, then simulate.
    *
    *  The rebuilt invocation preserves the ORIGINAL argument count: this copies
-   *  the parsed args and overwrites index 6 in place, never appending. A 7-arg
-   *  authorization is therefore resubmitted as 7 args and an 8-arg one as 8, so
-   *  the rebuild always matches the ABI of the contract actually being called.
-   *  Appending a hook here would break the 7-arg contract at the VM. */
+   *  the parsed args and overwrites index 6 in place, never appending, so the
+   *  rebuild carries exactly the seven arguments the buyer's authorization
+   *  covered. Appending anything here would break the contract at the VM with
+   *  `MismatchingParameterLen`. */
   private async buildAndSimulate(parsed: ParsedSettle, actual: bigint) {
     const args = [...parsed.args];
     args[ARG.actual] = nativeToScVal(actual, { type: "i128" });

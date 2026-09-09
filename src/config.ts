@@ -14,9 +14,9 @@ export interface FacilitatorConfig {
   channelAccountSecretKeys: string[];
   maxTransactionFeeStroops: number;
   /** Our deployed `upto` settlement contract (C…). Set ⇒ the upto scheme is
-   *  registered and advertised on /supported. Unset ⇒ exact only. Built from
-   *  pinned source — contracts/upto-stellar/PROVENANCE.md; deployment record
-   *  and wasm hash in docs/upto-deployment.md. */
+   *  registered and advertised on /supported. Unset ⇒ exact only. Vellar
+   *  authored — contracts/upto-vellar/; deployment record and verified wasm
+   *  hash in docs/upto-vellar-deployment.md. */
   uptoContractId: string | undefined;
   /** Our deployed `bond-escrow` contract (C…). Set ⇒ a settled payment is
    *  registered with it (giving the payer standing to dispute) as part of

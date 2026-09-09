@@ -182,8 +182,10 @@ could not settle: [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md
 `contracts/upto-stellar/`, rail402's contract
 ([`tolgayayci/rail402`](https://github.com/tolgayayci/rail402), Apache-2.0,
 pinned at `ff504b85ac065369dc985759afe4164a4541d861`), and its authors read it
-before designing this one. It is retained for the 8-argument ABI compatibility
-path in `src/upto.ts` and is **not deployed**. What the history supports is
+before designing this one. It is **not deployed and not a supported
+configuration** — the facilitator speaks only the 7-argument ABI — but the
+source is retained because it is the evidence behind the four `upto` settlement
+hashes in §5 above and the reproduce steps in §7.3. What the history supports is
 spec-driven design recorded before implementation, with the differences named
 deliberately — not the absence of access to a reference.
 

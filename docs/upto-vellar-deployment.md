@@ -88,10 +88,12 @@ deliver.
 The fee was paid by the facilitator's sponsor, not the payer — `areFeesSponsored`
 demonstrated on-chain rather than asserted.
 
-**Facilitator support.** Settling against this contract required `src/upto.ts` to
-accept a 7-argument `settle` ABI alongside the vendored contract's 8-argument
-one, since this contract omits `hook` entirely (`DESIGN.md` FR-2/SR-4). The
-`examples/upto-buyer.mjs` flag `UPTO_NO_HOOK=1` builds the 7-argument form.
+**Facilitator support.** `src/upto.ts` speaks this contract's 7-argument
+`settle` ABI, which omits `hook` entirely (`DESIGN.md` FR-2/SR-4). It briefly
+also accepted the vendored contract's 8-argument form; that branch was removed
+once the hosted instance cut over, because the contract-address pin made it
+unreachable. The `examples/upto-buyer.mjs` flag `UPTO_NO_HOOK=1` builds the
+7-argument form.
 
 ## Reproduce the wasm hash
 
@@ -153,8 +155,10 @@ committed (`f95e099`) **before** the implementation (`109a063`). The FR-6
 correction that produced this deployment is recorded in that file alongside the
 original, wrong reasoning.
 
-Key differences from the vendored reference in
-[`contracts/upto-stellar/`](../contracts/upto-stellar/):
+Key differences from the vendored contract in
+[`contracts/upto-stellar/`](../contracts/upto-stellar/), which is retained as
+evidence for its own settlement hashes but is **not deployed and not a
+supported configuration**:
 
 - **No `hook` argument in the ABI.** The facilitator refuses it anyway; omitting
   it is better than accepting and ignoring it.

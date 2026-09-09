@@ -370,8 +370,11 @@ against a 0.05 USDC ceiling, which is the metered-billing property `upto` exists
 for.
 
 [`contracts/upto-stellar/`](contracts/upto-stellar/) is rail402's contract
-(Apache-2.0), retained for the 8-argument ABI compatibility path in
-`src/upto.ts`. It is **not deployed**.
+(Apache-2.0). It is **not deployed and not a supported configuration**: the
+facilitator speaks only the 7-argument ABI above. The source is kept because it
+is the evidence behind the settlement hashes published in
+[`docs/upto-deployment.md`](docs/upto-deployment.md) — deleting it would make
+those hashes unverifiable from a fresh clone.
 
 `upto` is still **EXPERIMENTAL** and should not be described as
 production-ready: it does not use the channel pool, so concurrent `upto`

@@ -1,6 +1,14 @@
-> **Not deployed.** This contract is retained for the 8-arg ABI compatibility
-> path in `src/upto.ts`. The deployed contract is `upto-vellar` — see
-> [`docs/upto-vellar-deployment.md`](../../docs/upto-vellar-deployment.md).
+> **Not deployed, and not a supported configuration.** The facilitator speaks
+> only the 7-argument ABI of `contracts/upto-vellar/` — see
+> [`docs/upto-vellar-deployment.md`](../../docs/upto-vellar-deployment.md). The
+> 8-argument path that once accepted this contract was removed from
+> `src/upto.ts` after the cutover.
+>
+> This source is retained as **evidence**, not as a build target: it is what the
+> four `upto` settlement hashes in
+> [`docs/upto-deployment.md`](../../docs/upto-deployment.md) were settled
+> through, and what that document's reproducible-build steps rebuild. Deleting
+> it would make those published hashes unverifiable from a fresh clone.
 
 # Provenance — x402 `upto` settlement contract
 

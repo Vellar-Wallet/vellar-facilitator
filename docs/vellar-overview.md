@@ -135,8 +135,9 @@ Limitations and provenance, stated because they matter:
   commit `ff504b85` (Apache-2.0, `PROVENANCE.md`), and the authors read it. What
   the history supports is spec-driven design recorded before implementation,
   with the differences named deliberately — not the absence of access to a
-  reference. The vendored contract is kept for reference and comparison and is
-  no longer the deployed one.
+  reference. The vendored contract is kept as the evidence behind its own four
+  settlement hashes (`docs/upto-deployment.md`); it is not deployed and not a
+  supported configuration.
 - **A first deployment was superseded the same day.** `CDLSHRYCP…` used a direct
   `transfer` and could not settle at all: a Soroban auth entry commits to exact
   argument values, so a signature covering the ceiling cannot authorize a
@@ -146,8 +147,10 @@ Limitations and provenance, stated because they matter:
 - **The hosted facilitator serves this contract.** `GET /supported` on
   `vellar-facilitator.onrender.com` returns `CCZL7CTRS…`, confirmed live on
   2026-09-09. Settling against it required `src/upto.ts` to accept a 7-argument
-  `settle` ABI alongside the vendored contract's 8-argument one, since this
-  contract omits `hook` entirely. `upto` still should not be described as
+  `settle` ABI, since this contract omits `hook` entirely. The facilitator
+  briefly also accepted the vendored 8-argument form; that branch was removed
+  once the cutover landed, because the contract-address pin made it
+  unreachable. `upto` still should not be described as
   production-ready: it does not use the channel pool, and the wire format is
   EXPERIMENTAL, per the two bullets above.
 
@@ -530,7 +533,7 @@ that crate's own `Cargo.toml`:
 | Crate | Licence | Why |
 | --- | --- | --- |
 | `contracts/upto-vellar` | **MIT** | Vellar-authored, the deployed `upto` contract (§3.2) |
-| `contracts/upto-stellar` | Apache-2.0 | Vendored verbatim from rail402, retained for reference, no longer deployed |
+| `contracts/upto-stellar` | Apache-2.0 | Vendored verbatim from rail402. Not deployed, not a supported config; retained as evidence for its own settlement hashes |
 | `contracts/bond-escrow` | Apache-2.0 | Vellar-authored |
 
 MIT and Apache-2.0 are both permissive and compatible; the split is a fact about

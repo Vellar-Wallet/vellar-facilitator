@@ -143,9 +143,10 @@ export function buildFacilitator(config: FacilitatorConfig): BuiltFacilitator {
   const facilitator = new x402Facilitator().register(config.network, scheme);
 
   // `upto` is opt-in by contract ID: unset means exact-only, which is every
-  // deployment that predates the scheme. The contract is OUR build from pinned
-  // source (contracts/upto-stellar/PROVENANCE.md) — never a third party's
-  // deployed instance whose wasm hash we have not verified.
+  // deployment that predates the scheme. The contract is OUR own — Vellar
+  // authored, contracts/upto-vellar/, deployment record and verified wasm hash
+  // in docs/upto-vellar-deployment.md — never a third party's deployed
+  // instance whose wasm hash we have not verified.
   //
   // NOT wired into the channel pool — this scheme still calls getAccount()
   // directly on the sponsor's own key (src/upto.ts:219, KNOWN LIMITATION
