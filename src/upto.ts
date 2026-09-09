@@ -63,10 +63,12 @@ const ARG = { token: 0, from: 1, to: 2, max: 3, expiration: 4, nonce: 5, actual:
 
 /** Two contract ABIs are accepted, distinguished only by argument count.
  *
- *  8 — `contracts/upto-stellar/` (vendored rail402, deployed as CDHPA64M…):
- *      trailing `hook`, which this facilitator REFUSES rather than defends
- *      against (see the header).
- *  7 — `contracts/upto-vellar/` (deployed as CDLSHRYCP…): no `hook` in the ABI
+ *  8 — `contracts/upto-stellar/` (vendored Apache-2.0 upstream, retained for
+ *      reference, deployed as CDHPA64M…): trailing `hook`, which this
+ *      facilitator REFUSES rather than defends against (see the header).
+ *  7 — `contracts/upto-vellar/` (Vellar-authored, MIT, the contract this
+ *      facilitator deploys as CCZL7CTRS… — see docs/upto-vellar-deployment.md;
+ *      CDLSHRYCP… was a superseded first deployment): no `hook` in the ABI
  *      at all, per that contract's DESIGN.md FR-2/SR-4. An argument that is
  *      parsed but never honoured is a surface a caller can reason wrongly
  *      about, so it was omitted rather than accepted and ignored.

@@ -120,11 +120,12 @@ Three limitations, stated because they matter:
   This is item 5 on the pre-mainnet checklist and is upstream-blocked.
 - **The wire format is EXPERIMENTAL**, pending
   [x402-foundation/x402#3134](https://github.com/x402-foundation/x402/pull/3134).
-- **The contract is not ours.** It is rail402's, vendored verbatim at pinned
-  commit `ff504b85`, zero local changes (`contracts/upto-stellar/PROVENANCE.md`).
-  What this project contributes is a reproducible build whose hash matches the
-  deployed wasm, plus four live settlements. `upto` should not be described as
-  production-ready.
+- **The contract is ours.** The `upto` settlement contract deployed by Vellar
+  (`CCZL7CTRS…`) is Vellar's own MIT-licensed implementation, written from the
+  x402 `upto` specification with a design brief committed before the
+  implementation (`contracts/upto-vellar/DESIGN.md`). The facilitator repo also
+  retains `contracts/upto-stellar/`, a vendored Apache-2.0 upstream contract,
+  for reference. `upto` should not be described as production-ready.
 
 ---
 

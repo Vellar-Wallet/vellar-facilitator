@@ -1,5 +1,12 @@
 # `upto` settlement contract — deployment record
 
+> **Superseded.** This document records the deployment of the vendored
+> `upto-stellar` contract (`CDHPA64M…`). That contract is no longer what the
+> hosted facilitator serves. The current deployed contract is the
+> Vellar-authored `upto-vellar` (`CCZL7CTRS…`), documented in
+> `docs/upto-vellar-deployment.md`. This file is retained as a historical
+> record.
+
 Published so anyone can verify our deployed contract against its source
 without trusting this file. Every value below is checkable.
 

@@ -172,9 +172,10 @@ Key differences from the vendored reference in
 
 ## Integration status
 
-**Not integrated into the hosted facilitator.** The live instance at
-`vellar-facilitator.onrender.com` still advertises the vendored contract
-`CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S`. The settlement above
-was run against a local facilitator configured with
-`UPTO_CONTRACT_ID=CCZL7CTRS…`. Switching the hosted instance is a separate
-decision.
+Integrated into the hosted facilitator on 2026-09-09. `UPTO_CONTRACT_ID` set to
+`CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN` in the Render
+environment and the service restarted. Confirmed via `GET /supported` returning
+the new contract ID.
+
+The settlement above was run against a local facilitator configured with the
+same contract id, before the hosted instance was switched.
