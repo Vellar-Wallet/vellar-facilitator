@@ -113,7 +113,7 @@ export function frameDescriptions<T extends { description?: unknown }>(items: T[
  * JSON-RPC channel and a stray write desynchronises the protocol, so the agent
  * would see a transport error instead of the error we are trying to report.
  */
-function toolError(tool: string, action: string, err: unknown) {
+export function toolError(tool: string, action: string, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   const isTimeout =
     message.includes("ECONNREFUSED") ||

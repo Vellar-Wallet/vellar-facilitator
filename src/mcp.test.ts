@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { applyVerifiedOnly, frameDescriptions, sharedFilters } from "./mcp.js";
+import { applyVerifiedOnly, frameDescriptions, sharedFilters, toolError } from "./mcp.js";
 
 // src/mcp.ts had NO test file at all before this one — applyVerifiedOnly,
 // frameDescriptions and the zod input schema were entirely uncovered, on the
@@ -257,5 +257,125 @@ describe("verified_only input validation — zod is the gate, before any handler
     const parsed = inputSchema.safeParse({ verified_only: "yes" });
     expect(parsed.success).toBe(false);
     expect((parsed as { data?: unknown }).data).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toolError — the handlers' failure path
+// ---------------------------------------------------------------------------
+//
+// The header above records that the two tool handlers are not covered, because
+// they call the real HTTP bazaar client and exercising them end-to-end needs a
+// live facilitator. That still holds for the SUCCESS path. What IS testable
+// without a network is the failure path, because both handlers' catch blocks
+// delegate their entire behaviour to `toolError` — the handler bodies contain
+// no error logic of their own beyond `catch (err) { return toolError(...) }`.
+//
+// This coverage matters because the error handling shipped with the suite green
+// either way: 663 tests passed identically before and after it, so a green run
+// proved nothing about whether an unreachable facilitator produced a readable
+// tool result or a protocol-level crash. It was verified by hand over a real
+// stdio transport at the time; these tests are what keep it verified.
+describe("toolError — structured tool results, not protocol crashes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Silence the stderr diagnostic while capturing what was written to it. */
+  function captureStderr() {
+    return vi.spyOn(console, "error").mockImplementation(() => {});
+  }
+
+  it("returns isError: true rather than throwing, so the agent sees a tool result", () => {
+    // THE PROPERTY THIS FILE EXISTS FOR. Without the handlers' try/catch, this
+    // rejection propagates out and the SDK reports a transport failure — the
+    // agent sees a broken connection instead of a readable problem. `isError`
+    // is the MCP convention for "the tool ran and failed", which keeps the
+    // failure inside the conversation where a model can act on it.
+    const spy = captureStderr();
+    const result = toolError("x402_list_resources", "list resources", new Error("fetch failed"));
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.type).toBe("text");
+    expect(result.content[0]!.text).toContain("Failed to list resources");
+    expect(result.content[0]!.text).toContain("fetch failed");
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the failing action, so list and search are distinguishable", () => {
+    const spy = captureStderr();
+    const list = toolError("x402_list_resources", "list resources", new Error("fetch failed"));
+    const search = toolError("x402_search_resources", "search resources", new Error("fetch failed"));
+
+    expect(list.content[0]!.text).toContain("Failed to list resources");
+    expect(search.content[0]!.text).toContain("Failed to search resources");
+    expect(search.isError).toBe(true);
+    // The stderr line carries the tool name for operator diagnosis.
+    expect(spy.mock.calls.map((c) => String(c[0]))).toEqual([
+      JSON.stringify({ tool: "x402_list_resources", error: "fetch failed" }),
+      JSON.stringify({ tool: "x402_search_resources", error: "fetch failed" }),
+    ]);
+  });
+
+  it.each([
+    ["fetch failed", "fetch failed"],
+    ["ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:4100"],
+    ["ECONNRESET", "socket hang up: ECONNRESET"],
+    ["ETIMEDOUT", "connect ETIMEDOUT 10.0.0.1:4100"],
+    ["timeout", "request timeout after 3000ms"],
+  ])("attaches the cold-start hint for a %s error", (_label, message) => {
+    // `fetch failed` is the one that actually fires in practice and is the
+    // reason this list is not just the four socket-level codes: Node's undici
+    // wraps ECONNREFUSED in a bare "fetch failed" TypeError, so a dead
+    // facilitator never surfaces the underlying code. Dropping that pattern
+    // makes the hint dead code for the most common failure there is.
+    captureStderr();
+    const result = toolError("x402_list_resources", "list resources", new Error(message));
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("cold-starting");
+    expect(result.content[0]!.text).toContain("Retry in a moment");
+  });
+
+  it.each([
+    ["a JSON parse failure", "Unexpected token < in JSON at position 0"],
+    ["a 500 from the facilitator", "HTTP 500 Internal Server Error"],
+    ["a schema mismatch", "invalid discovery response shape"],
+  ])("does NOT attach the cold-start hint for %s", (_label, message) => {
+    // MUTATION THAT MUST BREAK THIS: attach the hint unconditionally. Telling
+    // an agent to "retry in a moment" after a malformed response sends it into
+    // a retry loop against a failure that will never resolve on its own.
+    captureStderr();
+    const result = toolError("x402_search_resources", "search resources", new Error(message));
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain(message);
+    expect(result.content[0]!.text).not.toContain("cold-starting");
+    expect(result.content[0]!.text).not.toContain("Retry in a moment");
+  });
+
+  it("handles a non-Error rejection without throwing", () => {
+    // A rejected promise can carry anything. `String(err)` is the fallback, and
+    // a crash here would defeat the whole point of the catch block.
+    captureStderr();
+    let result!: ReturnType<typeof toolError>;
+    expect(() => {
+      result = toolError("x402_list_resources", "list resources", "plain string rejection");
+    }).not.toThrow();
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("plain string rejection");
+  });
+
+  it("writes diagnostics to stderr only — stdout is the JSON-RPC channel", () => {
+    // On a stdio transport a stray stdout write desynchronises the protocol, so
+    // the agent would see a transport error instead of the error being reported.
+    const stderrSpy = captureStderr();
+    const stdoutSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    toolError("x402_list_resources", "list resources", new Error("fetch failed"));
+
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    expect(stdoutSpy).not.toHaveBeenCalled();
   });
 });
