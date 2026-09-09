@@ -25,11 +25,9 @@
 //   - There is no settlement HOOK. Earlier upto designs carried a trailing
 //     `hook` argument outside the signed tuple, which is a hostile-callee
 //     surface aimed at the sponsor (a panicking or CPU-burning hook reverts a
-//     settle after transfer, or burns sponsored fees). This facilitator used to
-//     accept the argument and refuse any non-None value; `contracts/upto-vellar/`
-//     removes it from the ABI entirely (DESIGN.md FR-2/SR-4), which is the
-//     stronger form of the same position — a caller cannot supply what the
-//     contract will not accept.
+//     settle after transfer, or burns sponsored fees). `contracts/upto-vellar/`
+//     omits it from the ABI entirely (DESIGN.md FR-2/SR-4): a caller cannot
+//     supply what the contract will not accept.
 //   - `verify` simulates at the CEILING, not the eventual actual. That is the
 //     question verify can actually answer before metering ("could the full
 //     authorization settle?") and it is deliberately conservative: a buyer
@@ -65,18 +63,11 @@ const ARG = { token: 0, from: 1, to: 2, max: 3, expiration: 4, nonce: 5, actual:
 /** `settle(token, from, to, max_amount, expiration_ledger, nonce, actual_amount)`.
  *
  *  Seven, with no trailing `hook`: the deployed contract omits it from the ABI
- *  entirely (DESIGN.md FR-2/SR-4). This facilitator previously also accepted an
- *  8-argument form for the vendored `contracts/upto-stellar/` contract, refusing
- *  any non-None hook. That branch was removed once the hosted instance cut over,
- *  because it was unreachable: the contract-address pin in `parseAndValidate`
- *  runs before this check, so a payload naming any other contract is refused
- *  first. The vendored source is kept on disk as the evidence behind the
- *  settlement hashes in docs/upto-deployment.md, not as a supported
- *  configuration. */
+ *  entirely (DESIGN.md FR-2/SR-4). */
 const SETTLE_ARG_COUNT = 7;
 
 export interface UptoSchemeOptions {
-  /** Our deployed settlement contract (C…). See docs/upto-deployment.md. */
+  /** Our deployed settlement contract (C…). See docs/upto-vellar-deployment.md. */
   contractId: string;
   sponsorSecretKey: string;
   network: "stellar:testnet" | "stellar:pubnet";

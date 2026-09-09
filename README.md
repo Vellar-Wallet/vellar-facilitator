@@ -369,13 +369,6 @@ history. First settlement verified on-chain at ledger 4587956: 0.01 USDC settled
 against a 0.05 USDC ceiling, which is the metered-billing property `upto` exists
 for.
 
-[`contracts/upto-stellar/`](contracts/upto-stellar/) is rail402's contract
-(Apache-2.0). It is **not deployed and not a supported configuration**: the
-facilitator speaks only the 7-argument ABI above. The source is kept because it
-is the evidence behind the settlement hashes published in
-[`docs/upto-deployment.md`](docs/upto-deployment.md) — deleting it would make
-those hashes unverifiable from a fresh clone.
-
 `upto` is still **EXPERIMENTAL** and should not be described as
 production-ready: it does not use the channel pool, so concurrent `upto`
 settlements can fail with `txBadSeq`, and the upstream wire format is still in
@@ -384,6 +377,5 @@ review ([x402#3134](https://github.com/x402-foundation/x402/pull/3134)).
 ## License
 
 Apache-2.0 for the facilitator itself. The Soroban crates differ:
-`contracts/upto-vellar` is **MIT**, `contracts/upto-stellar` and
-`contracts/bond-escrow` are Apache-2.0. Each crate's `Cargo.toml` is the
-authority.
+`contracts/upto-vellar` is **MIT**, `contracts/bond-escrow` is Apache-2.0.
+Each crate's `Cargo.toml` is the authority.

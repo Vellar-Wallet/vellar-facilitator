@@ -127,16 +127,14 @@ See docs/decisions.md._
 - [x] Developer guide (`docs/guide.md`) with two end-to-end integration
       examples (`examples/seller.mjs` + `examples/buyer.mjs`) — both
       live-verified on testnet 2026-07-31
-- [x] `upto` scheme BUILT and DEPLOYED 2026-08-21: endorsed rail402's contract
-      after a line-by-line review and a six-implementation comparison across
-      the SCF cohort (bleu/SDF-aligned, Rialto, LumenGate, openx402, Veridex),
-      vendored verbatim at a pinned commit (`contracts/upto-stellar/`,
-      Apache-2.0, credited — never rail402's own deployed instance, whose
-      wasm hash is unverified), and deployed as OUR OWN build:
-      contract `CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S`,
-      wasm hash `c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9`
+- [x] `upto` scheme BUILT and DEPLOYED 2026-09-09: Vellar's own MIT-licensed
+      contract (`contracts/upto-vellar/`), designed from the x402 `upto` scheme
+      description after a six-implementation comparison across the SCF cohort,
+      with the design brief committed before the first line of Rust. Deployed as
+      contract `CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN`,
+      wasm hash `92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8`
       — reproducible from source, verified against the fetched-back on-chain
-      wasm (`docs/upto-deployment.md`). `/supported` advertises exact + upto
+      wasm (`docs/upto-vellar-deployment.md`). `/supported` advertises exact + upto
       on the hosted instance; live-proven with a partial settlement (actual
       250,000 under a signed 1,000,000 ceiling, tx `8b412ca6…`, Horizon-
       confirmed). Two review findings enforced in the scheme, not just
@@ -148,7 +146,7 @@ See docs/decisions.md._
       settlements each show correctly on the separately-operated
       `explorer.vellar.xyz` (`scheme: upto`, `settled by: vellar`, the
       metered actual displayed, not the ceiling — full tx table in
-      `docs/upto-deployment.md`). Found and fixed a real gap along the way:
+      `docs/upto-vellar-deployment.md`). Found and fixed a real gap along the way:
       the explorer's own classifier only recognized the `exact`-scheme
       direct-transfer shape and never saw an `upto` settlement's contract
       invocation at all — root-caused by reading its `classify.ts`, fixed
@@ -159,7 +157,7 @@ See docs/decisions.md._
 - [x] Upstream contribution — RESUMED and SHIPPED 2026-09-08. The review
       findings paused on 2026-08-21 (signed-vs-unsigned hook, custody-window
       economics per LumenGate's measured escrow-vs-allowance benchmark, the
-      auto-revoke tree-shape interop gap, rail402's nonce-TTL replay fix as a
+      auto-revoke tree-shape interop gap, a nonce-TTL replay fix as a
       spec test vector) became a 349-line convergence document, filed as
       x402-foundation/x402 PR #3428 at
       specs/schemes/upto/scheme_upto_stellar_interop.md. Head commit eefd56d,
@@ -228,8 +226,7 @@ live planning, not archive. Closes half of O-17
 (`docs/closing-state.md`): a legitimate merchant who still holds their old
 signing key gets an in-band path to rotate a verified binding. The other
 half — the key is lost — has no in-band answer; confirmed independently by
-auditing an alternative design in a competing implementation
-(`docs/competitor-study-rail402.md` §2.1, corrected) as well as by our own
+auditing an alternative design in a competing implementation as well as by our own
 one-way latch. That half stays an operator procedure, tracked separately and
 not yet written up as its own proposal._
 
@@ -253,8 +250,8 @@ Full design and implementation plan: `docs/proposal-voluntary-rotation.md`.
 
 _Public visibility into x402 settlements — "people can see transactions
 done." Scoped ecosystem-wide (any Stellar facilitator's traffic, not just
-ours); a comparable public explorer at `tolgayayci/rail402/apps/explorer`
-was studied source-level for engineering reference (RPC event-polling,
+ours); a comparable public explorer was studied source-level for
+engineering reference (RPC event-polling,
 attribution-from-signer-set, fee-sponsorship heuristics), but the
 architecture and phasing below are our own. Full design, architecture
 mapping onto this repo's stack, and cost/risk analysis:
@@ -268,10 +265,10 @@ here authorizes provisioning or spend; that stays a separate decision._
 - [ ] Phase 2 — live-tail ingestion (`getEvents` poll) + a structural
       classifier (exact/upto pattern match) on testnet, registered against
       our own `/supported` only, as an independent corroboration of Phase 1
-- [ ] Phase 3 — full attribution registry (seed rail402, x402.org; re-probe
-      `/supported` on an interval), `/facilitators`, `/sellers`, enrichment
-      against our own Bazaar catalog (including verification status —
-      rail402's enrichment has no equivalent)
+- [ ] Phase 3 — full attribution registry (seed known public facilitators;
+      re-probe `/supported` on an interval), `/facilitators`, `/sellers`,
+      enrichment against our own Bazaar catalog (including verification
+      status, which comparable explorers have no equivalent for)
 - [ ] Phase 4 — Horizon backfill, `/ecosystem` + `/ecosystem/timeseries`,
       pubnet (RPC provider selection + SAC filtering required at pubnet
-      volume, per rail402's measured `getEvents` load)
+      volume, per published `getEvents` load measurements)

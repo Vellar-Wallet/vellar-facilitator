@@ -118,9 +118,9 @@
 //! `settlement.payer`, with `listing.bond_amount` reduced by exactly `slash_amount` (never
 //! negative — see `finalize`'s doc-comment for the exact arithmetic and the atomicity argument).
 //!
-//! ## Why an authorized-caller pattern is needed here, unlike `upto-stellar`
+//! ## Why an authorized-caller pattern is needed here, unlike the `upto` contract
 //!
-//! `contracts/upto-stellar` is deliberately admin-free: every state-changing call requires a
+//! `contracts/upto-vellar` is deliberately admin-free: every state-changing call requires a
 //! client's own on-chain signature (`require_auth_for_args`), so there is no third party a
 //! caller must trust. `register_settlement` cannot work that way. Its whole purpose is to give a
 //! payer standing to dispute a payment (Section 3), which means it must be trustworthy about
@@ -286,7 +286,7 @@ pub enum Error {
     ///
     /// Note on `register_settlement`'s authorization failure mode: an unauthorized caller is
     /// rejected by the Soroban host itself (`Address::require_auth()` traps rather than
-    /// returning), the same mechanism `upto-stellar`'s `settle` relies on for its own signature
+    /// returning), the same mechanism the `upto` contract's `settle` relies on for its own signature
     /// checks — so there is deliberately no `NotAuthorized` variant here. A `Result`-returned
     /// error is reserved for conditions this contract's own logic decides; "the host refused to
     /// authenticate this caller" is not something the contract's code path ever reaches to
@@ -576,7 +576,7 @@ impl BondEscrowContract {
     ///   `BytesN<32>` keyspace `Listing` uses.
     /// * `amount` — the settled amount, in the listing's bonding token's atomic units. Must be
     ///   positive; a zero-amount settlement (the `upto` scheme explicitly allows settling 0 for
-    ///   no usage, see `upto-stellar`) has no loss for a payer to ever dispute, so it is rejected
+    ///   no usage, see `upto-vellar`) has no loss for a payer to ever dispute, so it is rejected
     ///   here rather than accepted as a no-op — there is nothing meaningful to register standing
     ///   against.
     ///
@@ -617,7 +617,7 @@ impl BondEscrowContract {
         // host. There is no explicit `NotAuthorized` error to return — see that variant's
         // doc-comment for why.
 
-        // Deliberate divergence from `upto-stellar`'s `settle`, which allows and tests a zero
+        // Deliberate divergence from the `upto` contract's `settle`, which allows and tests a zero
         // settlement as a legitimate no-op (see its `zero_settlement_moves_nothing_but_consumes_the_authorization`
         // test): that scheme's zero case still needs to consume the nonce and release the
         // reserved ceiling back to a payer's budget, so it has real work to do even at amount
@@ -693,7 +693,7 @@ impl BondEscrowContract {
     /// ## Token transfer pattern
     ///
     /// Uses `token::TokenClient::transfer(seller, contract_address, amount)`, the same SEP-41
-    /// client `upto-stellar` invokes the token contract through (see its `settle`). Unlike
+    /// client the `upto` contract invokes the token contract through (see its `settle`). Unlike
     /// `upto`'s `transfer_from`-as-spender pattern (which exists there specifically because the
     /// *contract*, not the payer, decides the actual amount at settlement time), a deposit's
     /// amount is chosen and authorized directly by the depositing seller, so a plain `transfer`

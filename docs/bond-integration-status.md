@@ -109,7 +109,7 @@ document was written:
 - Nothing in `vellar-sdk` (a separate repo) — it remains payer-only, no seller-side
   receipt-signing helper, no new MCP tools for filing a dispute or verifying a receipt.
 - No independent third-party verification path — `vellar-explorer` has zero bond-escrow
-  awareness, unlike `upto-stellar`'s explorer confirmation.
+  awareness, unlike the `upto` contract's explorer confirmation.
 
 ---
 

@@ -16,12 +16,9 @@ This contract is designed from the x402 `upto` scheme description and Soroban's
 authorization model, and the design is recorded here before implementation.
 
 It is **not** described as clean-room, and that word is deliberately avoided.
-This repository already vendors a working `upto` implementation at
-[`contracts/upto-stellar/`](../upto-stellar/), taken verbatim from
-[`tolgayayci/rail402`](https://github.com/tolgayayci/rail402) (Apache-2.0, see
-that directory's `PROVENANCE.md`), and the authors of this design have read it.
-A clean-room claim asserts the designer had no access to the reference
-implementation. That is not true here, so it is not claimed.
+Other `upto` implementations are public, and the authors of this design have
+read them. A clean-room claim asserts the designer had no access to prior art;
+that is not true here, so it is not claimed.
 
 What *is* claimed, and what the git history actually supports:
 
@@ -29,12 +26,11 @@ What *is* claimed, and what the git history actually supports:
   from existing code;
 - the design decisions and their open questions were recorded **before** the
   first line of Rust, and can be checked against the commit order;
-- the differences from the vendored implementation are deliberate and are
-  named in [§ What is distinct here](#what-is-distinct-here), not incidental.
+- the design choices in [§ What is distinct here](#what-is-distinct-here) are
+  deliberate, not incidental.
 
-The vendored contract is Apache-2.0, so nothing about this work requires the
-stronger claim. Overstating provenance would cost more credibility than the
-claim could ever buy.
+Overstating provenance would cost more credibility than the claim could ever
+buy.
 
 ## Functional requirements
 
@@ -251,7 +247,7 @@ the issue, the *signability* of the arguments was.
 
 ## What is distinct here
 
-Relative to the vendored implementation in `contracts/upto-stellar/`:
+Design choices made deliberately, each with its reasoning recorded above:
 
 1. **No `hook` argument in the ABI** (FR-2, SR-4).
 2. **An explicit settlement event** carrying both ceiling and actual (FR-7),

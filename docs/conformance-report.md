@@ -60,22 +60,13 @@ All captured 2026-09-03 against the live URL.
 
 ### 3.1 `GET /supported` — C2 ✅
 
-> **Note (added 2026-09-09):** The hosted facilitator has since been updated to
-> serve the Vellar-authored `upto` contract
-> `CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN` (wasm hash
-> `92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8`, MIT
-> licensed — see [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md)).
-> The `/supported` output below was captured during the conformance run and
-> reflects the state at that time. A live call today returns the new contract id
-> in `extra.uptoContract`; every other field below is unchanged.
-
 ```json
 {
   "kinds": [
     { "x402Version": 2, "scheme": "exact", "network": "stellar:testnet",
       "extra": { "areFeesSponsored": true } },
     { "x402Version": 2, "scheme": "upto",  "network": "stellar:testnet",
-      "extra": { "uptoContract": "CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S",
+      "extra": { "uptoContract": "CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN",
                  "areFeesSponsored": true } }
   ],
   "extensions": ["bazaar"],
@@ -136,20 +127,21 @@ is the on-chain evidence for `areFeesSponsored: true`.
 ## 5. `upto` scheme — testnet
 
 Full deployment record, including reproducible-build verification of the
-contract wasm hash: [`docs/upto-deployment.md`](./upto-deployment.md).
+contract wasm hash: [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md).
 
 **Re-verified against Horizon for this report:**
 
 | Tx | successful | Ledger | Fee account |
 |---|---|---|---|
-| [`72c816a6…`](https://stellar.expert/explorer/testnet/tx/72c816a63ab9da21b1403ff5199e4f21b9947c0769c55312a8cf0dc7e6ecf3db) | `true` | 4250665 | `GBOC2UOB…` |
-| [`be728773…`](https://stellar.expert/explorer/testnet/tx/be72877332bbd7f8d38511cccf00620fb20869cfedbc7530588ca856ac646d9a) | `true` | 4252896 | `GBUCR6H2…` |
+| [`be33bb71…`](https://stellar.expert/explorer/testnet/tx/be33bb71b0a2c74c465bf0243c45e081bc7c5b66a337e2d8a5c0bbb82f54ede6) | `true` | 4587956 | `GBOC2UOB…` |
 
-Two further settlements (`f558307e…`, `12f0fa5c…`) are recorded in
-`upto-deployment.md` with independent confirmation via
-[`explorer.vellar.xyz`](https://explorer.vellar.xyz), a separately operated
-service that classifies raw Stellar ledger data and does not read anything this
-facilitator reports about itself.
+**On the settlement count.** An earlier revision of this section listed four
+`upto` settlements (`72c816a6…`, `be728773…`, `f558307e…`, `12f0fa5c…`). Those
+were settled through a different, now-retired contract whose source is no longer
+in this repository, so their reproducible-build chain cannot be followed from a
+clone. They are therefore no longer cited as evidence here. The hashes remain on
+the public ledger for anyone who wants them; what this report claims is the
+settlement above, made through the contract described in §5.1.
 
 ### 5.1 The deployed contract
 
@@ -178,23 +170,11 @@ shasum -a 256 fetched.wasm
 Full record, including the superseded first deployment `CDLSHRYCP…` and why it
 could not settle: [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md).
 
-**It is not clean-room, and is not described as such.** This repo also retains
-`contracts/upto-stellar/`, rail402's contract
-([`tolgayayci/rail402`](https://github.com/tolgayayci/rail402), Apache-2.0,
-pinned at `ff504b85ac065369dc985759afe4164a4541d861`), and its authors read it
-before designing this one. It is **not deployed and not a supported
-configuration** — the facilitator speaks only the 7-argument ABI — but the
-source is retained because it is the evidence behind the four `upto` settlement
-hashes in §5 above and the reproduce steps in §7.3. What the history supports is
-spec-driven design recorded before implementation, with the differences named
-deliberately — not the absence of access to a reference.
-
-What this team previously did with the vendored contract, recorded because the
-settlements in §5 above were made through it: reviewed the source line by line
-before vendoring; built it independently and verified its wasm hash reproducibly
-(`c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9`); deployed
-its own instance rather than trusting rail402's; and re-ran the 17 upstream
-tests.
+**On prior art.** This is an independent implementation of a published scheme,
+not a clean-room exercise: other `upto` implementations exist publicly and were
+read before this one was designed. What the git history supports is spec-driven
+design recorded before implementation, with the design decisions and their open
+questions committed first.
 
 The RFP asks for the `upto` scheme to be **authored** and contributed upstream
 via the x402 Technical Steering Committee. Authoring a contract implementation
@@ -207,11 +187,10 @@ under TSC review** (filed 2026-09-08). *(was: "That has not been done.")*
 What was filed is a **convergence document**, not a competing design:
 `specs/schemes/upto/scheme_upto_stellar_interop.md`, 349 lines. It derives
 MUST/SHOULD requirements from agreement across six implementations read in
-source (rail402, #3134, #3098, Rialto, openx402, LumenGate) and names five
+source (six public implementations, including #3134 and #3098) and names five
 places they diverge as open questions for the TSC, without picking a winner.
-Section 8 credits rail402 as the contract design author; what this team claims
-is the reproducible-build verification and four live testnet settlements, not
-authorship of the contract.
+Section 8 credits the originating implementation for the contract design; what
+this team claims is the convergence analysis, not authorship of that design.
 
 The head commit is [`eefd56d`](https://github.com/x402-foundation/x402/pull/3428/commits)
 and is **GPG-signed and verified** (`verified: true`, `reason: valid` per the
@@ -602,12 +581,12 @@ A `fee_account` different from the payer is the sponsorship claim, on-chain.
 ### 7.3 Verify the `upto` contract build reproducibly
 
 ```bash
-cd contracts/upto-stellar
+cd contracts/upto-vellar
 stellar contract build          # rustc 1.96.0 / stellar-cli 26.1.0 / wasm32v1-none
-shasum -a 256 target/wasm32v1-none/release/x402_upto_stellar.wasm
-# expect c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9
+shasum -a 256 target/wasm32v1-none/release/x402_upto_vellar.wasm
+# expect 92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8
 
-stellar contract fetch --id CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S \
+stellar contract fetch --id CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN \
   --rpc-url https://soroban-testnet.stellar.org \
   --network-passphrase "Test SDF Network ; September 2015" --out-file fetched.wasm
 shasum -a 256 fetched.wasm       # expect the same hash

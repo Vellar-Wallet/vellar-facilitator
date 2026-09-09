@@ -1084,7 +1084,7 @@ fn filing_again_after_the_window_fully_elapses_succeeds() {
 
 #[test]
 fn the_rate_limit_boundary_is_exact_at_the_window_edge() {
-    // Boundary-math test in the style of upto-stellar's `accepts_an_expiration_at_the_boundary`.
+    // Boundary-math test in the style of the `upto` contract's expiration-boundary case.
     //
     // Corrected convention: exclusive-at-start. An entry exactly `window_seconds` old
     // (age == window, i.e. `now - ts == window`) is PRUNED, not counted — the window is exactly

@@ -4,7 +4,7 @@
 //!
 //! Implements `contracts/upto-vellar/DESIGN.md`, which was committed before this
 //! file existed. Written from that brief and Soroban's auth model, not derived
-//! from `contracts/upto-stellar/` (the vendored rail402 implementation).
+//! from any existing implementation.
 //!
 //! The scheme in one line: the buyer signs a **ceiling**, the facilitator settles
 //! the **actual** metered amount, and this contract enforces `actual <= ceiling`

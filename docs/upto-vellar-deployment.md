@@ -155,10 +155,8 @@ committed (`f95e099`) **before** the implementation (`109a063`). The FR-6
 correction that produced this deployment is recorded in that file alongside the
 original, wrong reasoning.
 
-Key differences from the vendored contract in
-[`contracts/upto-stellar/`](../contracts/upto-stellar/), which is retained as
-evidence for its own settlement hashes but is **not deployed and not a
-supported configuration**:
+Design decisions worth naming, each recorded in `DESIGN.md` before the
+implementation:
 
 - **No `hook` argument in the ABI.** The facilitator refuses it anyway; omitting
   it is better than accepting and ignoring it.

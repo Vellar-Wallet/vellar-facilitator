@@ -7,7 +7,7 @@ trusting this file. Every value below is checkable.
 | --- | --- |
 | Contract ID (testnet) | `CAWQ2FJDPWHOFLYQIPKBU4M6IE4GUROKUKVVZERWQVD2DHP7S2CULTI4` |
 | Wasm hash | `21e4a128423f8d4246951812a4fd6cb3811ba30b100c73e912b4febc7ffd949c` |
-| Source | `contracts/bond-escrow/` in this repo — **original work**, not vendored (contrast with `contracts/upto-stellar/`, which is rail402's, taken verbatim). Built across four incremental passes plus two review-driven fixes, all folded into a single commit on `main` via [PR #74](https://github.com/Vellar-Wallet/vellar-facilitator/pull/74). |
+| Source | `contracts/bond-escrow/` in this repo — **original work**. Built across four incremental passes plus two review-driven fixes, all folded into a single commit on `main` via [PR #74](https://github.com/Vellar-Wallet/vellar-facilitator/pull/74). |
 | Built with | rustc/cargo 1.96.0, `stellar` CLI 26.1.0, target `wasm32v1-none`, `soroban-sdk` resolved to `23.5.3` (`Cargo.lock`), `overflow-checks = true` in the release profile |
 | Deployed | 2026-08-21, from a dedicated testnet admin key (not the facilitator's `SPONSOR_SECRET_KEY` — see "Admin key" below), deploy tx [`e0bec89f…`](https://stellar.expert/explorer/testnet/tx/e0bec89fdcefaf9f7eaa601aedf8962a74f162b5ccca0161f912e87faa611bcd) |
 | Full sequence exercised | Yes — every one of the seven entry points, on this exact deployed instance, in one continuous run. See below. |
@@ -109,14 +109,14 @@ and is the order any real integration needs to follow.
 
 ## Not yet independently verified by a third party
 
-Unlike `upto-stellar`, which `explorer.vellar.xyz` independently confirms by classifying
+Unlike the `upto` contract, which `explorer.vellar.xyz` independently confirms by classifying
 real chain data with its own logic, `bond-escrow` has no independent-party verification
 path today. The explorer has no concept of a bonded listing, a dispute, or a settlement
 registration — this is explicitly out of scope per `docs/proposal-provider-bond.md`
 Section 6. Everything in this document is self-reported by this repo, verified by the
 methods stated above, not corroborated by a separate operator. Worth deciding explicitly
 whether that gap needs closing before this is treated as equivalent evidence to
-`upto-stellar`'s deployment record.
+the `upto` contract's deployment record.
 
 ## Facilitator wiring
 

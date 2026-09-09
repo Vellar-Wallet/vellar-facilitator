@@ -9,7 +9,7 @@ concrete, implementable design rather than a paragraph of intent.
 **Scope reminder, so this isn't read as more than it is.** This solves
 **voluntary rotation only** — the legitimate merchant still holds the old key.
 The lost-key case has no in-band answer (confirmed twice now, independently —
-our own latch and rail402's SEP-1 approach both hit the identical wall) and is
+our own latch and a comparable SEP-1 approach both hit the identical wall) and is
 handled separately, procedurally, in `proposal-operator-rotation-procedure.md`
 (not yet written — see the closing note).
 

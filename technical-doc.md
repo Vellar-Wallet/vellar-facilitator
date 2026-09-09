@@ -658,8 +658,8 @@ launch. Three milestones (final = mainnet, per SCF):
 
    | | |
    | --- | --- |
-   | Contract (testnet) | `CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S` |
-   | Wasm hash | `c276b905981eab91704ce9b9046ebb4867b164dd7e4ba0e0ecda841527d398a9` — reproducible from source, steps in `docs/upto-deployment.md` |
+   | Contract (testnet) | `CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN` |
+   | Wasm hash | `92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8` — reproducible from source, steps in `docs/upto-vellar-deployment.md` |
    | Contract properties | no admin key, no upgrade path, no custody — the bounded-draw shape (authorize a ceiling, draw exactly the actual amount, never move the remainder), so "never holds funds" is structural, not an atomicity claim |
 
    `/supported` on the hosted instance advertises both `exact` and `upto`

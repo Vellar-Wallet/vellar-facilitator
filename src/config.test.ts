@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 
 const SECRET = "SBJP6HHFTABK2GXVVFAKY6C4B7DDNB5PIEQXKUNL2ZAOBPWFOUOSTLVNMA";
-// A real, publicly-documented testnet contract address (docs/upto-deployment.md) — used
+// A syntactically valid testnet contract address — used
 // here only as a syntactically valid C… value, not to imply this config points at it.
-const VALID_CONTRACT_ID = "CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S";
+const VALID_CONTRACT_ID = "CAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRDB3V";
 
 // A valid, distinct 50-key channel-account pool env value — the shape every
 // existing test in this file now needs alongside SPONSOR_SECRET_KEY, since

@@ -18,16 +18,14 @@ import { UptoStellarScheme, type UptoRpcLike } from "./upto.js";
 // gate in front of it: what the facilitator refuses, and why, by reason code.
 //
 // The ABI is `settle(token, from, to, max_amount, expiration_ledger, nonce,
-// actual_amount)` — seven arguments, no trailing hook. An earlier revision also
-// accepted an 8-argument form for the vendored contract; that path was removed
-// once the hosted instance cut over, and `refuses an 8-argument payload` below
-// is what keeps it removed.
+// actual_amount)` — seven arguments, no trailing hook. The arg-count table
+// below pins that exactly, including an 8-argument rejection.
 
 const CONTRACT = "CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN";
 const OTHER_CONTRACT = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 const ASSET = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 /** A valid contract address that is NOT `ASSET`, for the asset-mismatch case. */
-const OTHER_ASSET = "CDHPA64M73TUTEM4MMHIWIXINBQXH7JJXFGZMGH22VJWFJFROMR6QV2S";
+const OTHER_ASSET = "CAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRDB3V";
 const PASSPHRASE = "Test SDF Network ; September 2015";
 
 const payerKp = Keypair.random();
@@ -149,14 +147,13 @@ describe("upto parseAndValidate — the gate in front of the network", () => {
   });
 
   it.each([
-    ["8 arguments — the retired hook-bearing ABI", 8],
+    ["8 arguments", 8],
     ["6 arguments — one short", 6],
     ["9 arguments", 9],
     ["0 arguments", 0],
   ] as const)("refuses %s", (_n, count) => {
-    // The 8-arg case is the regression guard for this removal: the deployed
-    // contract takes exactly seven, and a payload carrying the old trailing
-    // hook must be refused here rather than reaching the VM.
+    // The deployed contract takes exactly seven arguments; anything else must
+    // be refused here rather than reaching the VM.
     const args = Array.from({ length: count }, () => xdr.ScVal.scvVoid());
     expect(scheme().parseAndValidate(payload(clientTx({ args: [...args] })), reqs())).toBe(
       "invalid_upto_stellar_wrong_argument_count",

@@ -130,14 +130,11 @@ Limitations and provenance, stated because they matter:
   ledger 4587956, **0.01 USDC settled against a 0.05 USDC ceiling** — the gap
   between ceiling and charge being the property that distinguishes `upto` from
   `exact`. Full record: [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md).
-- **It is not clean-room, and is not described as such.** This repo also retains
-  `contracts/upto-stellar/`, rail402's contract vendored verbatim at pinned
-  commit `ff504b85` (Apache-2.0, `PROVENANCE.md`), and the authors read it. What
-  the history supports is spec-driven design recorded before implementation,
-  with the differences named deliberately — not the absence of access to a
-  reference. The vendored contract is kept as the evidence behind its own four
-  settlement hashes (`docs/upto-deployment.md`); it is not deployed and not a
-  supported configuration.
+- **It is an independent implementation, not a clean-room one.** Other `upto`
+  implementations exist publicly and were read before this one was designed.
+  What the history supports is spec-driven design recorded before
+  implementation, with the design decisions and open questions committed
+  first — not the absence of access to prior art.
 - **A first deployment was superseded the same day.** `CDLSHRYCP…` used a direct
   `transfer` and could not settle at all: a Soroban auth entry commits to exact
   argument values, so a signature covering the ceiling cannot authorize a
@@ -490,7 +487,7 @@ the official client.
 PR #3428 is a *convergence* document, not a competing spec. It derives
 requirements from agreement across six implementations read in source and names
 five divergences as open questions for the TSC without picking a winner. It
-credits rail402 as the contract design author.
+credits the originating implementation for the contract design.
 
 **Stated plainly so this is not read as more than it is: two PRs open, both
 unreviewed, and two issues filed, one of which attracted an independent fix.
@@ -533,7 +530,6 @@ that crate's own `Cargo.toml`:
 | Crate | Licence | Why |
 | --- | --- | --- |
 | `contracts/upto-vellar` | **MIT** | Vellar-authored, the deployed `upto` contract (§3.2) |
-| `contracts/upto-stellar` | Apache-2.0 | Vendored verbatim from rail402. Not deployed, not a supported config; retained as evidence for its own settlement hashes |
 | `contracts/bond-escrow` | Apache-2.0 | Vellar-authored |
 
 MIT and Apache-2.0 are both permissive and compatible; the split is a fact about

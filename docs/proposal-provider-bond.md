@@ -110,7 +110,7 @@ This "route a payment, file a false claim" version of collusion reduces to the s
 |---|---|---|---|
 | `contracts/bond-escrow/` (new Rust crate) | **NEW** | **XL** | Per-listing storage keyed by canonical resource key; `register_settlement`, `deposit`/`withdraw` (SEP-41), `file_dispute` (payer-gated, rate-limited), `post_receipt` (signature-verified), permissionless `finalize`. Roughly seven entry points against the existing `upto` contract's two, plus a rate-limit counter and an authorized-caller pattern `upto` deliberately has none of — something has to gate who may register a settlement. Real financial contract holding user funds; needs its own full test suite and external review before mainnet, not just internal review. |
 
-This follows the org's real deploy convention — crate layout, `soroban-sdk = "23"`, a hash-verified reproducible build, a `docs/bond-escrow-deployment.md` companion published once deployed — established by `contracts/upto-stellar/`. That existing contract is vendored verbatim from rail402 (confirmed via `contracts/upto-stellar/PROVENANCE.md`: pinned commit, zero local changes, published so anyone can verify the build independently), so it is evidence of deploy conventions only, not code to imitate — the bond contract is original work with materially more state and more entry points.
+This follows the org's real deploy convention — crate layout, `soroban-sdk = "23"`, a hash-verified reproducible build, and a `docs/*-deployment.md` companion published once deployed. The bond contract is original work with materially more state and more entry points than the `upto` contract.
 
 ### Facilitator (`vellar-facilitator`, this repo)
 
@@ -154,7 +154,7 @@ Confirmed directly, not assumed: `vellar-sdk` is a payer-only monorepo today —
 | `.env.example` | EXTEND | New `# ── Bond escrow ──` banner: contract ID, dispute window seconds, dust-floor minimum, dispute rate-limit parameters — each with the value, rationale, and consequence-of-changing convention already used throughout this file. |
 | `docs/using-it.md` | EXTEND | New trust-block fields and the `bonded_only` filter, alongside the existing `verified_only` documentation. |
 | `docs/proposal-provider-bond.md` | this document | The design record itself. |
-| `docs/bond-escrow-deployment.md` | NEW, later | Deployment record, created once the contract is actually deployed — not written speculatively, matching `upto-deployment.md`'s convention. |
+| `docs/bond-escrow-deployment.md` | NEW, later | Deployment record, created once the contract is actually deployed — not written speculatively, matching `upto-vellar-deployment.md`'s convention. |
 
 ### Explicitly not in scope: `vellar-explorer`
 
