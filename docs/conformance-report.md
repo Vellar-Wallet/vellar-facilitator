@@ -60,6 +60,15 @@ All captured 2026-09-03 against the live URL.
 
 ### 3.1 `GET /supported` — C2 ✅
 
+> **Note (added 2026-09-09):** The hosted facilitator has since been updated to
+> serve the Vellar-authored `upto` contract
+> `CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN` (wasm hash
+> `92365d9e5effe046a1db5b959bd2357672aef3f4b2137653c8095a0764d1f6c8`, MIT
+> licensed — see [`docs/upto-vellar-deployment.md`](./upto-vellar-deployment.md)).
+> The `/supported` output below was captured during the conformance run and
+> reflects the state at that time. A live call today returns the new contract id
+> in `extra.uptoContract`; every other field below is unchanged.
+
 ```json
 {
   "kinds": [
