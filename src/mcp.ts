@@ -95,6 +95,42 @@ export function frameDescriptions<T extends { description?: unknown }>(items: T[
   });
 }
 
+/**
+ * Turn a thrown error into a structured MCP tool result.
+ *
+ * Without this, a rejection from the HTTP client propagates out of the handler
+ * and the SDK surfaces it as a PROTOCOL-level failure — the agent sees a broken
+ * transport rather than a readable problem it can act on. `isError: true` is the
+ * MCP convention for "the tool ran and failed", which keeps the failure inside
+ * the conversation.
+ *
+ * The cold-start hint is the actionable part. The hosted facilitator is on a
+ * free tier that spins down after ~15 minutes idle, so a connection error on the
+ * first call is the single most likely failure an agent will hit, and "retry in
+ * a moment" is the correct response to it rather than "the catalog is down".
+ *
+ * Diagnostics go to STDERR, never stdout: on a stdio transport stdout is the
+ * JSON-RPC channel and a stray write desynchronises the protocol, so the agent
+ * would see a transport error instead of the error we are trying to report.
+ */
+function toolError(tool: string, action: string, err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  const isTimeout =
+    message.includes("ECONNREFUSED") ||
+    message.includes("ECONNRESET") ||
+    message.includes("timeout") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("fetch failed");
+  const hint = isTimeout
+    ? " The facilitator may be cold-starting (~45s on the free tier). Retry in a moment."
+    : "";
+  console.error(JSON.stringify({ tool, error: message }));
+  return {
+    content: [{ type: "text" as const, text: `Failed to ${action}: ${message}.${hint}` }],
+    isError: true,
+  };
+}
+
 server.registerTool(
   "x402_list_resources",
   {
@@ -108,20 +144,24 @@ server.registerTool(
     },
   },
   async ({ verified_only, ...params }) => {
-    const result = await bazaar.listResources(compact(params));
-    const { items: filtered, note } = applyVerifiedOnly(
-      result.items as Array<(typeof result.items)[number] & { trust?: { verification?: string } }>,
-      verified_only,
-    );
-    const items = frameDescriptions(filtered);
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ ...result, items, ...(note ? { verifiedOnlyNote: note } : {}) }, null, 2),
-        },
-      ],
-    };
+    try {
+      const result = await bazaar.listResources(compact(params));
+      const { items: filtered, note } = applyVerifiedOnly(
+        result.items as Array<(typeof result.items)[number] & { trust?: { verification?: string } }>,
+        verified_only,
+      );
+      const items = frameDescriptions(filtered);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ...result, items, ...(note ? { verifiedOnlyNote: note } : {}) }, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return toolError("x402_list_resources", "list resources", err);
+    }
   },
 );
 
@@ -139,26 +179,30 @@ server.registerTool(
     },
   },
   async ({ verified_only, ...params }) => {
-    const result = await bazaar.search(compact(params) as { query: string });
-    const { items: filtered, note } = applyVerifiedOnly(
-      result.resources as Array<
-        (typeof result.resources)[number] & { trust?: { verification?: string } }
-      >,
-      verified_only,
-    );
-    const resources = frameDescriptions(filtered);
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            { ...result, resources, ...(note ? { verifiedOnlyNote: note } : {}) },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
+    try {
+      const result = await bazaar.search(compact(params) as { query: string });
+      const { items: filtered, note } = applyVerifiedOnly(
+        result.resources as Array<
+          (typeof result.resources)[number] & { trust?: { verification?: string } }
+        >,
+        verified_only,
+      );
+      const resources = frameDescriptions(filtered);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              { ...result, resources, ...(note ? { verifiedOnlyNote: note } : {}) },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      return toolError("x402_search_resources", "search resources", err);
+    }
   },
 );
 
