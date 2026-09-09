@@ -5,7 +5,11 @@
 **Status:** partial — see [§6 Known gaps](#6-known-gaps). The e2e suite has now
 been run against the live facilitator (§6.1): **C1 is satisfied on testnet**
 with six Horizon-confirmed settlements, and **C4 is partial**. Pubnet (§6.2)
-and semantic search (§6.3) remain unsatisfied and are named plainly below.
+remains unsatisfied. Semantic search (§6.3) has **shipped and is measured** —
+Voyage AI embeddings fused with the lexical scorer by RRF — but is **not
+claimed as met**: five of ten semantic queries reach the top 3 without reaching
+first place, and the eval corpus is a single seller's 19 entries. All of it is
+named plainly below.
 
 ---
 

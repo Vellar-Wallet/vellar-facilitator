@@ -237,8 +237,10 @@ pubnet deployment.
 [`docs/conformance-report.md`](./docs/conformance-report.md) is the honest
 scorecard: what is verified live against the hosted instance, the settled
 transaction hashes re-checked against Horizon, the six e2e hashes with the
-command that produced them, and the gaps still open — a pubnet deployment and
-semantic search ranking.
+command that produced them, and the gaps still open — a pubnet deployment, and
+search ranking quality (hybrid semantic search has shipped and is measured, but
+five of ten semantic queries still miss first place on a single seller's
+catalog, so it is not claimed as met).
 
 ## MCP discovery server (for AI agents)
 
