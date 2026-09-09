@@ -1,4 +1,11 @@
 node_modules/
+
+# macOS Finder metadata. Not source, and it appears in any directory someone
+# opens in Finder — including contracts/ and examples/, where a `git add -A`
+# would otherwise sweep it in.
+.DS_Store
+**/.DS_Store
+
 .env
 .env.*
 !.env.example
