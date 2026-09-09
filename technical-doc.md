@@ -1,3 +1,6 @@
+<img width="5410" height="2088" alt="Full Logo White" src="https://github.com/user-attachments/assets/d89f4763-fbc3-45bd-8e42-22f882d39463" />
+
+
 # Vellar Facilitator — Technical Document
 
 SCF #45 RFP Track submission — "X402 Facilitator with Bazaar (Discovery)
