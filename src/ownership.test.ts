@@ -543,6 +543,66 @@ describe("mutation guards (audit: these all went undetected)", () => {
     expect(capped).toBe("unverifiable");
   });
 
+  // MUTATION AE-2: MAX_RESPONSE_BYTES raised (e.g. to 100 MB). The test above
+  // proves the cap MECHANISM works when a cap is supplied, but it passes
+  // `maxBytes` explicitly on both calls, so `opts.maxBytes ?? MAX_RESPONSE_BYTES`
+  // never falls through to the production constant. Raising that constant to
+  // 100 MB left the entire suite green — the exact "production defaults that
+  // every test overrode" root cause RA-12 names.
+  //
+  // This exercises the DEFAULT path (no maxBytes option) from both sides, so it
+  // fails if the constant moves in either direction.
+  it("applies the default 64 KiB response cap when no maxBytes is passed", async () => {
+    // A valid, matching challenge whose base64 length lands either side of the
+    // 64 KiB default. The cap is applied to the ENCODED header (ownership.ts
+    // compares `header.length`), so pad against the encoded size.
+    const challengeOf = (encodedTarget: number) => {
+      // base64 grows 4 bytes per 3 input bytes; solve for the raw padding.
+      const shell = JSON.stringify({ accepts: [{ payTo: "GLEGIT" }], pad: "" });
+      let pad = Math.max(0, Math.floor((encodedTarget * 3) / 4) - shell.length);
+      let header = "";
+      for (let i = 0; i < 64; i++) {
+        header = Buffer.from(
+          JSON.stringify({ accepts: [{ payTo: "GLEGIT" }], pad: "x".repeat(pad) }),
+          "utf8",
+        ).toString("base64");
+        if (header.length === encodedTarget) return header;
+        pad += header.length < encodedTarget ? 1 : -1;
+        if (pad < 0) return header;
+      }
+      return header;
+    };
+
+    const probe = async (header: string) => {
+      const fetchFn = vi.fn(async () => ({
+        status: 402,
+        headers: { get: () => header },
+        body: null,
+        text: async () => "",
+      }) as unknown as Response);
+      // NO maxBytes — this is the whole point. The production default runs.
+      return verifyResourceOwnership("https://example.com/q", "GLEGIT", {
+        fetchFn,
+        lookupFn: fakeLookup("93.184.216.34"),
+      });
+    };
+
+    // base64 output length is always a multiple of 4, so target the nearest
+    // achievable values either side of the 65,536-byte default rather than
+    // exact off-by-one lengths.
+    const under = challengeOf(64 * 1024 - 4);
+    const over = challengeOf(65 * 1024 + 4);
+    expect(under.length, "fixture: just under the default cap").toBeLessThan(64 * 1024);
+    expect(over.length, "fixture: just over the default cap").toBeGreaterThan(64 * 1024);
+
+    // Under the cap: honoured. Fails if the constant is LOWERED below 64 KiB.
+    expect(await probe(under), "a challenge under the default cap must be honoured").toBe("match");
+    // Over the cap: refused. Fails if the constant is RAISED above 64 KiB.
+    expect(await probe(over), "a challenge over the default cap must be refused").toBe(
+      "unverifiable",
+    );
+  });
+
   // MUTATION A: the module default swapped back to Node's global fetch, which is
   // a different bundled undici and rejects our Agent before opening a socket —
   // silently disabling Layer 2. defaultFetch is the single source of truth used

@@ -209,10 +209,25 @@ describe("documented rationale — module constants", () => {
     );
   });
 
+  it("the ownership fetch timeout is bounded on BOTH sides, not just below", async () => {
+    // RA-12 follow-up. The assertion above is one-sided against a 15-minute
+    // cooldown, so a 60s timeout satisfies it — and 60s is not a bounded probe,
+    // it is a minute of a settlement path hanging before it degrades. The floor
+    // matters equally: a sub-second timeout would make every cold-starting
+    // seller permanently unverifiable, which reads as a trust failure rather
+    // than a latency one.
+    expect(OWNERSHIP_LIMITS.fetchTimeoutMs).toBeGreaterThanOrEqual(2_000);
+    expect(OWNERSHIP_LIMITS.fetchTimeoutMs).toBeLessThanOrEqual(5_000);
+  });
+
   it("the 402 response cap is generous for a header-borne challenge", async () => {
     // The verdict comes entirely from the PAYMENT-REQUIRED header; the body is
     // cancelled unread. 64 KB must still clear a large multi-accepts challenge.
     expect(OWNERSHIP_LIMITS.maxResponseBytes).toBeGreaterThanOrEqual(64 * 1024);
+    // ...and is bounded ABOVE too. A one-sided floor passed against the RA-12
+    // mutation that raised the cap to 100 MB, which would let the probe buffer
+    // 100 MB of attacker-controlled header from an already-vetted host.
+    expect(OWNERSHIP_LIMITS.maxResponseBytes).toBeLessThanOrEqual(256 * 1024);
   });
 
   it("an asset verdict goes stale far sooner than an ownership verdict", async () => {

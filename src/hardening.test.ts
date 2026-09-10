@@ -81,13 +81,20 @@ describe("Fix 2 — production defaults are actually applied", () => {
     const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     await app.ready();
     try {
+      // Two-sided. The upper bound proves a limit EXISTS; the lower bound proves
+      // it is not so tight that it breaks legitimate traffic. A one-sided
+      // "some bound <= 200" assertion passes against max: 1, which would 429
+      // every real caller after a single request.
+      let allowed = 0;
       let limited = false;
-      // The default must be a real bound; 200 requests from one IP must trip it.
       for (let i = 0; i < 200 && !limited; i++) {
         const res = await app.inject({ method: "GET", url: "/supported", remoteAddress: "9.9.9.9" });
         if (res.statusCode === 429) limited = true;
+        else allowed++;
       }
       expect(limited, "default rate limit must bound a single IP").toBe(true);
+      expect(allowed, "a default this tight would refuse legitimate traffic").toBeGreaterThanOrEqual(50);
+      expect(allowed, "a default this loose is not a bound").toBeLessThanOrEqual(200);
     } finally {
       await app.close();
     }

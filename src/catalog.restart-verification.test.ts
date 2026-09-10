@@ -99,6 +99,78 @@ function trustOf(item: unknown) {
   return (item as TrustedDiscoveryResource).trust!;
 }
 
+describe("RA-9 — a tampered row cannot forge the ownership badge", () => {
+  // RA-12 mutation "forge verifiedOwner from a tampered file". The existing
+  // G-1 tests below prove the badge is not PERSISTED — but they write through
+  // the catalog, which never serializes the flag, so the file they produce has
+  // nothing to forge. A loader that started trusting a stored flag would leave
+  // them green.
+  //
+  // This seeds the row DIRECTLY, with `verifiedOwner: true` planted in every
+  // position a careless loader might read: at entry top level, inside the
+  // resource, and inside a forged `trust` block. Whoever holds the database
+  // credentials can write exactly this (F6).
+  it("ignores verifiedOwner planted anywhere in a directly-seeded row", async () => {
+    const file = `file:${join(tmpDir(), "forged.db")}`;
+    const key = URL_X;
+
+    await seedRows(file, {
+      ownership: [{ key, payTo: PAY_OLD }],
+      entries: [
+        {
+          key,
+          payload: {
+            // The shape the loader expects...
+            resource: {
+              resource: URL_X,
+              type: "http",
+              x402Version: 2,
+              lastUpdated: "2026-08-01T00:00:00.000Z",
+              accepts: [
+                {
+                  scheme: "exact",
+                  network: "stellar:testnet",
+                  asset: ASSET,
+                  amount: "1000",
+                  payTo: PAY_OLD,
+                  maxTimeoutSeconds: 60,
+                },
+              ],
+              // ...with the badge forged INSIDE the resource,
+              verifiedOwner: true,
+              trust: { ownerVerified: true, verification: "verified" },
+            },
+            stats: { settlements: 1, payers: [PAY_OLD] },
+            // ...and at the top level.
+            verifiedOwner: true,
+            trust: { ownerVerified: true, verification: "verified" },
+          },
+        },
+      ],
+    });
+
+    const catalog = await BazaarCatalog.create(reopen(file));
+    expect(catalog.size, "precondition: the forged row loads as an entry").toBe(1);
+
+    // The badge is computed, never read. Layer 2 has not run in this process.
+    expect(
+      catalog.isVerifiedOwner(URL_X),
+      "RA-9: a stored verifiedOwner must never become the badge",
+    ).toBe(false);
+
+    // And it must not leak through the wire shape either.
+    const app = await serve(catalog);
+    try {
+      const body = (await app.inject({ method: "GET", url: "/discovery/resources" })).json();
+      const t = trustOf(body.items[0]);
+      expect(t.ownerVerified, "RA-9: forged badge must not reach the wire").toBe(false);
+      expect(t.verification, "a forged verdict must stay clamped").toBe("unknown");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("G-1 — verifiedOwner does not survive a restart, and never recovers", () => {
   it("a verified entry serves ownerVerified:false after restart, with every verdict clamped", async () => {
     const file = `file:${join(tmpDir(), "catalog.json.db")}`;
