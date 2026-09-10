@@ -387,10 +387,77 @@ Root causes: assertions on decorative labels rather than behaviour; mocking the
 exact dependency under test; and production defaults that **every** test
 overrode.
 
-Each is now covered by a test **verified to fail against its named mutation**.
+Each was then covered by a test intended to fail against its named mutation.
 Two of the first replacement guards were themselves decorative and were corrected
 — the standard adopted is: *a guard that has not been observed to fail is not a
 guard.*
+
+#### Resolution — re-verified 2026-09-10 (`245c142`)
+
+**The closure claimed above was itself partly decorative, and this section said
+so only after the claim was re-tested.** Every control was re-checked by running
+its named mutation against the full suite rather than by reading the tests.
+Three of the eight did not hold.
+
+**Control 4 (header size cap) was still decorative.** `MAX_RESPONSE_BYTES` was
+raised from 64 KiB to 100 MB and **all 670 tests stayed green**. The replacement
+guard written for the original finding passes `maxBytes` explicitly on both of
+its calls, so `opts.maxBytes ?? MAX_RESPONSE_BYTES` (`src/ownership.ts`) never
+falls through to the production constant: the test proved the cap *mechanism*,
+never the cap actually shipped. This is root cause three — "production defaults
+that every test overrode" — surviving inside the fix for root cause three. The
+one-line rationale assertion in `src/config.thresholds.test.ts` did not catch it
+either, being a floor (`>= 64 KiB`) that a 100 MB value satisfies.
+Closed by a test that calls the production path with **no** `maxBytes` override
+and asserts both sides of the bound; a ceiling was added to the rationale
+assertion.
+
+**Controls 3 and 7 were one-sided.** Neither was decorative — both failed their
+named mutation — but each bounded only one direction:
+
+- *Control 3 (abort/timeout)* asserted only that the timeout was under a tenth
+  of the 15-minute re-verify cooldown. A **60-second** timeout satisfies that,
+  and would hang a settlement path for a minute before degrading. Now bounded
+  to 2–5 s.
+- *Control 7 (rate limit)* asserted only that *some* bound under 200 exists. A
+  limit of **1** satisfies that, and would refuse every legitimate caller after
+  a single request. Now bounded to 50–200 allowed requests.
+
+**Control 8 (`verifiedOwner` forgery) was caught by parsing accident, not by
+assertion.** No test seeded a forged badge: the existing G-1 tests write through
+the catalog, which never serializes the flag, so the file they produce has
+nothing to forge. The mutation was refused only because `storedEntrySchema` has
+no such key and zod strips it. Closed by a test that seeds the row directly with
+`verifiedOwner: true` planted at entry top level, inside the resource, and in a
+forged `trust` block, then asserts the badge stays false and never reaches the
+wire.
+
+> **Residual limitation, control 8.** The new coverage is **behavioural, not
+> structural**: it proves a forged badge in the payload cannot become the badge
+> on the current write paths. It does not make a persisted badge impossible. A
+> future change touching the serializer, the schema **and** the loader together
+> would slip past it. Making that structurally impossible needs a type-level or
+> schema-level guarantee, which is a larger design change than this finding
+> warrants; recorded here rather than fixed.
+
+**All eight controls are mutation-verified as of `245c142`**, each observed to
+fail against its named mutation:
+
+| Control | Mutation applied | Tests failed |
+| --- | --- | --- |
+| SSRF guard | `isBlockedAddress` → always false | 17 |
+| Redirect handling | `redirect: "manual"` → `"follow"` | 2 |
+| Abort/timeout | abort callback emptied | 4 |
+| Header size cap | `MAX_RESPONSE_BYTES` → 100 MB | 2 |
+| `defaultFetch` | → Node's global `fetch` | 1 |
+| Body limit | `DEFAULT_BODY_LIMIT` → 100 MB | 1 |
+| Rate limit | `DEFAULT_RATE_MAX` → 1 | 1 |
+| `verifiedOwner` forgery | schema + loader trust a stored badge | 6 |
+
+Suite after the fix: **673 passed, 4 skipped**, typecheck clean, no source files
+changed. The lesson the original finding drew still stands and now applies to
+itself: *a guard that has not been observed to fail is not a guard* — including
+a guard written to close a finding about guards.
 
 ### RA-13 — Forged settlement stats — **Medium** — closed-by-doc
 
