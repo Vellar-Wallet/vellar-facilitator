@@ -681,11 +681,14 @@ launch. Three milestones (final = mainnet, per SCF):
    `upto` lets a buyer authorize a spending ceiling and pay only for what is
    actually consumed — the billing model real API businesses run on
    (per-token, per-byte, per-compute) and the most-cited gap in the RFP's own
-   framing. Rather than design one from scratch, an open-source Stellar
-   `upto` contract was reviewed line-by-line against a six-implementation
-   comparison across the wider SCF cohort, endorsed, and **deployed as our
-   own build from pinned, reviewed source** — never a third party's running
-   instance, whose wasm hash we have not independently verified:
+   framing. The deployed contract is **Vellar's own MIT-licensed
+   implementation**, written from the x402 `upto` scheme description after a
+   six-implementation comparison across the wider SCF cohort. The design brief
+   (`contracts/upto-vellar/DESIGN.md`) was committed **before** the first line
+   of Rust, so the ordering is checkable in the git history rather than
+   asserted, and the deployed wasm is our own build from that source — never a
+   third party's running instance, whose hash we have not independently
+   verified:
 
    | | |
    | --- | --- |
@@ -694,17 +697,25 @@ launch. Three milestones (final = mainnet, per SCF):
    | Contract properties | no admin key, no upgrade path, no custody — the bounded-draw shape (authorize a ceiling, draw exactly the actual amount, never move the remainder), so "never holds funds" is structural, not an atomicity claim |
 
    `/supported` on the hosted instance advertises both `exact` and `upto`
-   today. **Verified independently, not just by this repo**: three
-   settlements against the hosted instance — actual amounts 555000, 312000,
-   and 417000 stroops against signed ceilings of 1500000, 800000, and
-   1200000 — each shows on the separately-operated
-   [`explorer.vellar.xyz`](https://explorer.vellar.xyz) with `scheme: upto`
-   and `settled by: vellar`, the metered actual displayed rather than the
-   ceiling. An upstream contribution to x402-foundation/x402 PR #3134 (open,
-   competing with #3098) — carrying the review findings on hook safety,
-   custody-window economics, and a nonce-TTL replay fix found during the
-   review — is identified and ready to write, currently paused by choice
-   rather than blocked on anything. Also in this milestone: V2 (CAP-0071-02)
+   today, and the first settlement through the contract above is
+   [`be33bb71…`](https://stellar.expert/explorer/testnet/tx/be33bb71b0a2c74c465bf0243c45e081bc7c5b66a337e2d8a5c0bbb82f54ede6)
+   (ledger 4587956): **0.01 USDC settled against a 0.05 USDC ceiling**, the gap
+   between the two being the whole point of the scheme.
+
+   **Verified independently, not just by this repo**: three earlier settlements
+   — actual amounts 555000, 312000 and 417000 stroops against signed ceilings of
+   1500000, 800000 and 1200000 — each show on the separately-operated
+   [`explorer.vellar.xyz`](https://explorer.vellar.xyz) with `scheme: upto` and
+   `settled by: vellar`, the metered actual displayed rather than the ceiling.
+   Those three ran through the previously deployed contract, before the cutover
+   to the one above; they are cited for the independent classification, not as
+   evidence for the current contract. **The upstream contribution is filed**:
+   [PR #3428](https://github.com/x402-foundation/x402/pull/3428) is open at
+   `x402-foundation/x402`, carrying both a convergence analysis
+   (`scheme_upto_stellar_interop.md`, derived from six implementations read in
+   source) and a normative spec (`scheme_upto_stellar_vellar.md`). Every commit
+   on it is GPG-signed and verified. It remains **unreviewed** — open is the
+   honest status, not accepted. Also in this milestone: V2 (CAP-0071-02)
    credential support so passkey-signed x402 payments settle; the provenance
    attestor and agent-key mint/revoke UX productionized.
 3. **Mainnet launch.** Facilitator + its three provenance contracts (attestation
@@ -714,14 +725,19 @@ launch. Three milestones (final = mainnet, per SCF):
    pre-mainnet review (§8), not the first look;
    proven uptime; mainnet USDC / multi-asset support; professional user testing.
 
-   The conformance report (`docs/conformance-report.md`) identifies two further
-   hard acceptance criteria that are **not** satisfied today: running the
-   x402-foundation e2e suite against the live facilitator (§6.1 — it needs three
-   funded Stellar accounts, and the blocker is environment, not code), and
-   obtaining a settled transaction hash on pubnet for the `exact` scheme (§6.2 —
-   the facilitator currently advertises `stellar:testnet` only). Both close as
-   part of this pubnet deployment step, and both are named in the checklist at
-   the top of this section.
+   **The x402 e2e conformance suite has been run.** On 2026-09-08, against the
+   live facilitator at upstream HEAD `241df66`, six scenarios settled real
+   payments end to end, every hash Horizon-confirmed with the fee charged to
+   this facilitator's own sponsor (`docs/conformance-report.md` §6.1). **C1 is
+   satisfied on testnet.** The reproduction directory is committed at
+   [`e2e/facilitators/vellar/`](./e2e/facilitators/vellar/) so the run can be
+   repeated rather than taken on trust.
+
+   What remains is the **pubnet half**. C4 asks for a passing run on *both*
+   networks and C5 for a settled hash *per network*; neither can be answered
+   without a pubnet deployment, so both close as part of this step rather than
+   before it (§6.2). Stated plainly: the testnet half is evidence, the mainnet
+   half is not yet claimed.
 
 Mainnet-specific engineering: pubnet RPC + real USDC SAC configuration
 (network plumbing exists via `STELLAR_NETWORK=pubnet`, currently untested),
