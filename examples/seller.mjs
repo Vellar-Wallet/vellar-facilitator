@@ -104,19 +104,116 @@ const PRICE_ATOMIC = process.env.PRICE_ATOMIC || "1000000";
 const PRICE_ATOMIC_001_USDC = "100000";
 const PRICE_ATOMIC_002_USDC = "200000";
 
+// NETWORK selection. Everything below defaults to testnet, so an unconfigured
+// run behaves exactly as it did before this was configurable.
+//
+// These four values (network, passphrase, Horizon, asset) have to AGREE, and
+// nothing about setting them one at a time makes a disagreement visible: a
+// pubnet `NETWORK` with the testnet passphrase still boots, still serves a 402,
+// and fails only when a buyer tries to settle — on-chain, in a way that reads
+// like a facilitator or spend-control problem rather than a config one. That is
+// the same failure shape `preflightMerchant()` below exists to prevent for the
+// PAYTO/ASSET pair, so it gets the same treatment: `assertNetworkConsistency()`
+// refuses to boot and names the fix.
+const NETWORK = process.env.NETWORK || "stellar:testnet";
+const PASSPHRASE = process.env.NETWORK_PASSPHRASE || Networks.TESTNET;
+
 // Used only by the boot-time merchant preflight below — never on the payment
 // path, which goes through the facilitator.
-const RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
-const PASSPHRASE = Networks.TESTNET;
+const RPC_URL =
+  process.env.STELLAR_RPC_URL ||
+  (NETWORK === "stellar:pubnet"
+    ? "https://mainnet.sorobanrpc.com"
+    : "https://soroban-testnet.stellar.org");
 
-// Horizon testnet — used by /inspect (balances + recent txs) and /timestamp
-// (ledger sequence number only). These are the only two of the seven new
-// routes below that touch an external API; the other five (/stroops, /hash,
-// /base64, /word-count, /uuid) are pure local computation. Both Horizon calls
-// carry an explicit 10s timeout and fail with a clear JSON error rather than
-// hanging or crashing — see fetchHorizon().
-const HORIZON_URL = "https://horizon-testnet.stellar.org";
+// Horizon — used by /inspect (balances + recent txs) and /timestamp (ledger
+// sequence number only). These are the only two of the seven new routes below
+// that touch an external API; the other five (/stroops, /hash, /base64,
+// /word-count, /uuid) are pure local computation. Both Horizon calls carry an
+// explicit 10s timeout and fail with a clear JSON error rather than hanging or
+// crashing — see fetchHorizon().
+const HORIZON_URL =
+  process.env.HORIZON_URL ||
+  (NETWORK === "stellar:pubnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org");
 const HORIZON_TIMEOUT_MS = 10_000;
+
+/** Canonical USDC SEP-41 contract per network, used only by the consistency
+ *  check below — the seller stays asset-agnostic and settles whatever ASSET
+ *  names. */
+const CANONICAL_USDC = {
+  "stellar:testnet": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+  "stellar:pubnet": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+};
+
+/**
+ * Refuse to boot on a half-configured network. Each check below is a real
+ * failure that is otherwise invisible until a buyer loses a settlement:
+ *
+ *   - an unrecognised NETWORK silently means "not pubnet" everywhere below;
+ *   - a passphrase from the wrong network makes every signature invalid;
+ *   - the other network's canonical USDC is a contract that does not exist
+ *     here, so the 402 advertises an unpayable asset.
+ *
+ * The asset check has two arms. The first fires when ASSET is the canonical
+ * USDC of the OTHER network — an unambiguous mistake. The second fires on
+ * pubnet whenever ASSET is anything other than mainnet USDC, because on mainnet
+ * an unrecognised asset is far more likely to be a stale testnet value carried
+ * over (this repo has shipped two dead demo assets already, and a gitignored
+ * `.env.recording` silently outranks these defaults) than a deliberate choice.
+ * That arm is escapable with ALLOW_NON_USDC_ASSET=1 for anyone genuinely
+ * selling in their own mainnet token.
+ */
+function assertNetworkConsistency() {
+  const expected = {
+    "stellar:testnet": Networks.TESTNET,
+    "stellar:pubnet": Networks.PUBLIC,
+  };
+  const die = (msg) => {
+    console.error(`\n[seller] REFUSING TO BOOT — ${msg}\n`);
+    process.exit(1);
+  };
+
+  if (!(NETWORK in expected)) {
+    die(
+      `NETWORK="${NETWORK}" is not a known network. Use "stellar:testnet" or ` +
+        `"stellar:pubnet". An unrecognised value would be treated as testnet ` +
+        `by every check below, which is the dangerous direction.`,
+    );
+  }
+  if (PASSPHRASE !== expected[NETWORK]) {
+    die(
+      `NETWORK is "${NETWORK}" but NETWORK_PASSPHRASE is not that network's ` +
+        `passphrase. Expected "${expected[NETWORK]}". Every signature would be ` +
+        `built for the wrong network and rejected on submission.`,
+    );
+  }
+  const otherUsdc = CANONICAL_USDC[NETWORK === "stellar:pubnet" ? "stellar:testnet" : "stellar:pubnet"];
+  if (ASSET === otherUsdc) {
+    die(
+      `NETWORK is "${NETWORK}" but ASSET is the canonical USDC of the OTHER ` +
+        `network. That contract does not exist here, so the 402 challenge would ` +
+        `advertise an unpayable asset. Use ${CANONICAL_USDC[NETWORK]} for USDC ` +
+        `on ${NETWORK}, or set ASSET to your own SEP-41 token.`,
+    );
+  }
+  if (
+    NETWORK === "stellar:pubnet" &&
+    ASSET !== CANONICAL_USDC["stellar:pubnet"] &&
+    process.env.ALLOW_NON_USDC_ASSET !== "1"
+  ) {
+    die(
+      `NETWORK is "stellar:pubnet" but ASSET is ${ASSET}, which is not mainnet ` +
+        `USDC (${CANONICAL_USDC["stellar:pubnet"]}). On mainnet this is far more ` +
+        `likely a stale testnet value — note that a gitignored ` +
+        `examples/.env.recording silently outranks the built-in defaults — than ` +
+        `a deliberate choice. Set ASSET to mainnet USDC, or pass ` +
+        `ALLOW_NON_USDC_ASSET=1 if you really are selling in your own token.`,
+    );
+  }
+}
+assertNetworkConsistency();
 
 /**
  * GET a Horizon testnet path with an explicit timeout, returning a
@@ -221,7 +318,7 @@ function isLocalFacilitator(url) {
 const PORT = Number(process.env.PORT || process.env.SELLER_PORT || 4031);
 
 const coreServer = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL }))
-  .register("stellar:testnet", new ExactStellarScheme())
+  .register(NETWORK, new ExactStellarScheme())
   .registerExtension(bazaarResourceServerExtension);
 
 // USDC/Stellar atomic scale: 10,000,000 (7 decimal places) — same constant
@@ -270,7 +367,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC },
       maxTimeoutSeconds: 120,
     },
@@ -305,7 +402,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_002_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -335,7 +432,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -357,7 +454,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -385,7 +482,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -411,7 +508,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -436,7 +533,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -460,7 +557,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -491,7 +588,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -511,7 +608,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -531,7 +628,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -551,7 +648,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -571,7 +668,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -591,7 +688,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -611,7 +708,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -631,7 +728,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -651,7 +748,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -671,7 +768,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
@@ -691,7 +788,7 @@ const routes = {
     accepts: {
       scheme: "exact",
       payTo: PAYTO,
-      network: "stellar:testnet",
+      network: NETWORK,
       price: { asset: ASSET, amount: PRICE_ATOMIC_001_USDC },
       maxTimeoutSeconds: 120,
     },
