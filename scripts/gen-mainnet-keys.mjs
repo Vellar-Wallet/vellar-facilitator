@@ -34,10 +34,26 @@ import { Keypair } from "@stellar/stellar-sdk";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, "..");
 
-/** Locked at 50 by src/config.ts's own parseChannelAccountSecretKeys, which
- *  rejects any other count rather than trimming or padding. Kept as a named
- *  constant so the mismatch is visible if that ever moves. */
-const CHANNEL_POOL_SIZE = 50;
+/** Must match src/config.ts's CHANNEL_POOL_SIZE, which rejects any other count
+ *  rather than trimming or padding. Same env var, same default, same 1-200
+ *  bound — so generating a pool this script accepts but the facilitator refuses
+ *  is not possible.
+ *
+ *  Set CHANNEL_POOL_SIZE here AND on the deployment, or the boot fails with a
+ *  count mismatch naming both numbers. */
+const CHANNEL_POOL_SIZE = (() => {
+  const raw = process.env.CHANNEL_POOL_SIZE;
+  if (!raw) return 50;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 200) {
+    console.error(
+      `\nREFUSING TO GENERATE KEYS: CHANNEL_POOL_SIZE must be an integer ` +
+        `1-200, got "${raw}".\n`,
+    );
+    process.exit(1);
+  }
+  return n;
+})();
 
 /** The rule this script's output depends on. Checked, not assumed — see the
  *  preflight below. */
@@ -104,7 +120,9 @@ console.log("network fee and must stay above SPONSOR_HARD_FLOOR_STROOPS (10 XLM)
 console.log("below which /settle is refused.");
 
 console.log(`\nCHANNEL ACCOUNTS (${CHANNEL_POOL_SIZE})`);
-console.log("Public keys (fund each with at least 10 XLM):");
+console.log(
+  `Public keys (fund each with at least 10 XLM — ${CHANNEL_POOL_SIZE * 10} XLM total):`,
+);
 channels.forEach((k, i) => {
   console.log(`${String(i + 1).padStart(2, " ")}.  ${k.publicKey()}`);
 });

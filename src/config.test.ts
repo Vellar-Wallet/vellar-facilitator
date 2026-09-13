@@ -1,6 +1,7 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
+import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
 
 const SECRET = "SBJP6HHFTABK2GXVVFAKY6C4B7DDNB5PIEQXKUNL2ZAOBPWFOUOSTLVNMA";
 // A syntactically valid testnet contract address — used
@@ -14,7 +15,15 @@ const VALID_CONTRACT_ID = "CAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRD
 // testChannelPoolKeys.ts's own fakeChannelAccountSecretKeys(): a fixed fixture
 // risks silently colliding with some other test's SPONSOR_SECRET_KEY-shaped
 // constant, and there's no reason to pin a literal 50-key string by hand.
-const VALID_CHANNEL_KEYS = Array.from({ length: 50 }, () => Keypair.random().secret()).join(",");
+// Sized from the same env var loadConfig() reads, so this fixture stays valid
+// when CHANNEL_POOL_SIZE is set — the exact-count check is what these tests
+// exercise, and a fixture pinned to 50 would fail them for the wrong reason.
+const VALID_CHANNEL_KEYS = fakeChannelAccountSecretKeys().join(",");
+/** The pool size these tests run against — the default 50 unless the run sets
+ *  CHANNEL_POOL_SIZE. Assertions below are written against this rather than a
+ *  literal so the suite exercises the configured contract at any size; the
+ *  default itself is pinned separately by "defaults to a pool of exactly 50". */
+const POOL = VALID_CHANNEL_KEYS.split(",").length;
 
 describe("loadConfig", () => {
   it("throws without SPONSOR_SECRET_KEY", async () => {
@@ -337,13 +346,32 @@ describe("loadConfig", () => {
   });
 
   describe("channel-account pool", () => {
-    it("accepts a valid 50-key list", async () => {
+    it("accepts a valid full-size key list", async () => {
       const config = loadConfig({
         SPONSOR_SECRET_KEY: SECRET,
         CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
       });
-      expect(config.channelAccountSecretKeys).toHaveLength(50);
+      expect(config.channelAccountSecretKeys).toHaveLength(POOL);
       expect(config.channelAccountSecretKeys).toEqual(VALID_CHANNEL_KEYS.split(","));
+    });
+
+    it("defaults to a pool of exactly 50 when CHANNEL_POOL_SIZE is unset", async () => {
+      // The assertions in this block are size-relative so they hold at any
+      // configured pool size. That would leave nothing pinning the DEFAULT,
+      // which is the number every deployment gets unless it opts out — and the
+      // number docs/channel-pool-design.md §2 sized for 50 true-simultaneous
+      // settlements. This test is that pin, and it is deliberately written
+      // against a literal.
+      // CHANNEL_POOL_SIZE is read ONCE at module load, so vi.stubEnv cannot
+      // change it here — that is deliberate in config.ts (the value has to be
+      // stable across every validation). So this asserts the default the way an
+      // operator meets it: with the variable unset in the environment, the
+      // required count is 50. Skipped when the run itself sets the variable,
+      // since then the default is not what is under test.
+      if (process.env.CHANNEL_POOL_SIZE) return;
+      const fifty = Array.from({ length: 50 }, () => Keypair.random().secret()).join(",");
+      const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: fifty });
+      expect(config.channelAccountSecretKeys).toHaveLength(50);
     });
 
     it("throws when CHANNEL_ACCOUNT_SECRET_KEYS is missing entirely", async () => {
@@ -352,18 +380,18 @@ describe("loadConfig", () => {
       );
     });
 
-    it("rejects 49 keys, naming the actual count vs. the required 50", async () => {
-      const keys49 = Array.from({ length: 49 }, () => Keypair.random().secret()).join(",");
+    it("rejects one key too few, naming the actual count vs. the required one", async () => {
+      const keys49 = Array.from({ length: POOL - 1 }, () => Keypair.random().secret()).join(",");
       expect(() =>
         loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: keys49 }),
-      ).toThrow(/CHANNEL_ACCOUNT_SECRET_KEYS must contain exactly 50 keys, got 49/);
+      ).toThrow(new RegExp(`CHANNEL_ACCOUNT_SECRET_KEYS must contain exactly ${POOL} keys, got ${POOL - 1}`));
     });
 
-    it("rejects 51 keys, naming the actual count vs. the required 50", async () => {
-      const keys51 = Array.from({ length: 51 }, () => Keypair.random().secret()).join(",");
+    it("rejects one key too many, naming the actual count vs. the required one", async () => {
+      const keys51 = Array.from({ length: POOL + 1 }, () => Keypair.random().secret()).join(",");
       expect(() =>
         loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: keys51 }),
-      ).toThrow(/CHANNEL_ACCOUNT_SECRET_KEYS must contain exactly 50 keys, got 51/);
+      ).toThrow(new RegExp(`CHANNEL_ACCOUNT_SECRET_KEYS must contain exactly ${POOL} keys, got ${POOL + 1}`));
     });
 
     it("rejects a list where one key matches SPONSOR_SECRET_KEY", async () => {
@@ -375,15 +403,15 @@ describe("loadConfig", () => {
       // using it here would trip the malformed-key check first and never
       // exercise the collision branch this test is actually named for.
       const sponsor = Keypair.random().secret();
-      const keys = Array.from({ length: 49 }, () => Keypair.random().secret());
-      keys.push(sponsor); // the 50th key IS the sponsor's own key
+      const keys = Array.from({ length: POOL - 1 }, () => Keypair.random().secret());
+      keys.push(sponsor); // the last key IS the sponsor's own key
       expect(() =>
         loadConfig({ SPONSOR_SECRET_KEY: sponsor, CHANNEL_ACCOUNT_SECRET_KEYS: keys.join(",") }),
       ).toThrow(/CHANNEL_ACCOUNT_SECRET_KEYS contains SPONSOR_SECRET_KEY/);
     });
 
     it("rejects a malformed key — wrong prefix and wrong length", async () => {
-      const keysWrongPrefix = Array.from({ length: 49 }, () => Keypair.random().secret());
+      const keysWrongPrefix = Array.from({ length: POOL - 1 }, () => Keypair.random().secret());
       keysWrongPrefix.push(VALID_CONTRACT_ID); // C…, not S… — wrong prefix
       expect(() =>
         loadConfig({
@@ -392,7 +420,7 @@ describe("loadConfig", () => {
         }),
       ).toThrow(/CHANNEL_ACCOUNT_SECRET_KEYS contains a value that is not a valid Stellar secret key/);
 
-      const keysWrongLength = Array.from({ length: 49 }, () => Keypair.random().secret());
+      const keysWrongLength = Array.from({ length: POOL - 1 }, () => Keypair.random().secret());
       keysWrongLength.push(Keypair.random().secret().slice(0, -1)); // one char short
       expect(() =>
         loadConfig({
@@ -403,7 +431,7 @@ describe("loadConfig", () => {
     });
 
     it("rejects a list containing a duplicate key", async () => {
-      const keys = Array.from({ length: 49 }, () => Keypair.random().secret());
+      const keys = Array.from({ length: POOL - 1 }, () => Keypair.random().secret());
       const dup = keys[0];
       keys.push(dup as string); // 50 entries, but only 49 distinct
       expect(() =>

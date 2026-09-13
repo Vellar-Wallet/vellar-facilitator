@@ -122,7 +122,8 @@ describe("/health surfaces channel-account pool status", () => {
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
     // Freshly built: nothing has ever called /settle, so every configured
     // channel account is still available and none are in use or disabled.
-    expect(body.channelPool).toEqual({ available: 50, inUse: 0, disabled: 0, total: 50 });
+    const poolSize = testConfig.channelAccountSecretKeys.length;
+    expect(body.channelPool).toEqual({ available: poolSize, inUse: 0, disabled: 0, total: poolSize });
     await app.close();
   });
 
@@ -131,11 +132,13 @@ describe("/health surfaces channel-account pool status", () => {
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
     const { available, inUse, disabled, total } = body.channelPool;
     expect(total).toBe(available + inUse + disabled);
-    // 50 is this codebase's own locked pool size (docs/channel-pool-design.md
-    // §2) — a correctly provisioned instance must always read exactly this,
-    // never more or less, since config.ts's own boot-time validation only
-    // ever accepts exactly 50 keys.
-    expect(total).toBe(50);
+    // The pool size is CHANNEL_POOL_SIZE (default 50, docs/channel-pool-design.md
+    // §2) — a correctly provisioned instance must always read exactly the
+    // configured count, never more or less, since config.ts's boot-time
+    // validation accepts exactly that many keys and no other number. Asserted
+    // against the config this server was built from rather than a literal, so
+    // the invariant is "health matches config", not "health equals 50".
+    expect(total).toBe(testConfig.channelAccountSecretKeys.length);
     await app.close();
   });
 

@@ -374,12 +374,39 @@ function parseBondEscrowAdminSecretKey(raw: string | undefined): string | undefi
   return raw;
 }
 
-/** Exact channel-account pool size — see docs/channel-pool-design.md §2.
- *  Not 49, not 51: a silently-smaller pool loses the collision-free
- *  guarantee 50 true-simultaneous settlements were sized for, with no
- *  visible signal that it happened, so the count is enforced exactly
- *  rather than treated as a minimum. */
-const CHANNEL_POOL_SIZE = 50;
+/** Channel-account pool size — see docs/channel-pool-design.md §2.
+ *
+ *  Defaults to 50, the size §2 sized for 50 true-simultaneous settlements with
+ *  zero sequence collisions. Whatever this resolves to, the key count is then
+ *  enforced EXACTLY: not one fewer, not one more. A silently-smaller pool loses
+ *  the collision-free guarantee with no visible signal, which is why the count
+ *  is a hard equality rather than a minimum.
+ *
+ *  Configurable because the pool size is also a FUNDING decision, not only a
+ *  concurrency one: each account needs its own XLM reserve on mainnet, so 50 is
+ *  ~500 XLM before a single payment settles. A low-volume deployment can start
+ *  smaller and grow. The trade is explicit — THE POOL SIZE IS THE CONCURRENCY
+ *  CEILING. With N accounts, the (N+1)th simultaneous settlement waits for a
+ *  lane, so shrinking it trades throughput for capital, and both directions of
+ *  that trade are real.
+ *
+ *  Read once at module load, not per call: the value has to be stable across
+ *  every validation below, and a mid-process change would mean the error
+ *  messages and the check disagreed. */
+const CHANNEL_POOL_SIZE = (() => {
+  const raw = process.env.CHANNEL_POOL_SIZE;
+  if (!raw) return 50;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 200) {
+    throw new Error(
+      `[config] CHANNEL_POOL_SIZE must be an integer 1-200, got "${raw}". ` +
+        `Below 1 there is no pool at all; above 200 the channel monitor's ` +
+        `per-tick Horizon reads would exceed the per-IP rate limit ` +
+        `(src/channelMonitor.ts checkAll).`,
+    );
+  }
+  return n;
+})();
 
 /**
  * Parses CHANNEL_ACCOUNT_SECRET_KEYS: a comma-separated list of Stellar
