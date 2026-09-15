@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Provision the 50 channel accounts the facilitator needs to boot.
+// Provision channel accounts the facilitator needs to boot.
 //
 // WHY THIS EXISTS. `CHANNEL_ACCOUNT_SECRET_KEYS` became REQUIRED with no
 // default when the channel pool shipped (6f5de85, 2026-08-31), and
@@ -16,30 +16,30 @@
 // §5/§6), so they are created straight from the already-friendbot-funded
 // sponsor with `createAccount` ops batched into a handful of transactions.
 //
-// Prints `CHANNEL_ACCOUNT_SECRET_KEYS=<50 comma-separated secrets>` on stdout
+// Prints `CHANNEL_ACCOUNT_SECRET_KEYS=<N comma-separated secrets>` on stdout
 // for `>> "$GITHUB_OUTPUT"`. Everything else goes to stderr so the output line
 // is the only thing on stdout.
 //
-// Env: SPONSOR_SECRET (required), STELLAR_RPC_URL, CHANNEL_STARTING_BALANCE.
+// Env: SPONSOR_SECRET_KEY (required), STELLAR_RPC_URL, NETWORK_PASSPHRASE,
+//      CHANNEL_POOL_SIZE, CHANNEL_STARTING_BALANCE.
 
 import { Keypair, Operation, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 
-const PASSPHRASE = "Test SDF Network ; September 2015";
+const PASSPHRASE =
+  process.env.NETWORK_PASSPHRASE || "Test SDF Network ; September 2015";
 const RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
-/** Locked at 50 by src/config.ts's parseChannelAccountSecretKeys, which rejects
- *  any other count rather than trimming or padding. */
-const POOL_SIZE = 50;
+const CHANNEL_POOL_SIZE = parseInt(process.env.CHANNEL_POOL_SIZE || "50");
 /** Comfortably above the 1 XLM a subentry-free account needs, and far below the
  *  ~10,000 XLM friendbot grants the sponsor — so one friendbot call covers all
- *  50 with room to spare. */
-const STARTING_BALANCE = process.env.CHANNEL_STARTING_BALANCE || "5";
+ *  accounts with room to spare. */
+const STARTING_BALANCE = process.env.CHANNEL_STARTING_BALANCE || "8";
 /** Stellar allows 100 ops/tx; 25 keeps each transaction small enough to confirm
  *  quickly and bounds the blast radius if one submission has to be retried. */
 const OPS_PER_TX = 25;
 
-const sponsorSecret = process.env.SPONSOR_SECRET;
+const sponsorSecret = process.env.SPONSOR_SECRET_KEY;
 if (!sponsorSecret) {
-  console.error("SPONSOR_SECRET is required (the friendbot-funded sponsor for this run)");
+  console.error("SPONSOR_SECRET_KEY is required");
   process.exit(1);
 }
 
@@ -72,15 +72,15 @@ async function submit(label, ops) {
   throw new Error(`${label}: ${sent.hash} never confirmed`);
 }
 
-const channels = Array.from({ length: POOL_SIZE }, () => Keypair.random());
+const channels = Array.from({ length: CHANNEL_POOL_SIZE }, () => Keypair.random());
 
 // The same invariants config.ts enforces at boot, asserted here so a violation
 // surfaces in provisioning rather than as an opaque boot failure two steps later.
 const secrets = channels.map((k) => k.secret());
-if (new Set(secrets).size !== POOL_SIZE) throw new Error("duplicate channel key generated");
+if (new Set(secrets).size !== CHANNEL_POOL_SIZE) throw new Error("duplicate channel key generated");
 if (secrets.includes(sponsor.secret())) throw new Error("sponsor key landed in the channel pool");
 
-console.error(`[provision] creating ${POOL_SIZE} channel accounts @ ${STARTING_BALANCE} XLM from ${sponsor.publicKey().slice(0, 8)}…`);
+console.error(`[provision] creating ${CHANNEL_POOL_SIZE} channel accounts @ ${STARTING_BALANCE} XLM from ${sponsor.publicKey().slice(0, 8)}…`);
 
 for (let i = 0; i < channels.length; i += OPS_PER_TX) {
   const batch = channels.slice(i, i + OPS_PER_TX);
@@ -109,5 +109,5 @@ for (const kp of channels) {
   if (!seen) throw new Error(`${kp.publicKey().slice(0, 8)}…: created but never visible to the RPC`);
 }
 
-console.error(`[provision] all ${POOL_SIZE} channel accounts funded and visible`);
+console.error(`[provision] all ${CHANNEL_POOL_SIZE} channel accounts funded and visible`);
 console.log(`CHANNEL_ACCOUNT_SECRET_KEYS=${secrets.join(",")}`);
