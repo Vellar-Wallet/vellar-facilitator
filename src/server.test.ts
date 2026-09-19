@@ -9,6 +9,7 @@ import { buildServer } from "./server.js";
 import { createSpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
 import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
+import { VALID_TX_XDR, distinctValidTxXdr } from "./testSettleXdr.js";
 
 const testConfig = {
   port: 0,
@@ -29,11 +30,10 @@ const testConfig = {
   balance: { softFloorStroops: 100_000_000, hardFloorStroops: 20_000_000, intervalMs: 60_000 },
 };
 
-// A structurally VALID transaction envelope. /settle now shreds unparseable XDR
-// at the route (so junk can't consume the spend ceiling), so tests that need to
-// reach the balance guard / spend policy must carry real XDR.
-const VALID_TX_XDR =
-  "AAAAAgAAAAARUqIOOVQYwBn0s32MhGQwyoTHPy7SzjfXdweAw6b/4gAAAGQAAAAAAAAAAgAAAAEAAAAAAAAAAAAAAABqdyAuAAAAAAAAAAEAAAAAAAAAAQAAAADrmp8rY1JU7CL78HNaROud45MqVmrrbxOCVuWSEz0eRwAAAAAAAAAAAJiWgAAAAAAAAAAA";
+// VALID_TX_XDR / distinctValidTxXdr: see src/testSettleXdr.ts. Tests below
+// that fire several /settle calls and expect EACH to be an independent
+// attempt pass a distinct seed to settleBody() so they don't collide in the
+// /settle idempotency guard (src/server.ts's settleDedup).
 
 function requirements(): PaymentRequirements {
   return {
@@ -140,14 +140,19 @@ describe("facilitator server", () => {
 });
 
 describe("Fix 1 — spend policy on /settle", () => {
-  function settleBody() {
+  // seed selects a distinct transaction envelope (see distinctValidTxXdr) so
+  // that repeated calls meant to be independent settle attempts don't
+  // collide in the /settle idempotency guard; omit it only when a test
+  // genuinely fires one settle call, or deliberately wants the same envelope
+  // reused (e.g. to exercise the dedup guard itself).
+  function settleBody(seed?: number) {
     return {
       x402Version: 2,
       paymentPayload: {
         x402Version: 2,
         scheme: "exact",
         network: "stellar:testnet",
-        payload: { transaction: VALID_TX_XDR },
+        payload: { transaction: seed !== undefined ? distinctValidTxXdr(seed) : VALID_TX_XDR },
       },
       paymentRequirements: requirements(),
     };
@@ -210,17 +215,19 @@ describe("Fix 1 — spend policy on /settle", () => {
     const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
-      const withPayTo = (payTo: unknown) => {
-        const b = settleBody();
+      const withPayTo = (payTo: unknown, seed: number) => {
+        const b = settleBody(seed);
         (b.paymentRequirements as unknown as { payTo: unknown }).payTo = payTo;
         return b;
       };
       // Each request carries a DIFFERENT non-string/oversized payTo. If these
       // were honored as distinct keys, every one would get a fresh bucket and
-      // none would ever be rate-limited.
-      await app.inject({ method: "POST", url: "/settle", payload: withPayTo({ a: 1 }) });
-      await app.inject({ method: "POST", url: "/settle", payload: withPayTo(["x"]) });
-      const third = await app.inject({ method: "POST", url: "/settle", payload: withPayTo("Z".repeat(5000)) });
+      // none would ever be rate-limited. Each also carries a distinct
+      // envelope (seed) so the /settle idempotency guard treats them as
+      // three independent attempts rather than one deduped call.
+      await app.inject({ method: "POST", url: "/settle", payload: withPayTo({ a: 1 }, 1) });
+      await app.inject({ method: "POST", url: "/settle", payload: withPayTo(["x"], 2) });
+      const third = await app.inject({ method: "POST", url: "/settle", payload: withPayTo("Z".repeat(5000), 3) });
       expect(third.statusCode).toBe(503);
       expect(third.json().reason).toBe("rate_limited_payto");
       expect(policy.trackedPayTos()).toBe(1); // all collapsed into one bucket
@@ -248,17 +255,21 @@ describe("Fix 1 — spend policy on /settle", () => {
     await app.ready();
     try {
       // Structurally valid XDR, but an x402Version with no registered facilitator
-      // => x402Facilitator.settle THROWS before any network work.
-      const thrower = () => {
-        const b = settleBody();
+      // => x402Facilitator.settle THROWS before any network work. Each call gets
+      // its own envelope (seed) so the /settle idempotency guard treats all 5 as
+      // independent attempts rather than deduping them into one.
+      const thrower = (seed: number) => {
+        const b = settleBody(seed);
         (b.paymentPayload as unknown as { x402Version: number }).x402Version = 999;
         return b;
       };
       for (let i = 0; i < 5; i++) {
-        await app.inject({ method: "POST", url: "/settle", payload: thrower() });
+        await app.inject({ method: "POST", url: "/settle", payload: thrower(i) });
       }
       // Those cost the sponsor nothing, so they must not have consumed budget.
-      const real = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      // A fresh, distinct envelope (seed 100) so this doesn't collide with any
+      // of the 5 thrower() calls above.
+      const real = await app.inject({ method: "POST", url: "/settle", payload: settleBody(100) });
       if (real.statusCode === 503) {
         expect(real.json().reason).not.toBe("spend_ceiling");
       }
@@ -299,15 +310,17 @@ describe("Fix 1 — spend policy on /settle", () => {
     const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
-      const emptyPayToBody = () => {
-        const b = settleBody();
+      const emptyPayToBody = (seed: number) => {
+        const b = settleBody(seed);
         (b.paymentRequirements as { payTo: string }).payTo = "";
         return b;
       };
-      await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
-      await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      // Each call carries a distinct envelope (seed) so the /settle
+      // idempotency guard treats them as three independent attempts.
+      await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody(1) });
+      await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody(2) });
       // Third exceeds rateMax for the shared no-payTo bucket → the policy ran.
-      const third = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody() });
+      const third = await app.inject({ method: "POST", url: "/settle", payload: emptyPayToBody(3) });
       expect(third.statusCode).toBe(503);
       expect(third.json().reason).toBe("rate_limited_payto");
       expect(policy.trackedPayTos()).toBe(1); // all collapsed into one bucket
@@ -330,12 +343,14 @@ describe("Fix 1 — spend policy on /settle", () => {
     await app.ready();
     try {
       // First two are allowed through to the facilitator (which fails on the
-      // fake XDR, but the POLICY let them proceed — not a 503).
+      // fake XDR, but the POLICY let them proceed — not a 503). Each call gets
+      // a distinct envelope (seed) so the /settle idempotency guard treats
+      // them as independent attempts, matching this test's own premise.
       for (let i = 0; i < 2; i++) {
-        const ok = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+        const ok = await app.inject({ method: "POST", url: "/settle", payload: settleBody(i) });
         expect(ok.statusCode).not.toBe(503);
       }
-      const blocked = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+      const blocked = await app.inject({ method: "POST", url: "/settle", payload: settleBody(100) });
       expect(blocked.statusCode).toBe(503);
       expect(blocked.json().error).toBe("settlement_refused");
       expect(blocked.json().reason).toBe("rate_limited_payto");
@@ -356,8 +371,10 @@ describe("Fix 1 — spend policy on /settle", () => {
     const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create(), undefined, policy);
     await app.ready();
     try {
+      // Distinct envelope (seed) per call so each is an independent /settle
+      // attempt past the idempotency guard, matching "even past the limit".
       for (let i = 0; i < 4; i++) {
-        const res = await app.inject({ method: "POST", url: "/settle", payload: settleBody() });
+        const res = await app.inject({ method: "POST", url: "/settle", payload: settleBody(i) });
         expect(res.statusCode).not.toBe(503);
       }
     } finally {

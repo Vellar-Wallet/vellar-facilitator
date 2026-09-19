@@ -1,9 +1,10 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
 import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
-import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
+import { getNetworkPassphrase } from "@x402/stellar";
+import type { Network, PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
@@ -40,6 +41,16 @@ interface FacilitatorRequestBody {
   x402Version?: number;
   paymentPayload: PaymentPayload;
   paymentRequirements: PaymentRequirements;
+}
+
+/** What the /settle idempotency guard caches and replays for a duplicate
+ *  call: the full HTTP outcome, not just the JSON body — a cache hit must be
+ *  indistinguishable from the original response, extension-responses header
+ *  included, to a caller that can't otherwise tell it was deduped. */
+interface SettleDedupResult {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: unknown;
 }
 
 interface ListQuery {
@@ -146,6 +157,50 @@ export async function buildServer(
 ) {
   const { facilitator, pool } = built;
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
+  // /settle idempotency guard (2026-09-19 incident: a dashboard double-click
+  // fired two independent /settle calls carrying the SAME signed transaction
+  // envelope 29s apart. The first settled on-chain in 34s; the second, with
+  // no dedup anywhere in this handler or in @x402/stellar, independently
+  // re-ran the whole verify -> sign -> fee-bump -> submit -> poll pipeline
+  // against a transaction whose sequence number the first call had already
+  // consumed on-chain, and hung — no log line, ever, because nothing here
+  // times out the internal RPC call that pipeline makes (a separate,
+  // follow-up fix; see the RPC-timeout wrapper this comment does NOT add).
+  //
+  // Keyed on the settled transaction's own hash (settlementTxHash), which is
+  // pure/synchronous/derivable from the payload alone — before any RPC,
+  // channel-account, or spend-policy work starts (see the /settle handler:
+  // this is consulted immediately after isParseableTransactionXdr, ahead of
+  // the spend-policy reservation, so a duplicate never reserves budget
+  // twice either).
+  //
+  // Value is a Promise, not the eventual result, and REGISTERED
+  // synchronously before the pipeline starts (not after it resolves) —
+  // that's what makes this safe under concurrency: two requests racing in
+  // the same tick both see the map before either has run anything, so the
+  // second one finds the first's in-flight Promise and awaits it instead of
+  // starting a second pipeline run. Resolving to a rejection is cached too
+  // (the whole point is "don't re-run a failed attempt either", since a
+  // failure can still have reached sendTransaction and spent sponsor XLM —
+  // see rpcStatus's TRY_AGAIN_LATER handling below, unchanged by this).
+  //
+  // Deliberately IN-MEMORY, per-process, not persisted: a restart losing
+  // recent dedup state is fine, because the real backstop against a genuine
+  // double-spend is the channel account's own on-chain sequence number, not
+  // this cache — this exists to make a caller's duplicate call resolve
+  // FAST and CORRECTLY (the same outcome as the first call), not to be the
+  // only thing standing between a duplicate and disaster.
+  //
+  // Bounded TTL, not "forever": a genuinely NEW settle attempt reusing the
+  // same signed envelope after the cached entry expires (e.g. a caller that
+  // persisted and replayed an old payload) re-runs the full pipeline rather
+  // than serving a stale cached result indefinitely — the entry only needs
+  // to outlive the window a duplicate click/retry could plausibly land in,
+  // which maxTimeoutSeconds (the same value that already bounds a single
+  // settle attempt's own poll window, see docs/diagnosis-poll-expiry-race.md)
+  // is the natural, already-meaningful ceiling for.
+  const settleDedup = new Map<string, { promise: Promise<SettleDedupResult>; expiresAt: number }>();
+  const SETTLE_DEDUP_TTL_MS = 10 * 60 * 1000;
   // Fix 2: a body-limit floor for /verify and /settle (well under Fastify's 1 MiB
   // default), sized for real signed settlement XDR with headroom.
   // Audit D4: this service runs behind Render's reverse proxy (render.yaml,
@@ -409,361 +464,384 @@ export async function buildServer(
     return result;
   });
 
-  app.post<{ Body: FacilitatorRequestBody }>("/settle", async (request, reply) => {
-    // Tranche 1 deliverable 1.2 telemetry (src/metrics.ts). startTime is
-    // recorded before the try block, ahead of every early return this
-    // handler has — a pool_exhausted refusal or a balance/policy rejection
-    // is still a real /settle request that took real wall-clock time and
-    // belongs in vellar_settle_duration_seconds, not just the requests that
-    // reach facilitator.settle() itself.
-    //
-    // outcome defaults to "failure" and is ONLY overwritten to "success" at
-    // the one genuine success return path (the final `return result;` at
-    // the end of this handler, reached exclusively when result.success ===
-    // true and — if bond registration is configured — it also succeeded).
-    // This default-to-failure posture is deliberate: if this handler ever
-    // grows an 11th return path that forgets to set outcome, it silently
-    // counts as a failure rather than a silent, wrong "success" — the
-    // safer failure mode for a metric a grant reviewer will read.
-    //
-    // errorReason is set at each point the REAL cause is already known in
-    // the existing code (pool_exhausted's own branch; rpcStatus's
-    // txBadSeq/TRY_AGAIN_LATER classification once rpcStatus exists) —
-    // confirmed by reading the actual server.ts source rather than assumed:
-    // neither "txBadSeq" nor "TRY_AGAIN_LATER" appears anywhere in this
-    // file as a literal errorReason string; both only ever arrive via
-    // rpcStatus.errorCode / rpcStatus.status, a separate object from
-    // result.errorReason.
+  /**
+   * The full /settle pipeline for ONE fresh attempt, from the balance guard
+   * through bond registration — everything that used to run inline in the
+   * route handler below, extracted unchanged except for HOW it reports its
+   * outcome: `reply.status().send()` mid-function became a returned
+   * SettleDedupResult, because this function's return value is now also
+   * what the dedup cache stores and replays for a colliding duplicate call.
+   * Every early-return path, comment, and piece of reasoning below is the
+   * same as before this extraction — only the "how do we hand this back"
+   * mechanism changed.
+   *
+   * Telemetry (vellar_settle_duration_seconds / vellar_settle_total) is
+   * recorded HERE, once per actual pipeline run, not once per HTTP request —
+   * a duplicate call served from the dedup cache did no new work and must
+   * not be double-counted as a second real settle attempt.
+   */
+  async function runSettlePipeline(
+    request: FastifyRequest<{ Body: FacilitatorRequestBody }>,
+    paymentPayload: PaymentPayload | undefined,
+    paymentRequirements: PaymentRequirements | undefined,
+  ): Promise<SettleDedupResult> {
     const startTime = performance.now();
     let outcome: "success" | "failure" = "failure";
     let errorReason: "txBadSeq" | "TRY_AGAIN_LATER" | "pool_exhausted" | "other" | undefined;
     try {
-      const { paymentPayload, paymentRequirements } = request.body ?? {};
+      // These two checks used to run in the route handler BEFORE this
+      // function existed, ahead of dedup — moved in here, still ahead of
+      // everything else in the pipeline, so vellar_settle_duration_seconds /
+      // vellar_settle_total keep covering them (asserted directly in
+      // src/server.metrics.test.ts: "the duration histogram is observed on
+      // /settle even on the early-return 400 path"). Neither is dedup-eligible
+      // anyway — the route handler only calls this function for these two
+      // cases when settlementTxHash() had nothing to key on, so there was
+      // never a cache to consult or populate for them.
       if (!paymentPayload || !paymentRequirements) {
-        return reply.status(400).send(
-          settleError(network, "invalid_body", {
+        return {
+          statusCode: 400,
+          headers: {},
+          body: settleError(network, "invalid_body", {
             error: "invalid_body",
             detail: "paymentPayload and paymentRequirements are required",
           }),
-        );
+        };
       }
-    // Re-audit: shed unsubmittable payloads BEFORE reserving spend budget,
-    // symmetric with /verify. Junk costs the sponsor no XLM, so it must not be
-    // able to consume the global ceiling and refuse real settlement.
-    if (!isParseableTransactionXdr(paymentPayload)) {
-      return reply.status(400).send(
-        settleError(network, "invalid_payload", {
-          error: "invalid_payload",
-          detail: "payload.transaction is not a parseable transaction envelope",
-        }),
-      );
-    }
-    // Fix 3: refuse settle when the sponsor is below the hard balance floor —
-    // fees would fail on-chain anyway. Discovery is unaffected. A failed/absent
-    // balance check leaves settle allowed (fail open).
-    if (balanceGuard && !balanceGuard.settleAllowed()) {
-      request.log.error({ balanceStatus: balanceGuard.status() }, "[balance] settle refused: sponsor below hard floor");
-      return reply.status(503).send(
-        settleError(network, "sponsor_balance_low", {
-          error: "settlement_refused",
-          reason: "sponsor_balance_low",
-        }),
-      );
-    }
-    // Canonical resource URL — hoisted above the spend-policy block so bond
-    // registration (below) can reuse the same derivation rather than recomputing
-    // it independently, which is exactly how a resource-key canonicalization bug
-    // gets a second, silently-drifting copy. Cheap and pure (URL parsing only),
-    // so computing it unconditionally costs nothing when neither consumer needs it.
-    const rawResourceUrl =
-      (paymentPayload as unknown as { resource?: { url?: string } }).resource?.url ?? "";
-    const resourceUrl = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
-    // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
-    // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
-    // testnet it logs what would have tripped and proceeds (fail-open).
-    //
-    // Audit D3: run the policy UNCONDITIONALLY — never gate it on payTo being
-    // truthy, or a client sending an empty payTo would skip the global spend
-    // ceiling (the fail-closed backstop), not just the per-payTo limit. A missing
-    // payTo maps to a single shared bucket so it can't get free settles.
-    let reservation: number | undefined;
-    if (policy) {
-      const payToKey = policyBucketKey(paymentRequirements.payTo);
-      // F12: budget against the DURABLE ownership binding, not verifiedOwner —
-      // verifiedOwner is not persisted and resets on restart, so keying on it
-      // would drop every merchant into the shared unbound pool after a reboot.
-      // G-3: canonicalize to the catalog's own key (`origin + pathname`). The
-      // payload carries the RAW url, so without this a merchant on
-      // `/quote?symbol=AAPL` reads as unbound on every settle and lands in the
-      // shared unbound pool — and the per-URL budget could be multiplied by
-      // simply varying the query string.
-      const verdict = policy.checkSettle({
-        resourceUrl,
-        payTo: payToKey,
-        bound: rawResourceUrl !== "" && catalog.isBound(resourceUrl, payToKey),
-      });
-      reservation = verdict.reservation;
-      if (!verdict.allowed) {
-        request.log.warn(
-          { payTo: payToKey, reason: verdict.reason },
-          "[policy] settle refused",
-        );
-        return reply.status(503).send(
-          settleError(network, verdict.reason ?? "spend_policy", {
-            error: "settlement_refused",
-            reason: verdict.reason,
+      // Re-audit: shed unsubmittable payloads BEFORE reserving spend budget,
+      // symmetric with /verify. Junk costs the sponsor no XLM, so it must not be
+      // able to consume the global ceiling and refuse real settlement.
+      if (!isParseableTransactionXdr(paymentPayload)) {
+        return {
+          statusCode: 400,
+          headers: {},
+          body: settleError(network, "invalid_payload", {
+            error: "invalid_payload",
+            detail: "payload.transaction is not a parseable transaction envelope",
           }),
-        );
+        };
       }
-      if (verdict.wouldReject) {
-        request.log.warn(
-          { payTo: payToKey, wouldReject: verdict.wouldReject },
-          "[policy] settle would be refused on pubnet",
-        );
-      }
-    }
-    // Channel-account pool (docs/channel-pool-design.md). selectSigner is
-    // called SYNCHRONOUSLY INSIDE facilitator.settle() itself
-    // (@x402/stellar's own scheme.ts) — there is no separate "acquire, then
-    // call settle" step to do here; acquisition IS part of the settle()
-    // call. (REAL BUG FOUND AND FIXED, discovered under this design's own
-    // load test: an earlier version of this file called pool.acquire()
-    // itself, a second time, before this block — meaning every /settle
-    // call consumed TWO pool slots instead of one, silently halving real
-    // capacity. See src/facilitator.ts's own withChannelAcquisitionCapture
-    // doc comment for the full account.)
-    //
-    // withSkewRetry still wraps the WHOLE settle() call (unchanged from
-    // before this pool existed) — a ledger-skew retry re-runs settle()
-    // against the same already-built transaction, so if a retry happens it
-    // calls selectSigner again and acquires again; this is intentional and
-    // fine, since only one channel account is ever held per ATTEMPT, and
-    // withChannelAcquisitionCapture's scope covers all attempts inside one
-    // withSkewRetry call, always ending with acquiredAddress reflecting
-    // whichever attempt actually settled.
-    let result;
-    let rpcStatus;
-    let acquiredAddress: string | undefined;
-    let catalogOutcome: CatalogOutcome | undefined;
-    try {
-      // The capture slot must wrap the settle call itself: the RPC response we
-      // want is produced deep inside @x402/stellar, which discards it before
-      // returning. See src/rpcstatus.ts. Channel-acquisition capture wraps the
-      // exact same call for the same reason — see src/facilitator.ts's own
-      // withChannelAcquisitionCapture doc comment. withCatalogOutcomeCapture
-      // (RFP gap #2, EXTENSION-RESPONSES) is innermost, wrapping
-      // facilitator.settle(...) directly, for the same reason as the other
-      // two: the bazaar `onAfterSettle` hook that records the outcome runs
-      // INSIDE that call (@x402/core awaits every afterSettle hook before
-      // settle() returns), so this is the only place its result can be seen.
-      const captured = await withSkewRetry(
-        () =>
-          withChannelAcquisitionCapture(() =>
-            withRpcStatusCapture(() =>
-              withCatalogOutcomeCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
-            ),
-          ),
-        (c) => (c.value.value.value as { errorReason?: string }).errorReason,
-        (m) => request.log.warn(m),
-      );
-      acquiredAddress = captured.acquiredAddress;
-      if (captured.poolExhausted) {
-        // Same shape/status as sponsor_balance_low above: a real, structured,
-        // retryable refusal — never an unhandled exception, and never the
-        // vendored library's own generic unexpected_settle_error either.
-        // retryable: true matches this pool's own locked design decision
-        // (docs/channel-pool-design.md §4) — nothing was spent, nothing
-        // about this request was invalid, the pool was simply, transiently,
-        // fully checked out.
-        errorReason = "pool_exhausted";
-        request.log.warn({ status: pool.status() }, "[channel-pool] settle refused: pool exhausted");
-        return reply.status(503).send(
-          settleError(network, "pool_exhausted", {
+      // Fix 3: refuse settle when the sponsor is below the hard balance floor —
+      // fees would fail on-chain anyway. Discovery is unaffected. A failed/absent
+      // balance check leaves settle allowed (fail open).
+      if (balanceGuard && !balanceGuard.settleAllowed()) {
+        request.log.error({ balanceStatus: balanceGuard.status() }, "[balance] settle refused: sponsor below hard floor");
+        return {
+          statusCode: 503,
+          headers: {},
+          body: settleError(network, "sponsor_balance_low", {
             error: "settlement_refused",
-            reason: "pool_exhausted",
-            retryable: true,
+            reason: "sponsor_balance_low",
           }),
-        );
+        };
       }
-      result = captured.value.value.value;
-      rpcStatus = captured.value.rpcStatus;
-      catalogOutcome = captured.value.value.catalogOutcome;
-    } catch (err) {
-      policy?.refundUnspent(reservation);
-      throw err;
-    } finally {
-      // ALWAYS released — success, failure, or throw — but ONLY if
-      // something was actually acquired (undefined when selectSigner was
-      // never reached at all, e.g. verification failed first inside
-      // settle() before signer selection). release() is also idempotent on
-      // an already-available address, so this is defensive-but-harmless
-      // even in edge cases this reasoning didn't anticipate. A channel
-      // account that is genuinely acquired but never released silently
-      // shrinks the pool below its configured size, the exact failure mode
-      // docs/channel-pool-design.md §2's exact-count sizing exists to
-      // prevent.
-      if (acquiredAddress !== undefined) pool.release(acquiredAddress);
-    }
-    // RFP gap #2 — EXTENSION-RESPONSES. Set the header from whatever
-    // catalogOutcome actually holds, never from a hand-maintained list of
-    // "which branches count" — drift between such a list and the real
-    // control flow is exactly the bug class this codebase's own history
-    // (G-3/G-11, docs/closing-state.md) keeps finding. catalogOutcome is
-    // ONLY ever defined when the bazaar onAfterSettle hook actually ran,
-    // which @x402/core only does on result.success === true (its own
-    // settle() — see facilitator/index.mjs — runs afterSettleHooks
-    // unconditionally on the success branch, never on failure or throw).
-    // So this is naturally a no-op on every early-exit path above
-    // (pool_exhausted 503, the 400s before this block, sponsor_balance_low),
-    // and on the rpcStatus-submission-failure return just below, without
-    // needing to special-case any of them here.
-    if (catalogOutcome) {
-      reply.header("extension-responses", buildExtensionResponsesHeader(catalogOutcome));
-    }
-    // Release the reservation when the settlement never reached the chain.
-    // @x402/stellar returns an empty `transaction` when it failed before
-    // submission (verification/signing/send), meaning ZERO sponsor XLM was spent.
-    // A non-empty hash means it was submitted and fees were charged, even if the
-    // transaction then failed, so that reservation correctly stands.
-    if (policy && result.success === false && !result.transaction) {
-      policy.refundUnspent(reservation);
-    }
-    // Surface what the RPC actually said. Without this a caller sees
-    // `settle_exact_stellar_transaction_submission_failed` and cannot tell
-    // TRY_AGAIN_LATER (retry — nothing reached a ledger) from ERROR/txBadSeq
-    // (do not retry, the payload is stale). Additive: the x402-required fields
-    // are untouched.
-    if (result.success === false && rpcStatus) {
-      // vellar_settle_errors_total (src/metrics.ts) classification — the
-      // ONLY two places these two specific reasons ever originate, per the
-      // real rpcStatus shape (src/rpcstatus.ts's CapturedRpcStatus):
-      // rpcStatus.errorCode carries "txBadSeq" when the RPC's own
-      // errorResult XDR decodes to that name; rpcStatus.status carries
-      // "TRY_AGAIN_LATER" when the RPC declined to forward the transaction
-      // at all (no errorResult in that case). Anything else reaching this
-      // branch is a real rpcStatus the caller should still see, just not
-      // one of these two named metric reasons — falls through to "other".
-      errorReason =
-        rpcStatus.errorCode === "txBadSeq"
-          ? "txBadSeq"
-          : rpcStatus.status === "TRY_AGAIN_LATER"
-            ? "TRY_AGAIN_LATER"
-            : "other";
-      request.log.warn({ rpcStatus }, "[settle] submission refused by the RPC");
-      return { ...result, rpcStatus };
-    }
-    // Bond registration — synchronous, awaited, BEFORE /settle reports success.
-    // docs/proposal-provider-bond.md, Section 6: this is the one call that gives a
-    // payer standing to dispute a bond, so a settlement that succeeds without it
-    // is a settlement no buyer can ever get recourse for — exactly the gap this
-    // whole system exists to close. Only reached when bondEscrow is configured
-    // (both-or-neither with the admin key, enforced in config.ts) and the
-    // settlement itself actually succeeded — nothing to register standing
-    // against for a failed settle.
-    if (bondEscrow && result.success === true) {
-      try {
-        const seller = BazaarCatalog.canonicalPayTo(paymentRequirements.payTo);
-        // Both of these SHOULD be impossible on a successful settlement — a real
-        // payment cannot have settled without a real payer and a real payTo — but
-        // "should be impossible" is exactly the case this system's own posture
-        // (name it, don't hide it) says to handle explicitly rather than assume.
-        if (!seller || !result.payer) {
-          request.log.error(
-            { transaction: result.transaction, payer: result.payer, payTo: paymentRequirements.payTo },
-            "[bond] settlement succeeded but is missing a payer or seller address — cannot register",
-          );
-          return reply.status(503).send(
-            settleError(network, "bond_registration_unavailable", {
-              error: "bond_registration_failed",
-              reason: "missing_payer_or_seller",
-              // The real settlement outcome, not hidden behind the 503 — money
-              // moved even though this response reports failure.
-              transaction: result.transaction,
-            }),
-          );
-        }
-        const registration = await registerSettlement(bondEscrow, {
-          // A Stellar transaction hash is already exactly 32 bytes and already
-          // unique per settlement — a ready-made payment_id, per bond.ts's own
-          // doc-comment on the field.
-          paymentId: result.transaction,
-          // Not run through canonicalPayTo, unlike seller below: SDK-derived from parsed
-          // transaction XDR, not a merchant-typed string, so it shouldn't carry the
-          // whitespace/casing exposure that canonicalization exists for. If that
-          // assumption ever breaks, bond.ts's own address validation throws -> 503, a
-          // loud failure, not a silent wrong-value bug.
-          payer: result.payer,
-          seller,
-          resourceKey: resourceUrl,
-          amount: result.amount ?? paymentRequirements.amount,
+      // Canonical resource URL — hoisted above the spend-policy block so bond
+      // registration (below) can reuse the same derivation rather than recomputing
+      // it independently, which is exactly how a resource-key canonicalization bug
+      // gets a second, silently-drifting copy. Cheap and pure (URL parsing only),
+      // so computing it unconditionally costs nothing when neither consumer needs it.
+      const rawResourceUrl =
+        (paymentPayload as unknown as { resource?: { url?: string } }).resource?.url ?? "";
+      const resourceUrl = BazaarCatalog.canonicalResourceKey(rawResourceUrl);
+      // Fix 1: consult the spend policy before spending sponsor XLM. On pubnet a
+      // tripped per-payTo rate limit or global spend ceiling refuses with 503; on
+      // testnet it logs what would have tripped and proceeds (fail-open).
+      //
+      // Audit D3: run the policy UNCONDITIONALLY — never gate it on payTo being
+      // truthy, or a client sending an empty payTo would skip the global spend
+      // ceiling (the fail-closed backstop), not just the per-payTo limit. A missing
+      // payTo maps to a single shared bucket so it can't get free settles.
+      let reservation: number | undefined;
+      if (policy) {
+        const payToKey = policyBucketKey(paymentRequirements.payTo);
+        // F12: budget against the DURABLE ownership binding, not verifiedOwner —
+        // verifiedOwner is not persisted and resets on restart, so keying on it
+        // would drop every merchant into the shared unbound pool after a reboot.
+        // G-3: canonicalize to the catalog's own key (`origin + pathname`). The
+        // payload carries the RAW url, so without this a merchant on
+        // `/quote?symbol=AAPL` reads as unbound on every settle and lands in the
+        // shared unbound pool — and the per-URL budget could be multiplied by
+        // simply varying the query string.
+        const verdict = policy.checkSettle({
+          resourceUrl,
+          payTo: payToKey,
+          bound: rawResourceUrl !== "" && catalog.isBound(resourceUrl, payToKey),
         });
-
-        if (registration.outcome === "infrastructure_error") {
-          request.log.error(
-            { transaction: result.transaction, detail: registration.detail },
-            "[bond] registration failed (infrastructure) — refusing to report settle success without it",
+        reservation = verdict.reservation;
+        if (!verdict.allowed) {
+          request.log.warn(
+            { payTo: payToKey, reason: verdict.reason },
+            "[policy] settle refused",
           );
-          return reply.status(503).send(
-            settleError(network, "bond_registration_unavailable", {
-              error: "bond_registration_failed",
-              reason: registration.detail,
-              transaction: result.transaction,
+          return {
+            statusCode: 503,
+            headers: {},
+            body: settleError(network, verdict.reason ?? "spend_policy", {
+              error: "settlement_refused",
+              reason: verdict.reason,
             }),
+          };
+        }
+        if (verdict.wouldReject) {
+          request.log.warn(
+            { payTo: payToKey, wouldReject: verdict.wouldReject },
+            "[policy] settle would be refused on pubnet",
           );
         }
-        if (registration.outcome === "rejected") {
-          if (registration.contractErrorCode === 3 /* SettlementAlreadyRegistered */) {
-            // Unexpected, but not fatal: dispute standing already exists for this
-            // paymentId (a prior registration attempt must have succeeded even
-            // though this request didn't observe it — e.g. a retried settle, or a
-            // submission that landed after we'd already stopped waiting on a prior
-            // attempt). The outcome this call cares about — standing exists — is
-            // already true. Logged loudly because it is still worth an operator's
-            // attention, not because the settle needs to fail over it.
-            request.log.warn(
-              { transaction: result.transaction },
-              "[bond] SettlementAlreadyRegistered — standing already exists for this paymentId, letting settle succeed",
-            );
-          } else {
+      }
+      // Channel-account pool (docs/channel-pool-design.md). selectSigner is
+      // called SYNCHRONOUSLY INSIDE facilitator.settle() itself
+      // (@x402/stellar's own scheme.ts) — there is no separate "acquire, then
+      // call settle" step to do here; acquisition IS part of the settle()
+      // call. (REAL BUG FOUND AND FIXED, discovered under this design's own
+      // load test: an earlier version of this file called pool.acquire()
+      // itself, a second time, before this block — meaning every /settle
+      // call consumed TWO pool slots instead of one, silently halving real
+      // capacity. See src/facilitator.ts's own withChannelAcquisitionCapture
+      // doc comment for the full account.)
+      //
+      // withSkewRetry still wraps the WHOLE settle() call (unchanged from
+      // before this pool existed) — a ledger-skew retry re-runs settle()
+      // against the same already-built transaction, so if a retry happens it
+      // calls selectSigner again and acquires again; this is intentional and
+      // fine, since only one channel account is ever held per ATTEMPT, and
+      // withChannelAcquisitionCapture's scope covers all attempts inside one
+      // withSkewRetry call, always ending with acquiredAddress reflecting
+      // whichever attempt actually settled.
+      let result;
+      let rpcStatus;
+      let acquiredAddress: string | undefined;
+      let catalogOutcome: CatalogOutcome | undefined;
+      try {
+        // The capture slot must wrap the settle call itself: the RPC response we
+        // want is produced deep inside @x402/stellar, which discards it before
+        // returning. See src/rpcstatus.ts. Channel-acquisition capture wraps the
+        // exact same call for the same reason — see src/facilitator.ts's own
+        // withChannelAcquisitionCapture doc comment. withCatalogOutcomeCapture
+        // (RFP gap #2, EXTENSION-RESPONSES) is innermost, wrapping
+        // facilitator.settle(...) directly, for the same reason as the other
+        // two: the bazaar `onAfterSettle` hook that records the outcome runs
+        // INSIDE that call (@x402/core awaits every afterSettle hook before
+        // settle() returns), so this is the only place its result can be seen.
+        const captured = await withSkewRetry(
+          () =>
+            withChannelAcquisitionCapture(() =>
+              withRpcStatusCapture(() =>
+                withCatalogOutcomeCapture(() => facilitator.settle(paymentPayload, paymentRequirements)),
+              ),
+            ),
+          (c) => (c.value.value.value as { errorReason?: string }).errorReason,
+          (m) => request.log.warn(m),
+        );
+        acquiredAddress = captured.acquiredAddress;
+        if (captured.poolExhausted) {
+          // Same shape/status as sponsor_balance_low above: a real, structured,
+          // retryable refusal — never an unhandled exception, and never the
+          // vendored library's own generic unexpected_settle_error either.
+          // retryable: true matches this pool's own locked design decision
+          // (docs/channel-pool-design.md §4) — nothing was spent, nothing
+          // about this request was invalid, the pool was simply, transiently,
+          // fully checked out.
+          errorReason = "pool_exhausted";
+          request.log.warn({ status: pool.status() }, "[channel-pool] settle refused: pool exhausted");
+          return {
+            statusCode: 503,
+            headers: {},
+            body: settleError(network, "pool_exhausted", {
+              error: "settlement_refused",
+              reason: "pool_exhausted",
+              retryable: true,
+            }),
+          };
+        }
+        result = captured.value.value.value;
+        rpcStatus = captured.value.rpcStatus;
+        catalogOutcome = captured.value.value.catalogOutcome;
+      } catch (err) {
+        policy?.refundUnspent(reservation);
+        throw err;
+      } finally {
+        // ALWAYS released — success, failure, or throw — but ONLY if
+        // something was actually acquired (undefined when selectSigner was
+        // never reached at all, e.g. verification failed first inside
+        // settle() before signer selection). release() is also idempotent on
+        // an already-available address, so this is defensive-but-harmless
+        // even in edge cases this reasoning didn't anticipate. A channel
+        // account that is genuinely acquired but never released silently
+        // shrinks the pool below its configured size, the exact failure mode
+        // docs/channel-pool-design.md §2's exact-count sizing exists to
+        // prevent.
+        if (acquiredAddress !== undefined) pool.release(acquiredAddress);
+      }
+      const headers: Record<string, string> = {};
+      // RFP gap #2 — EXTENSION-RESPONSES. Set the header from whatever
+      // catalogOutcome actually holds, never from a hand-maintained list of
+      // "which branches count" — drift between such a list and the real
+      // control flow is exactly the bug class this codebase's own history
+      // (G-3/G-11, docs/closing-state.md) keeps finding. catalogOutcome is
+      // ONLY ever defined when the bazaar onAfterSettle hook actually ran,
+      // which @x402/core only does on result.success === true (its own
+      // settle() — see facilitator/index.mjs — runs afterSettleHooks
+      // unconditionally on the success branch, never on failure or throw).
+      // So this is naturally a no-op on every early-exit path above
+      // (pool_exhausted 503, sponsor_balance_low, spend_policy),
+      // and on the rpcStatus-submission-failure return just below, without
+      // needing to special-case any of them here.
+      if (catalogOutcome) {
+        headers["extension-responses"] = buildExtensionResponsesHeader(catalogOutcome);
+      }
+      // Release the reservation when the settlement never reached the chain.
+      // @x402/stellar returns an empty `transaction` when it failed before
+      // submission (verification/signing/send), meaning ZERO sponsor XLM was spent.
+      // A non-empty hash means it was submitted and fees were charged, even if the
+      // transaction then failed, so that reservation correctly stands.
+      if (policy && result.success === false && !result.transaction) {
+        policy.refundUnspent(reservation);
+      }
+      // Surface what the RPC actually said. Without this a caller sees
+      // `settle_exact_stellar_transaction_submission_failed` and cannot tell
+      // TRY_AGAIN_LATER (retry — nothing reached a ledger) from ERROR/txBadSeq
+      // (do not retry, the payload is stale). Additive: the x402-required fields
+      // are untouched.
+      if (result.success === false && rpcStatus) {
+        // vellar_settle_errors_total (src/metrics.ts) classification — the
+        // ONLY two places these two specific reasons ever originate, per the
+        // real rpcStatus shape (src/rpcstatus.ts's CapturedRpcStatus):
+        // rpcStatus.errorCode carries "txBadSeq" when the RPC's own
+        // errorResult XDR decodes to that name; rpcStatus.status carries
+        // "TRY_AGAIN_LATER" when the RPC declined to forward the transaction
+        // at all (no errorResult in that case). Anything else reaching this
+        // branch is a real rpcStatus the caller should still see, just not
+        // one of these two named metric reasons — falls through to "other".
+        errorReason =
+          rpcStatus.errorCode === "txBadSeq"
+            ? "txBadSeq"
+            : rpcStatus.status === "TRY_AGAIN_LATER"
+              ? "TRY_AGAIN_LATER"
+              : "other";
+        request.log.warn({ rpcStatus }, "[settle] submission refused by the RPC");
+        return { statusCode: 200, headers, body: { ...result, rpcStatus } };
+      }
+      // Bond registration — synchronous, awaited, BEFORE /settle reports success.
+      // docs/proposal-provider-bond.md, Section 6: this is the one call that gives a
+      // payer standing to dispute a bond, so a settlement that succeeds without it
+      // is a settlement no buyer can ever get recourse for — exactly the gap this
+      // whole system exists to close. Only reached when bondEscrow is configured
+      // (both-or-neither with the admin key, enforced in config.ts) and the
+      // settlement itself actually succeeded — nothing to register standing
+      // against for a failed settle.
+      if (bondEscrow && result.success === true) {
+        try {
+          const seller = BazaarCatalog.canonicalPayTo(paymentRequirements.payTo);
+          // Both of these SHOULD be impossible on a successful settlement — a real
+          // payment cannot have settled without a real payer and a real payTo — but
+          // "should be impossible" is exactly the case this system's own posture
+          // (name it, don't hide it) says to handle explicitly rather than assume.
+          if (!seller || !result.payer) {
             request.log.error(
-              { transaction: result.transaction, detail: registration.detail, code: registration.contractErrorCode },
-              "[bond] registration rejected by the contract — unexpected, refusing to report settle success",
+              { transaction: result.transaction, payer: result.payer, payTo: paymentRequirements.payTo },
+              "[bond] settlement succeeded but is missing a payer or seller address — cannot register",
             );
-            return reply.status(500).send(
-              settleError(network, "bond_registration_rejected", {
+            return {
+              statusCode: 503,
+              headers,
+              body: settleError(network, "bond_registration_unavailable", {
                 error: "bond_registration_failed",
-                reason: registration.detail,
-                contractErrorCode: registration.contractErrorCode,
+                reason: "missing_payer_or_seller",
+                // The real settlement outcome, not hidden behind the 503 — money
+                // moved even though this response reports failure.
                 transaction: result.transaction,
               }),
-            );
+            };
           }
+          const registration = await registerSettlement(bondEscrow, {
+            // A Stellar transaction hash is already exactly 32 bytes and already
+            // unique per settlement — a ready-made payment_id, per bond.ts's own
+            // doc-comment on the field.
+            paymentId: result.transaction,
+            // Not run through canonicalPayTo, unlike seller below: SDK-derived from parsed
+            // transaction XDR, not a merchant-typed string, so it shouldn't carry the
+            // whitespace/casing exposure that canonicalization exists for. If that
+            // assumption ever breaks, bond.ts's own address validation throws -> 503, a
+            // loud failure, not a silent wrong-value bug.
+            payer: result.payer,
+            seller,
+            resourceKey: resourceUrl,
+            amount: result.amount ?? paymentRequirements.amount,
+          });
+
+          if (registration.outcome === "infrastructure_error") {
+            request.log.error(
+              { transaction: result.transaction, detail: registration.detail },
+              "[bond] registration failed (infrastructure) — refusing to report settle success without it",
+            );
+            return {
+              statusCode: 503,
+              headers,
+              body: settleError(network, "bond_registration_unavailable", {
+                error: "bond_registration_failed",
+                reason: registration.detail,
+                transaction: result.transaction,
+              }),
+            };
+          }
+          if (registration.outcome === "rejected") {
+            if (registration.contractErrorCode === 3 /* SettlementAlreadyRegistered */) {
+              // Unexpected, but not fatal: dispute standing already exists for this
+              // paymentId (a prior registration attempt must have succeeded even
+              // though this request didn't observe it — e.g. a retried settle, or a
+              // submission that landed after we'd already stopped waiting on a prior
+              // attempt). The outcome this call cares about — standing exists — is
+              // already true. Logged loudly because it is still worth an operator's
+              // attention, not because the settle needs to fail over it.
+              request.log.warn(
+                { transaction: result.transaction },
+                "[bond] SettlementAlreadyRegistered — standing already exists for this paymentId, letting settle succeed",
+              );
+            } else {
+              request.log.error(
+                { transaction: result.transaction, detail: registration.detail, code: registration.contractErrorCode },
+                "[bond] registration rejected by the contract — unexpected, refusing to report settle success",
+              );
+              return {
+                statusCode: 500,
+                headers,
+                body: settleError(network, "bond_registration_rejected", {
+                  error: "bond_registration_failed",
+                  reason: registration.detail,
+                  contractErrorCode: registration.contractErrorCode,
+                  transaction: result.transaction,
+                }),
+              };
+            }
+          }
+        } catch (err) {
+          // Anything thrown here (including bond.ts's own caller-bug validation,
+          // which should be unreachable given the guards above, but "should be
+          // unreachable" is not a substitute for handling it) is treated the same
+          // as an infrastructure failure: fail loud, never let it crash the
+          // request uncaught, never silently report success without registration.
+          request.log.error(
+            { transaction: result.transaction, err: err instanceof Error ? err.message : err },
+            "[bond] registration threw — refusing to report settle success without it",
+          );
+          return {
+            statusCode: 503,
+            headers,
+            body: settleError(network, "bond_registration_unavailable", {
+              error: "bond_registration_failed",
+              reason: err instanceof Error ? err.message : String(err),
+              transaction: result.transaction,
+            }),
+          };
         }
-      } catch (err) {
-        // Anything thrown here (including bond.ts's own caller-bug validation,
-        // which should be unreachable given the guards above, but "should be
-        // unreachable" is not a substitute for handling it) is treated the same
-        // as an infrastructure failure: fail loud, never let it crash the
-        // request uncaught, never silently report success without registration.
-        request.log.error(
-          { transaction: result.transaction, err: err instanceof Error ? err.message : err },
-          "[bond] registration threw — refusing to report settle success without it",
-        );
-        return reply.status(503).send(
-          settleError(network, "bond_registration_unavailable", {
-            error: "bond_registration_failed",
-            reason: err instanceof Error ? err.message : String(err),
-            transaction: result.transaction,
-          }),
-        );
       }
-    }
       // The one genuine success path — reached only when result.success ===
       // true survived every intermediate guard above, including bond
       // registration (every bond-registration failure branch returns
       // early with its own response before control ever reaches here).
       outcome = "success";
-      return result;
+      return { statusCode: 200, headers, body: result };
     } finally {
       const durationSeconds = (performance.now() - startTime) / 1000;
       observeSettleDurationSeconds(durationSeconds);
@@ -772,6 +850,46 @@ export async function buildServer(
         incrementSettleErrorsTotal(errorReason ?? "other");
       }
     }
+  }
+
+  app.post<{ Body: FacilitatorRequestBody }>("/settle", async (request, reply) => {
+    const { paymentPayload, paymentRequirements } = request.body ?? {};
+    // Idempotency guard (2026-09-19 incident — see settleDedup's own doc
+    // comment above for the full account). txHash is undefined both for a
+    // missing/malformed body (nothing to hash) and for the pathological case
+    // of an envelope that fails to parse under the REAL network passphrase —
+    // either way this degrades to "run the pipeline, skip dedup" rather than
+    // trying to special-case it here; runSettlePipeline's own first two
+    // checks (invalid_body / invalid_payload) handle a bad payload correctly
+    // either way, dedup or not.
+    const txHash =
+      paymentPayload !== undefined ? settlementTxHash(paymentPayload, network as Network) : undefined;
+    const now = Date.now();
+    let dedupResultPromise: Promise<SettleDedupResult>;
+    if (txHash !== undefined) {
+      const existing = settleDedup.get(txHash);
+      if (existing && existing.expiresAt > now) {
+        request.log.warn(
+          { txHash },
+          "[settle] duplicate call for an in-flight or recently-settled transaction — awaiting the existing result instead of re-running the pipeline",
+        );
+        dedupResultPromise = existing.promise;
+      } else {
+        // Registered SYNCHRONOUSLY, before the pipeline starts — see the
+        // settleDedup doc comment on why that ordering is what makes this
+        // safe under two requests racing in the same tick.
+        const promise = runSettlePipeline(request, paymentPayload, paymentRequirements);
+        settleDedup.set(txHash, { promise, expiresAt: now + SETTLE_DEDUP_TTL_MS });
+        dedupResultPromise = promise;
+      }
+    } else {
+      dedupResultPromise = runSettlePipeline(request, paymentPayload, paymentRequirements);
+    }
+    const dedupResult = await dedupResultPromise;
+    for (const [key, value] of Object.entries(dedupResult.headers)) {
+      reply.header(key, value);
+    }
+    return reply.status(dedupResult.statusCode).send(dedupResult.body);
   });
 
   /**
@@ -1029,6 +1147,43 @@ function isParseableTransactionXdr(payload: PaymentPayload): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The settled transaction's own hash, as a hex string — the /settle dedup
+ * key. Unlike isParseableTransactionXdr above, the REAL network passphrase
+ * matters here: Transaction.hash() folds the network ID into what it hashes
+ * (TransactionBase#signatureBase()), so parsing with the wrong passphrase
+ * produces a different hash for the same envelope — silently defeating
+ * dedup, not just computing a "wrong but harmless" value. getNetworkPassphrase
+ * is @x402/stellar's own CAIP-2 -> passphrase mapping, the same one
+ * ExactStellarScheme itself resolves from `network` internally, so this can
+ * never drift from what the real settle path uses.
+ *
+ * TransactionBuilder.fromXDR returns either a Transaction or a
+ * FeeBumpTransaction depending on the envelope's own type byte — confirmed
+ * both extend the shared TransactionBase and both expose hash() with the
+ * same synchronous, side-effect-free contract (hash(this.signatureBase())),
+ * so this is safe for both an `exact` and an `upto` scheme payload, and
+ * whether or not the buyer's own envelope happens to be a fee bump.
+ *
+ * Returns undefined only when the envelope failed to parse under the real
+ * passphrase — isParseableTransactionXdr's own testnet-passphrase parse can
+ * succeed while this one throws only in the pathological case of a payload
+ * whose structure happens to validate against one passphrase in a way that
+ * depends on it, which real Stellar XDR structure never does; kept as a
+ * defensive fallback (caller then skips dedup rather than 500ing) instead of
+ * assumed unreachable.
+ */
+function settlementTxHash(payload: PaymentPayload, network: Network): string | undefined {
+  const tx = (payload as { payload?: { transaction?: unknown } }).payload?.transaction;
+  if (typeof tx !== "string" || tx.length === 0) return undefined;
+  try {
+    const passphrase = getNetworkPassphrase(network);
+    return TransactionBuilder.fromXDR(tx, passphrase).hash().toString("hex");
+  } catch {
+    return undefined;
   }
 }
 

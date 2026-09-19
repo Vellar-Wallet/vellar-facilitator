@@ -8,6 +8,7 @@ import { BalanceGuard } from "./balance.js";
 import { ChannelPool } from "./channelPool.js";
 import { buildServer } from "./server.js";
 import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
+import { VALID_TX_XDR, distinctValidTxXdr } from "./testSettleXdr.js";
 
 // RFP gap #2 — EXTENSION-RESPONSES header.
 //
@@ -81,15 +82,16 @@ function stubScheme(settleSucceeds: boolean): SchemeNetworkFacilitator {
   } as unknown as SchemeNetworkFacilitator;
 }
 
-/** A structurally VALID transaction envelope — /settle shreds unparseable
- *  XDR at the route before ever reaching facilitator.settle (same fixture
- *  as server.bondregistration.test.ts / server.test.ts). */
-const VALID_TX_XDR =
-  "AAAAAgAAAAARUqIOOVQYwBn0s32MhGQwyoTHPy7SzjfXdweAw6b/4gAAAGQAAAAAAAAAAgAAAAEAAAAAAAAAAAAAAABqdyAuAAAAAAAAAAEAAAAAAAAAAQAAAADrmp8rY1JU7CL78HNaROud45MqVmrrbxOCVuWSEz0eRwAAAAAAAAAAAJiWgAAAAAAAAAAA";
-
 /** payload WITH the bazaar discovery extension attached — reaches
- *  extractDiscoveryInfo's "attempted" branch inside the hook. */
-function discoveryPayload(): PaymentPayload {
+ *  extractDiscoveryInfo's "attempted" branch inside the hook.
+ *
+ *  txXdr defaults to the shared VALID_TX_XDR fixture; pass a distinct
+ *  envelope (distinctValidTxXdr(seed)) when a test fires more than one
+ *  /settle call and expects each to be an independent attempt — otherwise
+ *  they collide in /settle's idempotency guard (src/server.ts's
+ *  settleDedup, keyed on the transaction's own hash) and the second call
+ *  is served the FIRST call's cached result instead of running fresh. */
+function discoveryPayload(txXdr: string = VALID_TX_XDR): PaymentPayload {
   const extensions = declareDiscoveryExtension({
     input: { city: "lagos" },
     inputSchema: { properties: { city: { type: "string" } }, required: ["city"] },
@@ -107,7 +109,7 @@ function discoveryPayload(): PaymentPayload {
       tags: ["weather"],
     },
     accepted: requirements(),
-    payload: { transaction: VALID_TX_XDR },
+    payload: { transaction: txXdr },
     extensions,
   } as unknown as PaymentPayload;
 }
@@ -194,12 +196,21 @@ describe("EXTENSION-RESPONSES header — set only on paths that reach cataloging
       await app.inject({ method: "POST", url: "/settle", payload: settleBody(discoveryPayload()) });
       expect(catalog.size).toBe(1);
 
-      // Second settle: same resourceUrl, different (unbound) payTo.
+      // Second settle: same resourceUrl, different (unbound) payTo. Needs a
+      // DISTINCT envelope from the first call — same payload.transaction
+      // would collide in /settle's idempotency guard (settleDedup is keyed
+      // on the transaction's own hash, not paymentRequirements), and this
+      // call would be served the first settle's already-cataloged result
+      // instead of running fresh and hitting the rejection branch.
       const rejectedReqs: PaymentRequirements = { ...requirements(), payTo: Keypair.random().publicKey() };
       const res = await app.inject({
         method: "POST",
         url: "/settle",
-        payload: { x402Version: 2, paymentPayload: discoveryPayload(), paymentRequirements: rejectedReqs },
+        payload: {
+          x402Version: 2,
+          paymentPayload: discoveryPayload(distinctValidTxXdr(1)),
+          paymentRequirements: rejectedReqs,
+        },
       });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body).success).toBe(true); // settlement itself still succeeds
