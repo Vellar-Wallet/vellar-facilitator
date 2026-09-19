@@ -60,11 +60,11 @@ export type OwnershipVerdict = "match" | "mismatch" | "unverifiable" | "timeout"
  */
 const COLD_START_RETRY_DELAYS_MS: readonly number[] = [45_000, 120_000];
 
-interface LookupResult {
+export interface LookupResult {
   address: string;
   family: number;
 }
-type LookupFn = (hostname: string) => Promise<LookupResult>;
+export type LookupFn = (hostname: string) => Promise<LookupResult>;
 
 /** The single address the SSRF guard vetted, pinned into the connection (D2). */
 export interface VettedAddress {
@@ -182,6 +182,164 @@ export async function assertPublicHttpsUrl(
   }
   // Returned so the caller can PIN the connection to exactly this address (D2).
   return { address: resolved.address, family: resolved.family || (isIP(resolved.address) as 4 | 6) };
+}
+
+/** Why RoutabilityVerdict.reason exists as an enum rather than a free-text
+ *  string: catalog.ts's upsertFromPayment reports every OTHER rejection
+ *  reason (invalid_payto, unbound_payto, invalid_tool_name, ...) as one of a
+ *  fixed set of machine-readable tokens, never a raw error message — the
+ *  same discipline applies here, so a caller (or a test asserting the exact
+ *  rejection) can match on the reason without parsing prose. */
+export type UnroutableReason =
+  | "malformed_url"
+  | "empty_or_relative_url"
+  | "non_https_on_pubnet"
+  | "localhost_or_loopback_literal"
+  | "local_tld"
+  | "bare_hostname_no_dot"
+  | "blocked_address";
+
+export type RoutabilityVerdict = { ok: true } | { ok: false; reason: UnroutableReason; detail: string };
+
+/** Hostnames that are never routable regardless of what they resolve to
+ *  (or fail to). Checked as an exact, case-insensitive string match — NOT a
+ *  substring check, so a real registered domain like
+ *  "notlocalhost.example.com" is never caught by this. */
+const LOOPBACK_HOSTNAME_LITERALS = new Set(["localhost", "0.0.0.0", "::1", "[::1]", "ip6-localhost", "ip6-loopback"]);
+
+/**
+ * Registration-time gate: is `rawUrl` a URL a public catalog should EVER
+ * accept as a cataloged resource's own address?
+ *
+ * Distinct from assertPublicHttpsUrl above on purpose, not a refactor of it:
+ * that function is the Layer 2 OWNERSHIP-PROBE guard (fetches the URL,
+ * pins the connection, times out, degrades to "unverifiable" rather than
+ * ever throwing into settlement) — this one is a REGISTRATION gate that
+ * runs on every settle, so it must be synchronous-fast and never touch the
+ * network itself. Sharing isBlockedAddress's byte-level IPv4/IPv6 range
+ * check for IP LITERALS is deliberate reuse of the one thing both need in
+ * common; the rest of each function's shape reflects what it is for.
+ *
+ * DELIBERATELY NO DNS RESOLUTION, same posture as this file's own
+ * isStructurallyUnverifiable equivalent in catalog.ts: a hostname that is
+ * not a literal IP and is not one of the specific unroutable forms checked
+ * below (bareword, .local, a loopback string) is left to Layer 2's own
+ * live probe, off the settlement hot path. Two reasons this is the right
+ * split, not a gap:
+ *   1. A settle-time DNS lookup on every registration would add latency
+ *      and a new external dependency (the resolver) to the payment path
+ *      itself, for a check whose failure mode (a private-range-resolving
+ *      hostname) Layer 2 already catches — just slightly later, and
+ *      without blocking settlement to do it.
+ *   2. It keeps this function safely callable from hermetic unit tests
+ *      without a real or mocked resolver — the same reason
+ *      isStructurallyUnverifiable stops at literals and defers hostnames
+ *      to "the live check".
+ *
+ * `network` gates the scheme check specifically: https-only is a pubnet
+ * requirement (a public, real-money catalog must never point an agent's
+ * mainnet payment at plaintext http), not a general rule — a private
+ * testnet/local-development deployment can and does register plain http
+ * resources (this repo's own examples/seller.mjs), so the same scheme rule
+ * applied unconditionally would break normal testnet flows. Every OTHER
+ * check (bare hostname, .local, loopback literal, private/loopback/
+ * link-local IP literal) applies regardless of network: an unroutable URL
+ * is exactly as useless to a testnet agent as to a mainnet one.
+ *
+ * Root cause this exists to close: a publishing service built its
+ * registration URL from the inbound request's Host header rather than a
+ * public base URL, so http://localhost:4002/... reached this catalog's
+ * pubnet index and settled real mainnet payments against an address no
+ * external agent could ever route to. The publisher-side fix only protects
+ * services someone remembers to patch; this is the registry-side backstop
+ * that covers every future publisher too, including third parties this
+ * facilitator has never talked to.
+ */
+export function assertRoutableResourceUrl(rawUrl: string, network: string): RoutabilityVerdict {
+  if (rawUrl.trim().length === 0) {
+    return { ok: false, reason: "empty_or_relative_url", detail: "resource url is empty" };
+  }
+  let url: URL;
+  try {
+    // A relative or scheme-less string (e.g. "/quote", "quote", "//host/x")
+    // throws here exactly like a genuinely malformed one — WHATWG's URL
+    // constructor has no partial/relative mode without an explicit base,
+    // and passing one would silently accept a relative path by resolving it
+    // against that base, which is precisely the "non-absolute URL" case
+    // this branch must reject, not launder into an absolute one.
+    url = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: "malformed_url", detail: `not an absolute, parseable URL: ${rawUrl}` };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return {
+      ok: false,
+      reason: "malformed_url",
+      detail: `unsupported scheme (${url.protocol}) — must be http or https`,
+    };
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase(); // strip IPv6 brackets
+  if (host.length === 0) {
+    return { ok: false, reason: "malformed_url", detail: "url has no hostname" };
+  }
+  // Hostname-derived checks run BEFORE the pubnet-https check below,
+  // deliberately: a URL can fail both (http://localhost:4002/... on
+  // stellar:pubnet is simultaneously a loopback literal AND non-https), and
+  // the loopback verdict is the more specific, more actionable one to
+  // report — it is also disqualifying on EVERY network, whereas
+  // non_https_on_pubnet is conditional on network alone. Reporting the
+  // narrower, always-true reason first means an operator debugging the
+  // exact vela-wallet incident shape sees "this is localhost", not the
+  // easily-misread "just switch it to https" for a URL that would still be
+  // unroutable over https anyway.
+  if (LOOPBACK_HOSTNAME_LITERALS.has(host)) {
+    return {
+      ok: false,
+      reason: "localhost_or_loopback_literal",
+      detail: `host is a loopback literal: ${host}`,
+    };
+  }
+  if (host.endsWith(".local")) {
+    return { ok: false, reason: "local_tld", detail: `host uses the .local mDNS pseudo-TLD: ${host}` };
+  }
+  const literalKind = isIP(host);
+  if (literalKind !== 0) {
+    // A bare IP literal — range-check it directly with the same byte-level
+    // check the Layer 2 probe uses, no DNS involved (there is nothing to
+    // resolve; the literal IS the address).
+    if (isBlockedAddress(host)) {
+      return {
+        ok: false,
+        reason: "blocked_address",
+        detail: `host is a private/loopback/link-local address literal: ${host}`,
+      };
+    }
+  } else if (!host.includes(".")) {
+    // Not an IP literal and not one of the specific unroutable forms above —
+    // a genuine hostname. A bare word with no dot (e.g. "myservice") cannot
+    // be a real public DNS name and is never externally routable regardless
+    // of what it happens to resolve to on this machine or network; anything
+    // with a dot is left to Layer 2's own live DNS-backed probe (see this
+    // function's own header comment for why DNS resolution does not belong
+    // in this synchronous, settle-hot-path gate).
+    return {
+      ok: false,
+      reason: "bare_hostname_no_dot",
+      detail: `bare hostname with no dot is not a routable public domain: ${host}`,
+    };
+  }
+  // Scheme-vs-network check LAST: every host-derived disqualification above
+  // is unconditional (true on any network), so it takes priority; this is
+  // the one check that is network-CONDITIONAL, and only reached once the
+  // host itself has already cleared every network-independent check.
+  if (network === "stellar:pubnet" && url.protocol !== "https:") {
+    return {
+      ok: false,
+      reason: "non_https_on_pubnet",
+      detail: `stellar:pubnet resources must be https, got ${url.protocol}`,
+    };
+  }
+  return { ok: true };
 }
 
 /**

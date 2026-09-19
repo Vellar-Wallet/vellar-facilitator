@@ -16,7 +16,7 @@ import type {
   SearchDiscoveryResourcesResponse,
 } from "@x402/extensions/bazaar";
 import { isIP } from "node:net";
-import { isBlockedAddress } from "./ownership.js";
+import { assertRoutableResourceUrl, isBlockedAddress } from "./ownership.js";
 import type { OwnershipVerdict } from "./ownership.js";
 import {
   buildEmbeddingText,
@@ -1476,6 +1476,29 @@ export class BazaarCatalog {
       reportOutcome(false, "invalid_tool_name");
       return false;
     }
+
+    // Registration-time routability gate. Checked BEFORE payTo/tombstone/
+    // binding logic below — an unroutable URL is refused unconditionally,
+    // regardless of who is paying or whether the URL is already bound,
+    // because no agent will ever be able to reach it either way. This is
+    // the registry-side backstop for the class of bug where a publisher
+    // builds its own registration URL from the inbound request's Host
+    // header (e.g. http://localhost:4002/...) instead of its real public
+    // address: a publisher-side fix only protects services someone
+    // remembers to patch, this protects every present and future
+    // publisher, including third parties this facilitator has never
+    // talked to. See src/ownership.ts's assertRoutableResourceUrl for the
+    // full check list and the incident that motivated it.
+    const routability = assertRoutableResourceUrl(discovered.resourceUrl, requirements.network);
+    if (!routability.ok) {
+      console.warn(
+        `[catalog] rejected upsert for ${key}: resource url is not routable ` +
+          `(${routability.reason}: ${routability.detail})`,
+      );
+      reportOutcome(false, "unroutable_resource_url");
+      return false;
+    }
+
     const existing = this.entries.get(key);
 
     // One derivation, shared with the spend policy. An unusable payTo is refused

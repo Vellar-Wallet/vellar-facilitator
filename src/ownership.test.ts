@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   verifyResourceOwnership,
   assertPublicHttpsUrl,
+  assertRoutableResourceUrl,
   isBlockedAddress,
   pinnedDispatcher,
   pinnedLookup,
@@ -112,6 +113,171 @@ describe("assertPublicHttpsUrl — SSRF guard", () => {
   it("rejects a URL whose literal host is a mapped loopback", async () => {
     await expect(assertPublicHttpsUrl("https://[::ffff:7f00:1]/x", fakeLookup("93.184.216.34"))).rejects.toThrow(
       /private|loopback|blocked/i,
+    );
+  });
+});
+
+// Registration-time gate (2026-09-19 incident): a publishing service built its
+// registration URL from the inbound request's Host header rather than a
+// public base URL, so http://localhost:4002/... reached this catalog's
+// pubnet index and settled real mainnet payments. assertRoutableResourceUrl
+// is the registry-side backstop — synchronous, no DNS, no fetch — called on
+// every settle via catalog.ts's upsertFromPayment BEFORE the resource is
+// ever cataloged. See its own doc comment in ownership.ts for why it is
+// deliberately distinct from assertPublicHttpsUrl above (a registration gate
+// vs. a Layer 2 ownership-probe guard) and why it does not resolve DNS.
+describe("assertRoutableResourceUrl — registration-time routability gate", () => {
+  it("accepts a real public https URL", () => {
+    expect(assertRoutableResourceUrl("https://vellar-seller-demo.onrender.com/quote", "stellar:pubnet")).toEqual({
+      ok: true,
+    });
+  });
+
+  it("accepts a real public http URL on testnet", () => {
+    expect(assertRoutableResourceUrl("http://good.example.com/quote", "stellar:testnet")).toEqual({ ok: true });
+  });
+
+  it("rejects the exact incident shape: http://localhost:<port>/path", () => {
+    const v = assertRoutableResourceUrl("http://localhost:4002/lifecycle/execute", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("localhost_or_loopback_literal");
+  });
+
+  it("rejects https://localhost too — the literal host, not the scheme, disqualifies it", () => {
+    const v = assertRoutableResourceUrl("https://localhost/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("localhost_or_loopback_literal");
+  });
+
+  it("rejects 127.0.0.1", () => {
+    const v = assertRoutableResourceUrl("https://127.0.0.1/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("blocked_address");
+  });
+
+  it("rejects 0.0.0.0", () => {
+    const v = assertRoutableResourceUrl("https://0.0.0.0/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+  });
+
+  it("rejects IPv6 loopback ::1", () => {
+    const v = assertRoutableResourceUrl("https://[::1]/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("localhost_or_loopback_literal");
+  });
+
+  it("rejects RFC1918 10.0.0.0/8", () => {
+    const v = assertRoutableResourceUrl("https://10.1.2.3/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("blocked_address");
+  });
+
+  it("rejects RFC1918 172.16.0.0/12 across the full second-octet range", () => {
+    for (const b of [16, 20, 31]) {
+      const v = assertRoutableResourceUrl(`https://172.${b}.0.1/x`, "stellar:pubnet");
+      expect(v.ok, `172.${b}.x must be blocked`).toBe(false);
+    }
+    // Outside the /12 (172.15.x and 172.32.x) is genuinely public and must
+    // NOT be blocked — this range check has an exact boundary, not a
+    // sloppier "172.x" match.
+    expect(assertRoutableResourceUrl("https://172.15.0.1/x", "stellar:pubnet").ok).toBe(true);
+    expect(assertRoutableResourceUrl("https://172.32.0.1/x", "stellar:pubnet").ok).toBe(true);
+  });
+
+  it("rejects RFC1918 192.168.0.0/16", () => {
+    const v = assertRoutableResourceUrl("https://192.168.1.1/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("blocked_address");
+  });
+
+  it("rejects the link-local/cloud-metadata range 169.254.0.0/16", () => {
+    const v = assertRoutableResourceUrl("https://169.254.169.254/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+  });
+
+  it("rejects a .local mDNS hostname", () => {
+    const v = assertRoutableResourceUrl("https://myprinter.local/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("local_tld");
+  });
+
+  it("rejects a bare hostname with no dot", () => {
+    const v = assertRoutableResourceUrl("https://myservice/x", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("bare_hostname_no_dot");
+  });
+
+  it("does not reject a bare IP literal for lacking a dot (IPs are checked separately, before the dot rule)", () => {
+    // A sanity check that the bare-hostname-no-dot rule does not accidentally
+    // fire for IPv6 literals, which contain colons but may contain no dots.
+    const v = assertRoutableResourceUrl("https://[2606:2800::1]/x", "stellar:pubnet");
+    expect(v.ok).toBe(true);
+  });
+
+  it("rejects http on stellar:pubnet even for a real public hostname", () => {
+    const v = assertRoutableResourceUrl("http://good.example.com/quote", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("non_https_on_pubnet");
+  });
+
+  it("allows http on stellar:testnet for the same real public hostname", () => {
+    expect(assertRoutableResourceUrl("http://good.example.com/quote", "stellar:testnet")).toEqual({ ok: true });
+  });
+
+  it("rejects a scheme that is neither http nor https, on any network", () => {
+    const v = assertRoutableResourceUrl("ftp://good.example.com/quote", "stellar:testnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("malformed_url");
+  });
+
+  it("rejects an empty URL", () => {
+    const v = assertRoutableResourceUrl("", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("empty_or_relative_url");
+  });
+
+  it("rejects a whitespace-only URL", () => {
+    const v = assertRoutableResourceUrl("   ", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("empty_or_relative_url");
+  });
+
+  it("rejects a relative path", () => {
+    const v = assertRoutableResourceUrl("/quote", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("malformed_url");
+  });
+
+  it("rejects a bare word with no scheme", () => {
+    const v = assertRoutableResourceUrl("quote", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("malformed_url");
+  });
+
+  it("rejects a protocol-relative URL", () => {
+    const v = assertRoutableResourceUrl("//good.example.com/quote", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("malformed_url");
+  });
+
+  it("rejects genuinely malformed input", () => {
+    const v = assertRoutableResourceUrl("not a url at all", "stellar:pubnet");
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe("malformed_url");
+  });
+
+  it("host matching is case-insensitive (LOCALHOST, MyService.LOCAL)", () => {
+    expect(assertRoutableResourceUrl("https://LOCALHOST/x", "stellar:pubnet").ok).toBe(false);
+    expect(assertRoutableResourceUrl("https://MyPrinter.LOCAL/x", "stellar:pubnet").ok).toBe(false);
+  });
+
+  it("a real subdomain is never falsely caught by the loopback-literal or bare-hostname checks", () => {
+    // Exact-match only: "notlocalhost.example.com" must not be caught by a
+    // substring/suffix check against "localhost", and a real multi-label
+    // public hostname must not trip the bare-hostname-no-dot rule.
+    expect(assertRoutableResourceUrl("https://notlocalhost.example.com/x", "stellar:pubnet").ok).toBe(true);
+    expect(assertRoutableResourceUrl("https://api.vellar-seller-demo.onrender.com/x", "stellar:pubnet").ok).toBe(
+      true,
     );
   });
 });

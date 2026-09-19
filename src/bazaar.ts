@@ -40,6 +40,7 @@ export type CatalogOutcomeReason =
   | "schema_validation_failed"
   | "binding_refused"
   | "invalid_tool_name"
+  | "unroutable_resource_url"
   | "cataloging_error";
 
 export interface CatalogOutcome {

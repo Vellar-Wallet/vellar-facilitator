@@ -90,15 +90,25 @@ describe("/health carries enough to detect a spin-down", () => {
 });
 
 describe("/health surfaces structurally unverifiable entries", () => {
-  it("reports the count when a seller advertises an unfetchable address", async () => {
+  // NOT http://localhost — that shape is now refused at REGISTRATION
+  // (ownership.ts's assertRoutableResourceUrl, wired into catalog.ts's
+  // upsertFromPayment) rather than accepted and merely flagged, closing the
+  // exact vela-wallet incident (a Host-header-derived localhost URL
+  // reaching the public catalog). What this test covers now is the
+  // narrower, still-real remaining gap: http on a genuinely real, routable
+  // public hostname registers fine on testnet (https-only is a
+  // pubnet-specific registration requirement) but can never pass Layer 2's
+  // own unconditional https-only probe guard, so it is unverifiable in that
+  // different, later sense.
+  it("reports the count when a seller advertises an unfetchable (http) address", async () => {
     const catalog = await BazaarCatalog.create();
     await catalog.upsertFromPayment(
-      { resourceUrl: "http://localhost:10000/quote", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
+      { resourceUrl: "http://good.example.com/quote", x402Version: 2, discoveryInfo: { input: { type: "http", method: "GET" } } } as never,
       { scheme: "exact", network: "stellar:testnet", asset: "CA", amount: "1", payTo: "GA", maxTimeoutSeconds: 60, extra: {} } as never,
     );
     const app = await buildServer(buildFacilitator(testConfig), catalog);
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
-    expect(body.unverifiableEntries, "the seller.mjs failure must be visible").toBe(1);
+    expect(body.unverifiableEntries, "the http-only failure must be visible").toBe(1);
     await app.close();
   });
 
