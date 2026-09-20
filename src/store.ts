@@ -69,6 +69,34 @@ export interface StoredEntryRow {
 export interface CatalogStore {
   /** Create tables if absent. Safe to call on every boot. */
   init(): Promise<void>;
+  /**
+   * Read-only alternative to init(): verifies the schema is present and
+   * current WITHOUT ever issuing a CREATE TABLE or ALTER TABLE — init()
+   * always attempts both, unconditionally, on every call, which a
+   * genuinely read-only database credential correctly refuses (confirmed
+   * live: a read-only Turso token blocked init() with "SQL write
+   * operations are forbidden" even though nothing actually needed
+   * creating). A report-only maintenance script has no legitimate reason
+   * to run schema migrations against production regardless of what
+   * credential it holds — this exists so such a script can be run with a
+   * credential that PROVES it, rather than a broader one that merely
+   * permits it.
+   *
+   * Positively named (not e.g. skipMigrations) so the caller's actual
+   * intent — "I will not write" — is visible at the call site, and so a
+   * store instance that has taken this path can enforce it: every write
+   * method on an instance initialized this way throws rather than
+   * attempting the query, turning the read-only property into something
+   * checked, not merely conventional.
+   *
+   * Throws StoreInvalidError if the schema is missing or predates a
+   * migration init() would have applied (e.g. entry.embedding absent) —
+   * there is no silent degrade here, because unlike init() this path
+   * cannot fix what it finds; a stale schema under this call means the
+   * database genuinely needs a real init() run by something with write
+   * access, not a caller working around it.
+   */
+  initReadOnly(): Promise<void>;
   /** Every binding. Throws StoreUnreachableError / StoreInvalidError. */
   loadOwnership(): Promise<StoredOwnership[]>;
   /** Most-recently-updated entries, capped. The LIMIT is what closes G-6 — the
@@ -238,10 +266,32 @@ const SCHEMA = [
 export class LibsqlCatalogStore implements CatalogStore {
   private readonly client: Client;
   private readonly timings: StoreTimings;
+  /** Set ONLY by initReadOnly() below. What turns "this instance should not
+   *  write" from a convention the caller has to remember into something
+   *  enforced: every write method checks it first and throws rather than
+   *  attempting the query. Never set by the regular init() path, and never
+   *  unset once true — a store does not transition back to writable. */
+  private readOnly = false;
 
   constructor(url: string, authToken: string | undefined, timings: StoreTimings = PROPOSED_TIMINGS) {
     this.client = createClient(authToken ? { url, authToken } : { url });
     this.timings = timings;
+  }
+
+  /** Guard called at the top of every write method. Throws BEFORE issuing
+   *  any query — a read-only-initialized store must never even attempt a
+   *  write, whether or not the underlying credential would have permitted
+   *  it, so this is not a fallback for the database's own permission
+   *  check, it is a separate, earlier one. */
+  private assertWritable(methodName: string): void {
+    if (this.readOnly) {
+      throw new StoreInvalidError(
+        new Error(
+          `${methodName} called on a store initialized via initReadOnly() — this instance is read-only by ` +
+            `construction and must never write, regardless of what the underlying credential would permit`,
+        ),
+      );
+    }
   }
 
   /** One query with a deadline. The deadline matters because libSQL's own
@@ -300,6 +350,57 @@ export class LibsqlCatalogStore implements CatalogStore {
       console.warn("[store] migrating: adding entry.embedding (pre-semantic-search database)");
       await this.run(() => this.client.execute("ALTER TABLE entry ADD COLUMN embedding TEXT"));
     }
+  }
+
+  /**
+   * See the CatalogStore interface's own doc comment on this method for
+   * WHY it exists. What follows is HOW: every check init() makes is
+   * reproduced here, but as a read (sqlite_master / PRAGMA table_info) that
+   * FAILS LOUDLY instead of a write that fixes what it finds — there is no
+   * write path available to this method to fall back to, by design.
+   *
+   * Sets this.readOnly = true only once every check has passed, so a
+   * failed initReadOnly() call never leaves the instance in a state where
+   * writes would be silently permitted (assertWritable's guard is opt-IN
+   * via a successful call here, not opt-out via a failed one).
+   */
+  async initReadOnly(): Promise<void> {
+    const tables = await this.run(() =>
+      this.client.execute("SELECT name FROM sqlite_master WHERE type = 'table'"),
+    );
+    const names = new Set(tables.rows.map((r) => r.name));
+    for (const required of ["ownership", "entry"]) {
+      if (!names.has(required)) {
+        throw new StoreInvalidError(
+          new Error(
+            `initReadOnly: table "${required}" does not exist. This database has never been initialized ` +
+              `(or initReadOnly() was pointed at the wrong database) — a read-only credential cannot create ` +
+              `it. Run a normal init() with a write-capable credential first.`,
+          ),
+        );
+      }
+    }
+    const ownershipCols = await this.run(() => this.client.execute("PRAGMA table_info(ownership)"));
+    if (!ownershipCols.rows.some((r) => r.name === "verified_at")) {
+      throw new StoreInvalidError(
+        new Error(
+          "initReadOnly: ownership.verified_at is missing — this database predates the displacement " +
+            "migration and init() would normally add it. A read-only credential cannot migrate it; run a " +
+            "normal init() with a write-capable credential first.",
+        ),
+      );
+    }
+    const entryCols = await this.run(() => this.client.execute("PRAGMA table_info(entry)"));
+    if (!entryCols.rows.some((r) => r.name === "embedding")) {
+      throw new StoreInvalidError(
+        new Error(
+          "initReadOnly: entry.embedding is missing — this database predates the semantic-search " +
+            "migration and init() would normally add it. A read-only credential cannot migrate it; run a " +
+            "normal init() with a write-capable credential first.",
+        ),
+      );
+    }
+    this.readOnly = true;
   }
 
   /**
@@ -397,6 +498,7 @@ export class LibsqlCatalogStore implements CatalogStore {
    *     leave open.
    */
   async bindAndUpsertEntry(binding: StoredOwnership, entry: StoredEntryRow): Promise<void> {
+    this.assertWritable("bindAndUpsertEntry");
     await this.run(() =>
       this.client.batch(
         [
@@ -417,6 +519,7 @@ export class LibsqlCatalogStore implements CatalogStore {
   }
 
   async saveEntries(rows: StoredEntryRow[]): Promise<void> {
+    this.assertWritable("saveEntries");
     if (rows.length === 0) return;
     await this.run(() =>
       this.client.batch(
@@ -432,6 +535,7 @@ export class LibsqlCatalogStore implements CatalogStore {
   }
 
   async markVerified(resourceKey: string, payTo: string, at: number): Promise<void> {
+    this.assertWritable("markVerified");
     await this.run(() =>
       this.client.execute({
         // Only if not already set: the FIRST proof is the one that matters, and
@@ -471,6 +575,7 @@ export class LibsqlCatalogStore implements CatalogStore {
    * result is immediately non-displaceable by the next claimant.
    */
   async displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void> {
+    this.assertWritable("displaceOwnership");
     await this.run(() =>
       this.client.batch(
         [
@@ -493,6 +598,7 @@ export class LibsqlCatalogStore implements CatalogStore {
    * not a fault worth logging.
    */
   async saveEmbedding(resourceKey: string, embedding: number[]): Promise<void> {
+    this.assertWritable("saveEmbedding");
     await this.run(() =>
       this.client.execute({
         sql: "UPDATE entry SET embedding = ? WHERE resource_key = ?",

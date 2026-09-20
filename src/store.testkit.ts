@@ -50,6 +50,9 @@ export class FailingStore implements CatalogStore {
   init(): Promise<void> {
     return this.inner.init();
   }
+  initReadOnly(): Promise<void> {
+    return this.inner.initReadOnly();
+  }
   loadOwnership(): Promise<StoredOwnership[]> {
     if (this.failOn.loadOwnership) return Promise.reject(this.failOn.loadOwnership());
     return this.inner.loadOwnership();

@@ -677,10 +677,27 @@ export class BazaarCatalog {
    * unreachable is retried with backoff and reported as retryable; invalid
    * freezes immediately and says so.
    */
-  static async create(store?: CatalogStore, opts: { maxEntries?: number } = {}): Promise<BazaarCatalog> {
+  static async create(
+    store?: CatalogStore,
+    opts: {
+      maxEntries?: number;
+      /** Use store.initReadOnly() instead of store.init() — for a caller
+       *  (e.g. scan-unroutable-urls.ts) that will only ever read this
+       *  catalog and wants that provable via the credential it holds,
+       *  rather than merely by convention. See CatalogStore.initReadOnly's
+       *  own doc comment for the full reasoning. Default false: every
+       *  existing caller (the live server, every prior test) keeps
+       *  calling init() exactly as before — this is purely additive. */
+      readOnly?: boolean;
+    } = {},
+  ): Promise<BazaarCatalog> {
     const catalog = new BazaarCatalog(store);
     if (!store) return catalog;
-    await store.init();
+    if (opts.readOnly) {
+      await store.initReadOnly();
+    } else {
+      await store.init();
+    }
     // Ownership loads FIRST: if it is unusable we must not serve a catalog whose
     // bindings are missing.
     let bindings;
