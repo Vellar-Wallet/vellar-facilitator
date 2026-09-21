@@ -439,4 +439,73 @@ describe("loadConfig", () => {
       ).toThrow(/CHANNEL_ACCOUNT_SECRET_KEYS contains a duplicate key/);
     });
   });
+
+  describe("ADMIN_SECRET", () => {
+    it("defaults to undefined — the Operator Console is off unless configured", async () => {
+      const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS });
+      expect(config.adminSecret).toBeUndefined();
+    });
+
+    it("accepts a sufficiently long value", async () => {
+      const config = loadConfig({
+        SPONSOR_SECRET_KEY: SECRET,
+        CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+        ADMIN_SECRET: "a".repeat(32),
+      });
+      expect(config.adminSecret).toBe("a".repeat(32));
+    });
+
+    it("rejects a value shorter than 16 characters, without echoing it", async () => {
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+          ADMIN_SECRET: "too-short",
+        }),
+      ).toThrow(/ADMIN_SECRET is set but is shorter than 16 characters/);
+      try {
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+          ADMIN_SECRET: "too-short",
+        });
+      } catch (err) {
+        expect((err as Error).message).not.toContain("too-short");
+      }
+    });
+  });
+
+  describe("OPERATOR_KILL_SWITCH", () => {
+    it("defaults to false", async () => {
+      const config = loadConfig({ SPONSOR_SECRET_KEY: SECRET, CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS });
+      expect(config.operatorKillSwitchDefault).toBe(false);
+    });
+
+    it("accepts exactly \"true\" and \"false\"", async () => {
+      expect(
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+          OPERATOR_KILL_SWITCH: "true",
+        }).operatorKillSwitchDefault,
+      ).toBe(true);
+      expect(
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+          OPERATOR_KILL_SWITCH: "false",
+        }).operatorKillSwitchDefault,
+      ).toBe(false);
+    });
+
+    it("fails loud on a truthy-looking but non-exact value, rather than silently reading it as false", async () => {
+      expect(() =>
+        loadConfig({
+          SPONSOR_SECRET_KEY: SECRET,
+          CHANNEL_ACCOUNT_SECRET_KEYS: VALID_CHANNEL_KEYS,
+          OPERATOR_KILL_SWITCH: "1",
+        }),
+      ).toThrow(/OPERATOR_KILL_SWITCH must be "true" or "false"/);
+    });
+  });
 });

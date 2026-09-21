@@ -2,6 +2,7 @@ import Fastify, { type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
 import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import { getNetworkPassphrase } from "@x402/stellar";
 import type { Network, PaymentPayload, PaymentRequirements } from "@x402/core/types";
@@ -36,6 +37,15 @@ import {
   observeSettleDurationSeconds,
   incrementVerifyTotal,
 } from "./metrics.js";
+import type { CatalogStore } from "./store.js";
+import {
+  KillSwitch,
+  ADMIN_SESSION_COOKIE,
+  hasValidAdminCredential,
+  logAuditEvent,
+  startAlertPoller,
+} from "./admin.js";
+import { registerAdminRoutes } from "./adminRoutes.js";
 
 interface FacilitatorRequestBody {
   x402Version?: number;
@@ -83,6 +93,20 @@ export interface HardeningOptions {
   rateMaxPerMinute?: number;
   /** Max body bytes for /verify and /settle (default 32 KiB). */
   bodyLimitBytes?: number;
+}
+
+/** Operator Console wiring — see buildServer's own `admin` parameter doc. */
+export interface AdminOptions {
+  adminSecret: string;
+  /** Signs the session cookie GET /admin's login flow sets. Independent of
+   *  adminSecret: this is @fastify/cookie's own HMAC signing key, never
+   *  transmitted anywhere, and rotating it invalidates every existing
+   *  session cookie without touching adminSecret itself. Falls back to
+   *  adminSecret when unset (fine for a single-operator deployment; a
+   *  multi-secret setup should set its own). */
+  cookieSecret?: string;
+  killSwitch: KillSwitch;
+  store: CatalogStore;
 }
 
 /**
@@ -154,6 +178,15 @@ export async function buildServer(
    *  bonding is entirely inactive and /settle behaves exactly as it did before this
    *  existed. See the bond-registration block in /settle for the full behavior. */
   bondEscrow?: BondEscrowOptions,
+  /**
+   * Operator Console. Undefined disables it entirely: no /admin/* route is
+   * even registered, so a deployment that never set ADMIN_SECRET has zero
+   * new attack surface — not "routes exist but always 401", genuinely
+   * absent. Set only by the production boot path in this file's own
+   * isDirectRun block, once config.adminSecret and a hydrated KillSwitch
+   * both exist.
+   */
+  admin?: AdminOptions,
 ) {
   const { facilitator, pool } = built;
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
@@ -227,7 +260,7 @@ export async function buildServer(
   // `req.ip` is the proxy address, which is only ever used as the fallback when
   // no X-Forwarded-For header is present at all, i.e. a direct connection.
   const app = Fastify({ logger: true, bodyLimit });
-  registerBazaar(facilitator, catalog);
+  registerBazaar(facilitator, catalog, admin ? { auditStore: admin.store } : {});
 
   // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
   // limiting. /health is exempt so the Render health check cannot be throttled.
@@ -286,6 +319,58 @@ export async function buildServer(
     // through.
     onExceeded: () => incrementRateLimitRejectionsTotal(),
   });
+
+  // Operator Console. Entirely absent (no cookie plugin, no preHandler hook,
+  // no routes) unless `admin` was supplied — see AdminOptions' own doc
+  // comment on buildServer's admin parameter for why that matters.
+  if (admin) {
+    // Registered only when the console itself is — @fastify/cookie parses
+    // EVERY request's Cookie header once it is registered, which is wasted
+    // work on a deployment that never configured ADMIN_SECRET.
+    await app.register(cookie, { secret: admin.cookieSecret ?? admin.adminSecret });
+    // preHandler, not onRequest: preHandler runs after body/cookie parsing,
+    // which is what makes request.cookies available here at all — checked
+    // BEFORE any /admin/* route handler runs, so an unauthenticated request
+    // never reaches one, regardless of what that handler does.
+    //
+    // Scoped by URL PREFIX, not Fastify's own per-route `onRoute` matching:
+    // this hook is registered globally and checks req.url itself, which is
+    // deliberately the more conservative direction to get wrong — a bug here
+    // could only ever gate TOO MANY routes (a non-admin route wrongly 401s,
+    // caught immediately by any smoke test) never too few (a new /admin/*
+    // route silently unguarded, caught by nothing until an incident). The
+    // parameterized test in server.admin.test.ts asserts this boundary is
+    // exact in both directions regardless.
+    app.addHook("preHandler", async (request, reply) => {
+      if (!request.url.startsWith("/admin")) return;
+      const cookieHeader = request.cookies[ADMIN_SESSION_COOKIE];
+      const unsignedCookie =
+        cookieHeader !== undefined ? app.unsignCookie(cookieHeader) : undefined;
+      const credentialOk = hasValidAdminCredential(
+        admin.adminSecret,
+        request.headers["x-admin-token"],
+        unsignedCookie?.valid ? unsignedCookie.value : undefined,
+      );
+      if (!credentialOk) {
+        // GET /admin itself is the one route that degrades to a login form
+        // instead of a bare 401 — see adminRoutes.ts's own handler for that
+        // route, which checks auth a second time deliberately (this hook
+        // still runs first and still blocks every OTHER /admin/* route
+        // outright; only the HTML page gets a friendlier unauthenticated
+        // response instead of a JSON 401).
+        if (request.url === "/admin" || request.url.startsWith("/admin?")) return;
+        return reply.status(401).send({ error: "unauthorized", detail: "missing or invalid X-Admin-Token" });
+      }
+    });
+    registerAdminRoutes(app, {
+      adminSecret: admin.adminSecret,
+      killSwitch: admin.killSwitch,
+      store: admin.store,
+      network,
+      catalog,
+      pool,
+    });
+  }
 
   app.get("/health", async () => ({
     status: "ok",
@@ -480,7 +565,93 @@ export async function buildServer(
    * a duplicate call served from the dedup cache did no new work and must
    * not be double-counted as a second real settle attempt.
    */
+  /**
+   * Thin wrapper around the real pipeline (renamed to runSettlePipelineInner
+   * immediately below) that adds exactly ONE thing: an awaited audit-log
+   * write covering every actual pipeline run, success or failure, logged
+   * from this single call site rather than scattered across the inner
+   * function's ~10 return points.
+   *
+   * Why a wrapper and not an edit to the inner function's own return
+   * statements: this pipeline is safety- and money-adjacent, extensively
+   * commented, and every existing return/throw path is already correct and
+   * tested. Rewriting each one to also populate a captured variable would be
+   * a large, git-blame-obscuring diff through code with an explicit "read in
+   * full before touching it" instruction attached. Wrapping the call instead
+   * touches nothing inside the inner function at all — this function reads
+   * whatever the inner one already returns or throws and derives the audit
+   * event from THAT, the same "read the outcome, don't ask each branch to
+   * self-report" principle server.ts already uses for the
+   * extension-responses header (see catalogOutcome's own comment: "never
+   * from a hand-maintained list of which branches count").
+   *
+   * AWAITED before resolving/rejecting to the caller — settlement outcomes
+   * are the one audit category durability was chosen over latency for (see
+   * admin.ts's header comment) — but the audit write's OWN failure is
+   * swallowed (logAuditEvent never throws): a slow or broken audit log must
+   * never turn a real settlement's response into a 500.
+   *
+   * Skipped entirely when the console is disabled (admin undefined) — zero
+   * added latency on a deployment that never configured ADMIN_SECRET.
+   */
   async function runSettlePipeline(
+    request: FastifyRequest<{ Body: FacilitatorRequestBody }>,
+    paymentPayload: PaymentPayload | undefined,
+    paymentRequirements: PaymentRequirements | undefined,
+  ): Promise<SettleDedupResult> {
+    let outcome: SettleDedupResult;
+    try {
+      outcome = await runSettlePipelineInner(request, paymentPayload, paymentRequirements);
+    } catch (err) {
+      if (admin) {
+        await logAuditEvent(
+          admin.store,
+          { action: "settlement_failure", detail: { reason: err instanceof Error ? err.message : String(err) } },
+          request.log,
+        );
+      }
+      throw err;
+    }
+    if (admin) {
+      if (outcome.statusCode === 200 && (outcome.body as { success?: boolean })?.success === true) {
+        const body = outcome.body as { transaction?: string; payer?: string; amount?: string };
+        await logAuditEvent(
+          admin.store,
+          {
+            action: "settlement_success",
+            detail: {
+              hash: body.transaction,
+              payTo: paymentRequirements?.payTo,
+              payer: body.payer,
+              network,
+            },
+            amountStroops: body.amount !== undefined ? Number(body.amount) : undefined,
+          },
+          request.log,
+        );
+      } else {
+        // Covers every non-2xx-success outcome: the 400 validation returns,
+        // every 503 refusal (kill switch, balance, policy, pool exhaustion,
+        // bond registration), and the 200-with-rpcStatus-failure branch
+        // (result.success === false, still HTTP 200 per x402 conformance —
+        // see settleError's own doc comment on why a REFUSAL is not the same
+        // HTTP-layer thing as an error). All are settlement_failure from an
+        // audit-log point of view: money did not move.
+        const body = outcome.body as { errorReason?: string; reason?: string; error?: string };
+        await logAuditEvent(
+          admin.store,
+          {
+            action: "settlement_failure",
+            detail: { reason: body.errorReason ?? body.reason ?? body.error ?? `http_${outcome.statusCode}` },
+          },
+          request.log,
+        );
+      }
+    }
+    return outcome;
+  }
+
+  async function runSettlePipelineInner(
     request: FastifyRequest<{ Body: FacilitatorRequestBody }>,
     paymentPayload: PaymentPayload | undefined,
     paymentRequirements: PaymentRequirements | undefined,
@@ -519,6 +690,21 @@ export async function buildServer(
             error: "invalid_payload",
             detail: "payload.transaction is not a parseable transaction envelope",
           }),
+        };
+      }
+      // Operator Console kill switch — checked BEFORE the balance guard and
+      // spend policy (same "junk/paused costs no budget" ordering as the
+      // parse check just above), synchronous and in-memory (see admin.ts's
+      // KillSwitch doc comment for why this is never a Turso read on this
+      // path). Absent entirely when the console is disabled (no ADMIN_SECRET
+      // configured) — /settle behaves exactly as it did before this existed.
+      if (admin?.killSwitch.get().enabled) {
+        const reason = admin.killSwitch.get().reason ?? "paused by operator";
+        request.log.warn({ reason }, "[admin] settle refused: kill switch is enabled");
+        return {
+          statusCode: 503,
+          headers: {},
+          body: { error: "service_paused", reason },
         };
       }
       // Fix 3: refuse settle when the sponsor is below the hard balance floor —
@@ -1265,6 +1451,32 @@ if (isDirectRun) {
     );
   }
 
+  // Operator Console. Requires BOTH adminSecret and a real Turso store — the
+  // kill switch's durability requirement ("survives restarts") has nowhere
+  // to persist to in in-memory mode, so ADMIN_SECRET set without
+  // CATALOG_DB_URL is a boot-time misconfiguration, not a degrade-quietly
+  // case, same both-or-neither posture as bondEscrow above. FAILS CLOSED
+  // (see admin.ts's KillSwitch.hydrate doc comment) — a Turso read failure
+  // during hydration propagates out of this block and aborts boot, same as
+  // every other fatal misconfiguration in this file.
+  let admin: AdminOptions | undefined;
+  if (config.adminSecret) {
+    if (!store) {
+      throw new Error(
+        "[config] ADMIN_SECRET is set but CATALOG_DB_URL is not — the Operator Console's kill switch " +
+          "cannot survive a restart without a real Turso database. Set CATALOG_DB_URL, or unset " +
+          "ADMIN_SECRET to run without the console.",
+      );
+    }
+    const killSwitch = await KillSwitch.hydrate(store, config.operatorKillSwitchDefault ?? false);
+    admin = { adminSecret: config.adminSecret, killSwitch, store };
+  } else {
+    console.warn(
+      "[admin] ADMIN_SECRET is not set — the Operator Console (kill switch, dashboard, audit log) is " +
+        "disabled. No /admin/* route is registered. Set ADMIN_SECRET to enable it.",
+    );
+  }
+
   // Hoisted rather than inlined into buildServer(...): the channel monitor below
   // needs the SAME ChannelPool instance the facilitator settles through, and a
   // second buildFacilitator() call would construct a second, disconnected pool.
@@ -1278,7 +1490,25 @@ if (isDirectRun) {
     balanceGuard,
     config.network,
     bondEscrow,
+    admin,
   );
+
+  // Basic alerting (spec §6) — only meaningful with a console to read the
+  // audit log through, so this starts only when admin is configured.
+  if (admin) {
+    startAlertPoller({
+      logger: { warn: (obj, msg) => app.log.warn(obj, msg), error: (obj, msg) => app.log.error(obj, msg) },
+      store: admin.store,
+      poolStatus: () => built.pool!.status(),
+      balanceStatus: () => balanceGuard.status(),
+      fetchBalanceStroops: () => fetchXlmBalanceStroops(horizonUrl, sponsorPub),
+      softFloorStroops: config.balance.softFloorStroops,
+      // Shared with the balance/channel guards' own polling cadence, same
+      // "one combined request budget, not several independently-tunable
+      // intervals" reasoning as config.ts's own comment on balance.intervalMs.
+      intervalMs: config.balance.intervalMs,
+    });
+  }
 
   // Channel-account balance monitor. The pool's disable()/enable() shipped fully
   // implemented and tested with NO production caller, so an account drifting

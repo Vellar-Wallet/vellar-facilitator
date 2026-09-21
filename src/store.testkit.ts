@@ -12,7 +12,12 @@ import { join } from "node:path";
 import {
   LibsqlCatalogStore,
   StoreUnreachableError,
+  type AuditLogEntry,
+  type AuditLogQuery,
+  type AuditLogRow,
   type CatalogStore,
+  type KillSwitchState,
+  type SettlementAggregates,
   type StoredEntryRow,
   type StoredOwnership,
 } from "./store.js";
@@ -83,6 +88,21 @@ export class FailingStore implements CatalogStore {
   }
   loadEmbeddings(): Promise<Array<{ resource_key: string; embedding: number[] }>> {
     return this.inner.loadEmbeddings();
+  }
+  getKillSwitchState(): Promise<KillSwitchState | undefined> {
+    return this.inner.getKillSwitchState();
+  }
+  setKillSwitchState(state: KillSwitchState): Promise<void> {
+    return this.inner.setKillSwitchState(state);
+  }
+  appendAuditLog(entry: AuditLogEntry): Promise<void> {
+    return this.inner.appendAuditLog(entry);
+  }
+  queryAuditLog(opts: AuditLogQuery): Promise<{ entries: AuditLogRow[]; total: number }> {
+    return this.inner.queryAuditLog(opts);
+  }
+  settlementAggregates(opts: { last24hSince: number; last7dSince: number }): Promise<SettlementAggregates> {
+    return this.inner.settlementAggregates(opts);
   }
   close(): Promise<void> {
     return this.inner.close();

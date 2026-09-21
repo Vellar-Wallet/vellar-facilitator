@@ -3,6 +3,8 @@ import type { x402Facilitator } from "@x402/core/facilitator";
 import { BAZAAR, extractDiscoveryInfo } from "@x402/extensions/bazaar";
 import type { BazaarCatalog } from "./catalog.js";
 import { verifyResourceOwnership, type OwnershipVerdict } from "./ownership.js";
+import type { CatalogStore } from "./store.js";
+import { logAuditEvent } from "./admin.js";
 
 /**
  * RFP gap #2 — EXTENSION-RESPONSES. What the cataloging hook below actually
@@ -75,6 +77,12 @@ export interface RegisterBazaarOptions {
   /** Layer 2 verifier. Defaults to the real SSRF-guarded fetch; unset in tests
    * or when Layer 2 is disabled leaves entries at TOFU-only (unverified). */
   verifyOwnership?: OwnershipVerifier;
+  /** Operator Console audit log. Undefined (the default, and every existing
+   *  test's call) means catalog_upsert/catalog_rejected are simply never
+   *  written — this hook's behavior is otherwise completely unchanged, same
+   *  "absent means off" posture as every other Operator Console wiring
+   *  point. */
+  auditStore?: CatalogStore;
 }
 
 /**
@@ -102,6 +110,7 @@ export function registerBazaar(
 ): void {
   facilitator.registerExtension(BAZAAR);
   const verifyOwnership = options.verifyOwnership ?? verifyResourceOwnership;
+  const auditStore = options.auditStore;
 
   facilitator.onAfterSettle(async ({ paymentPayload, requirements, result }) => {
     try {
@@ -125,6 +134,29 @@ export function registerBazaar(
       await catalog.upsertFromPayment(discovered, requirements, outcome);
       const slot = catalogOutcomeStore.getStore();
       if (slot) slot.outcome = outcome;
+      // Operator Console audit log — ONE call site covering every accept/
+      // reject branch inside upsertFromPayment, via the SAME outcome
+      // out-param EXTENSION-RESPONSES already reads two lines up. Not
+      // awaited: this hook already runs after settlement is on-chain (see
+      // this function's own header comment — @x402/core calls onAfterSettle
+      // post-settlement), so a slow audit write here would add latency to
+      // the settle RESPONSE for no correctness benefit; catalog events are
+      // not the durability-over-latency category settlement outcomes are
+      // (see admin.ts's header comment for that distinction). logAuditEvent
+      // itself swallows write failures, so this can never throw into the
+      // hook's own try/catch below.
+      if (auditStore) {
+        void logAuditEvent(
+          auditStore,
+          {
+            action: outcome.cataloged ? "catalog_upsert" : "catalog_rejected",
+            detail: outcome.cataloged
+              ? { resourceUrl: discovered.resourceUrl, payTo: requirements.payTo, network: requirements.network }
+              : { resourceUrl: discovered.resourceUrl, reason: outcome.reason },
+          },
+          console,
+        );
+      }
       // Settlement ground truth (trust layer): count the settlement and the
       // distinct payer against the cataloged resource.
       //

@@ -1,9 +1,10 @@
 import { x402Facilitator } from "@x402/core/facilitator";
 import type { PaymentPayload, PaymentRequirements, SchemeNetworkFacilitator } from "@x402/core/types";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { registerBazaar } from "./bazaar.js";
 import { BazaarCatalog } from "./catalog.js";
+import { tmpStore } from "./store.testkit.js";
 
 function requirements(): PaymentRequirements {
   return {
@@ -152,5 +153,99 @@ describe("registerBazaar", () => {
     registerBazaar(facilitator, catalog);
     const result = await facilitator.settle(payloadWithDiscovery(), requirements());
     expect(result.success).toBe(true);
+  });
+});
+
+// Operator Console audit logging (auditStore option) — a first catalog
+// accept writes catalog_upsert, a reject writes catalog_rejected, both via
+// the SAME outcome out-param EXTENSION-RESPONSES already reads (see
+// registerBazaar's own comment on this call site). auditStore is undefined
+// in every test above, which is itself the "off by default" case already
+// covered: onAfterSettle's behavior is otherwise completely unchanged.
+describe("registerBazaar — catalog audit logging", () => {
+  // logAuditEvent is deliberately NOT awaited on this path (fire-and-forget,
+  // see bazaar.ts's own comment on why) — settle() resolving does not
+  // guarantee the write has landed yet, so these tests poll briefly rather
+  // than asserting immediately after settle() returns.
+  async function waitForAuditRow(store: Awaited<ReturnType<typeof tmpStore>>["store"], action: string) {
+    for (let i = 0; i < 50; i++) {
+      const { entries } = await store.queryAuditLog({ limit: 10, offset: 0, action });
+      if (entries.length > 0) return entries;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return [];
+  }
+
+  it("writes catalog_upsert on a first successful catalog", async () => {
+    const { store } = tmpStore();
+    await store.init();
+    const catalog = await BazaarCatalog.create(store);
+    const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme(true));
+    registerBazaar(facilitator, catalog, { auditStore: store });
+
+    await facilitator.settle(payloadWithDiscovery(), requirements());
+
+    const entries = await waitForAuditRow(store, "catalog_upsert");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.detail).toMatchObject({
+      resourceUrl: "https://api.example.com/weather",
+      payTo: requirements().payTo,
+    });
+    await store.close();
+  });
+
+  it("writes catalog_rejected with the real reason when the upsert is refused", async () => {
+    const { store } = tmpStore();
+    await store.init();
+    const catalog = await BazaarCatalog.create(store);
+    const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme(true));
+    registerBazaar(facilitator, catalog, { auditStore: store });
+
+    // First settle establishes the TOFU binding for this URL to
+    // requirements().payTo. A second settle for the SAME URL by a
+    // DIFFERENT payTo is refused with unbound_payto (catalog.ts's Fix 0
+    // Layer 1) — a real, stable rejection reason reached from inside
+    // upsertFromPayment's own funnel, not a contrived early-exit.
+    await facilitator.settle(payloadWithDiscovery(), requirements());
+    const hijackAttempt = { ...requirements(), payTo: "GDIFFERENTPAYTOACCOUNTNOTBOUNDXXXXXXXXXXXXXXXXXXXXXXXXXXX" };
+    await facilitator.settle(payloadWithDiscovery({ accepted: hijackAttempt }), hijackAttempt);
+
+    const entries = await waitForAuditRow(store, "catalog_rejected");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.detail).toMatchObject({ reason: "unbound_payto" });
+    await store.close();
+  });
+
+  it("writes nothing when no auditStore is supplied (the default)", async () => {
+    const { store: probeStore } = tmpStore();
+    await probeStore.init();
+    // catalog itself uses a DIFFERENT, in-memory (no-store) instance —
+    // probeStore exists only so this test has somewhere to confirm the
+    // absence of rows, proving registerBazaar never reaches for a store it
+    // was not given.
+    const catalog = await BazaarCatalog.create();
+    const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme(true));
+    registerBazaar(facilitator, catalog);
+    await facilitator.settle(payloadWithDiscovery(), requirements());
+    await new Promise((r) => setTimeout(r, 20));
+    const { entries } = await probeStore.queryAuditLog({ limit: 10, offset: 0 });
+    expect(entries).toHaveLength(0);
+    await probeStore.close();
+  });
+
+  it("a failing audit write is swallowed and never surfaces to the caller", async () => {
+    const { store } = tmpStore();
+    await store.init();
+    const failingStore = { ...store, appendAuditLog: vi.fn(() => Promise.reject(new Error("db down"))) };
+    const catalog = await BazaarCatalog.create(store);
+    const facilitator = new x402Facilitator().register("stellar:testnet", stubScheme(true));
+    registerBazaar(facilitator, catalog, { auditStore: failingStore as unknown as typeof store });
+
+    const result = await facilitator.settle(payloadWithDiscovery(), requirements());
+    expect(result.success).toBe(true);
+    // Give the fire-and-forget write's rejection a tick to be handled —
+    // proving it does NOT become an unhandled rejection / thrown error.
+    await new Promise((r) => setTimeout(r, 20));
+    await store.close();
   });
 });

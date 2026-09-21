@@ -95,6 +95,45 @@ export interface FacilitatorConfig {
     /** Poll interval in ms (default 60_000). */
     intervalMs: number;
   };
+  /**
+   * Operator Console. Shared secret for every /admin/* route — checked via
+   * the X-Admin-Token header or a signed session cookie, both compared
+   * against this value. Undefined disables the console entirely: every
+   * /admin/* route 401s unconditionally rather than falling back to "no
+   * auth required", the same "absent means off, never means open" posture
+   * as bondEscrowContractId above.
+   *
+   * Deliberately NOT validated by shape (contrast parseBondEscrowAdminSecretKey):
+   * this is an operator-chosen bearer token, not a cryptographic key in a
+   * fixed alphabet, so there is no wrong shape to catch — only "too short to
+   * be a real secret", checked here.
+   *
+   * OPTIONAL on the interface (unlike this file's usual required-field
+   * convention) because buildFacilitator() — the one function that takes a
+   * bare FacilitatorConfig — never reads it; only buildServer()'s new admin
+   * routes do, and buildServer() takes it as its own explicit parameter, not
+   * through this object. Making it required here would force every one of
+   * this repo's existing test files' inline testConfig literals to grow two
+   * fields their test has no reason to care about. loadConfig() below still
+   * always produces a real value (parseAdminSecret's own undefined-or-valid
+   * contract), so the real boot path is unaffected.
+   */
+  adminSecret?: string | undefined;
+  /**
+   * Kill-switch FIRST-BOOT seed only — never a runtime override. Turso's
+   * `kill_switch` table (src/store.ts) is the sole source of truth once a row
+   * exists; this value seeds that row only when the table is empty (a fresh
+   * database, or one that predates the Operator Console). Read this as
+   * "what should the kill switch be the very first time this facilitator
+   * boots against a given database", not "what is the kill switch right
+   * now" — an operator toggling it via POST /admin/kill-switch after boot is
+   * never overridden by this variable on a later restart, because Turso
+   * already has a row by then.
+   *
+   * OPTIONAL on the interface for the same reason adminSecret is — see its
+   * comment immediately above.
+   */
+  operatorKillSwitchDefault?: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorConfig {
@@ -299,6 +338,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     );
   }
 
+  const adminSecret = parseAdminSecret(env.ADMIN_SECRET);
+  const operatorKillSwitchDefault = parseBooleanEnv(
+    env.OPERATOR_KILL_SWITCH,
+    false,
+    "OPERATOR_KILL_SWITCH",
+  );
+
   const bondEscrowContractId = parseBondEscrowContractId(env.BOND_ESCROW_CONTRACT_ID);
   const bondEscrowAdminSecretKey = parseBondEscrowAdminSecretKey(env.BOND_ESCROW_ADMIN_SECRET_KEY);
   // Half-configured bonding is a broken state, not a partial feature: register_settlement
@@ -332,6 +378,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): FacilitatorCon
     verificationApiUrl: env.VERIFICATION_API_URL,
     spend,
     balance,
+    adminSecret,
+    operatorKillSwitchDefault,
   };
 }
 
@@ -506,4 +554,39 @@ function positiveIntEnv(raw: string | undefined, fallback: number, name: string)
     throw new Error(`${name} must be a positive integer, got: ${raw}`);
   }
   return n;
+}
+
+/** Strict boolean env var: exactly "true" or "false", falling back to
+ *  `fallback` when unset. Same fail-loud-on-garbage posture as
+ *  STELLAR_NETWORK's own strict parse above — an operator who sets
+ *  OPERATOR_KILL_SWITCH=1 or =yes almost certainly means true, and silently
+ *  reading either as false (via a loose truthiness check) would boot a
+ *  supposedly-paused facilitator wide open with nothing in the logs saying
+ *  so, which is the wrong direction to fail for a safety switch. */
+function parseBooleanEnv(raw: string | undefined, fallback: boolean, name: string): boolean {
+  if (raw === undefined) return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be "true" or "false", got: "${raw}"`);
+}
+
+/** ADMIN_SECRET — the bearer token every /admin/* route checks. Undefined
+ *  disables the console (see FacilitatorConfig.adminSecret's own comment).
+ *  The only validation is a minimum length: this is an operator-chosen
+ *  string, not a fixed-alphabet key, so there is no "wrong shape" to catch,
+ *  only "too short to resist guessing" — 16 chars is well below what anyone
+ *  would actually mint (mint it with e.g. `openssl rand -hex 32`), but catches
+ *  the "ADMIN_SECRET=test" mistake at boot rather than in production traffic.
+ *  Never echoed in the thrown message, same convention as every other secret
+ *  parser in this file. */
+const MIN_ADMIN_SECRET_LEN = 16;
+function parseAdminSecret(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw.length < MIN_ADMIN_SECRET_LEN) {
+    throw new Error(
+      `[config] ADMIN_SECRET is set but is shorter than ${MIN_ADMIN_SECRET_LEN} characters — too guessable ` +
+        `for a token that gates a kill switch. Mint a real one, e.g.: openssl rand -hex 32`,
+    );
+  }
+  return raw;
 }
