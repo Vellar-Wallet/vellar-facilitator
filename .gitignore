@@ -84,3 +84,6 @@ docs/scf-competitors.md
 # Root vitest config (dashboard
 # related, not needed in repo)
 vitest.config.ts
+
+# No longer tracked in the repo
+docs/security-audit.md
