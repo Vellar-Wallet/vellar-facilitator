@@ -4,8 +4,11 @@
 **Report date:** 2026-09-03; e2e suite run added 2026-09-08
 **Status:** partial — see [§6 Known gaps](#6-known-gaps). The e2e suite has now
 been run against the live facilitator (§6.1): **C1 is satisfied on testnet**
-with six Horizon-confirmed settlements, and **C4 is partial**. Pubnet (§6.2)
-remains unsatisfied. Semantic search (§6.3) has **shipped and is measured** —
+with six Horizon-confirmed settlements, and **C4 is partial**. The facilitator
+is now also **live on mainnet**, with 11 confirmed settlements verified on
+Horizon (§6.2) — but the canonical suite itself has not yet been run against
+pubnet, so **C4/C5 remain partial** there. Semantic search (§6.3) has **shipped
+and is measured** —
 Voyage AI embeddings fused with the lexical scorer by RRF — but is **not
 claimed as met**: five of ten semantic queries reach the top 3 without reaching
 first place, and the eval corpus is a single seller's 19 entries. All of it is
@@ -26,11 +29,11 @@ It asks specifically for:
 
 | # | RFP requirement | Status |
 |---|---|---|
-| C1 | An unmodified canonical client completing a payment end to end on both networks | ✅ **testnet** — 6 settled txs, §6.1. Pubnet: ⛔ §6.2 |
+| C1 | An unmodified canonical client completing a payment end to end on both networks | ✅ **testnet** — 6 settled txs, §6.1. **Pubnet** — 11 settled txs, real traffic but not the canonical-client run itself, §6.2 |
 | C2 | `/supported` emitting the Stellar `extra` contract including `areFeesSponsored` | ✅ verified live, §3.1 |
 | C3 | The spec `payload: {transaction}` format accepted verbatim | ✅ verified live, §3.2 / §5 |
-| C4 | A passing run of the x402 repo's e2e suite for both networks | ⚠️ **partial** — 6/10 passed testnet, 4 unexecuted, pubnet unrun; §6.1 |
-| C5 | A published settled transaction hash per network per scheme | ⚠️ **testnet only** — §4, §5. Pubnet: §6.2 |
+| C4 | A passing run of the x402 repo's e2e suite for both networks | ⚠️ **partial** — 6/10 passed testnet, 4 unexecuted; pubnet canonical-suite run not yet done, §6.1 / §6.2 |
+| C5 | A published settled transaction hash per network per scheme | ⚠️ **testnet** — §4, §5. **Pubnet** — 11 hashes published, §6.2, but not yet produced by the canonical-suite run C4/C5 ask for |
 | C6 | A non-null `reason` on every rejection | ✅ verified live, §3.3 |
 | S1 | Bazaar search: "real ranking" with a stated evaluation approach (RFP §3.2) | ⚠️ **partial** — hybrid semantic search shipped (`969a56c`). Lexical + Voyage AI `voyage-code-3` embeddings, RRF fusion. Measured: semantic queries MRR 0.717, NDCG@3 0.789. Five of ten semantic queries miss first place. Eval corpus is one seller's demo (19 entries). Not claimed as met until retrieval quality holds across a diverse real-world corpus. See §6.3 |
 
@@ -79,7 +82,9 @@ All captured 2026-09-03 against the live URL.
 ```
 
 `areFeesSponsored: true` is present on both kinds, as the RFP requires. Only
-`stellar:testnet` appears — this is the direct evidence for §6.2.
+`stellar:testnet` appears here because this capture is from the testnet
+instance's `/supported` — each deployed instance serves one network. See §6.2
+for the separate mainnet deployment and its settled transactions.
 
 ### 3.2 Discovery endpoints
 
@@ -338,8 +343,10 @@ C4 is **not** claimed as satisfied, for two independent reasons:
    `Error: Server failed to start` — `typescript/http/next` and
    `typescript/mcp` exit non-zero during startup. No payment was attempted and
    **no request reached the facilitator** on those four.
-2. **The pubnet half was not run.** There is no pubnet deployment (§6.2), so
-   the mainnet side of "both networks" remains unrun and unclaimed.
+2. **The pubnet half of this canonical-suite run was not executed.** A mainnet
+   deployment now exists with real settled transactions (§6.2), but this
+   specific 10-scenario canonical-client run has not yet been repeated against
+   it — that run, not just a mainnet deployment, is what C4 asks for.
 
 **Why the four failures are not attributable to this facilitator — with a
 control.** The suite was first run against its own bundled reference
@@ -405,26 +412,59 @@ evidence:
    `npx turbo run build --filter=@x402/stellar...`, optionally with
    `NODE_OPTIONS=--max-old-space-size=8192`.
 
-### 6.2 No pubnet (mainnet) deployment — C1, C4, C5 ⛔
+### 6.2 Pubnet (mainnet) deployment — C1 ✅ testnet+mainnet, C4/C5 ⚠️ partial
 
 The RFP treats both networks as committed deliverables, and requires a settled
-hash **per network** per scheme. Testnet hashes do not substitute.
+hash **per network** per scheme, plus a canonical-suite conformance run per
+network. Testnet hashes do not substitute for mainnet, and a settled mainnet
+hash does not by itself substitute for the canonical-suite run.
 
-**Current state:** the live facilitator advertises `stellar:testnet` only
-(§3.1). There is no pubnet deployment, and therefore no pubnet settled
-transaction hash for either scheme. **No mainnet hash exists, and none is
-claimed here.**
+**Current state: the facilitator is live on mainnet, with real settled
+transactions, but the canonical x402 e2e suite (§6.1) has not yet been run
+against it.**
 
-The code does support it: `src/config.ts:98` maps `STELLAR_NETWORK=pubnet` to
-`stellar:pubnet`, with pubnet-specific fail-closed behaviour in the spend policy
-(`src/config.ts:214`) and separate Horizon/RPC endpoints. What is missing is a
-deployed instance and a funded mainnet sponsor account.
+- **Live since 2026-09-17** on `stellar:pubnet`.
+- **11 confirmed settlements**, 2026-09-17 through 2026-09-21, verified
+  directly on Horizon — every transaction's `fee_account` matches the mainnet
+  sponsor below, confirming the facilitator (not the buyer) paid the network
+  fee, exactly as designed.
+- **Sponsor:** `GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H` — see
+  `docs/accounts.md`.
+- **USDC SAC (mainnet):** `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75`.
+- **Volume: 3.6 USDC total across the 11 settlements** — real, but explicitly
+  dev/test scale, not production traffic. Stated plainly so this is not read
+  as more than it is.
+- **Settled transaction hashes** (all Horizon-verified, `successful: true`,
+  `fee_account` matching the sponsor above):
+  - `7288cd138c5e2770784738b2903b3728f049f659d3d6da42e19976783edefef3`
+  - `b6898a10abebce5de92b9610fadfac470c48379bffdefb9ce81b581f4e0d3c07`
+  - `6ec03c83e5d7a45ed87603fae5dea18f4c205f65ff73e5fcef6614b606001275`
+  - `3b40e5b23d52388c7905b3a46b31c5e0b709e0b8a4a95125ac674937cbe37925`
+  - `237c91c3044dfc66e7498096637c10ce65041e7a744d9cd65a0cbc3f9d29c1f7`
+  - `09b24dc9fb78c5596cb780fee26c57bb17d5eee0e9cc7035ebae938e54752a14`
+  - `a2d6ee5eab785d6b5a5401028fa7ba414d8b2a6cac0a3568b3f8a8cf98f87f57`
+  - `babb0a72bcb94e80be61dff1fa56ec9a5ebd45c62caa139e03076ced5f55962f`
+  - `3401e34161883219abd3543752f19731fba39b31c108119add8138903ad0d742`
+  - `f5137a9cf90c39bd6680eb5dae3548a0ee2e2b0dffec059072e72882709cefe0`
+  - `4abe6af7e71acb3ceea0fa30a9649768e05d2efb67e04f573112e214a40db458`
 
-**Plan to close.** Deploy a second instance with `STELLAR_NETWORK=pubnet`, fund
-its sponsor with XLM, provision channel accounts on pubnet, settle one real
-`exact` payment, and record the hash here. Note that `docs/closing-state.md`
-G-10 (the spend ceiling accounted at a ~22× over-estimate) is an open **pubnet
-tuning** decision that should be resolved before a mainnet launch, not after.
+The code has supported this all along: `src/config.ts:98` maps
+`STELLAR_NETWORK=pubnet` to `stellar:pubnet`, with pubnet-specific fail-closed
+behaviour in the spend policy (`src/config.ts:214`) and separate Horizon/RPC
+endpoints. What closed this section from ⛔ to partial is a funded mainnet
+sponsor and a real deployment; what remains is proving it against the
+canonical suite.
+
+**What remains — C4/C5, funded SCF #46 deliverables.** C4 asks for a passing
+canonical-suite run on *both* networks; C5 asks for that run's settled hash
+*per network*. The testnet half is done (§6.1: six scenarios, real settled
+hashes, reproducible from `e2e/facilitators/vellar/`). The mainnet half —
+running that same canonical suite against the live pubnet deployment and
+recording its hashes here — has not yet happened; the 11 hashes above are
+real mainnet settlements but were not produced by the canonical-suite harness.
+Note that `docs/closing-state.md` G-10 (the spend ceiling accounted at a ~22×
+over-estimate) is an open **pubnet tuning** decision worth resolving before
+this scales past dev/test volume.
 
 ### 6.3 Bazaar search ranking is hybrid; not yet claimed as met — RFP §3.2 ⚠️
 
@@ -516,8 +556,8 @@ where they rank.
 - **Target: complete before mainnet launch, not after.**
 
 This is scoped as a pre-mainnet engineering commitment, not a post-launch
-nice-to-have. It sits alongside §6.2 (no pubnet deployment) as work that must
-land before a mainnet tag.
+nice-to-have. It sits alongside §6.2's remaining canonical-suite-on-pubnet gap
+as work that should close before scaling mainnet traffic past dev/test volume.
 
 ### 6.4 Deployed build predates this branch — ✅ CLOSED 2026-09-03
 
@@ -536,8 +576,9 @@ Two notes on what that does and does not change:
   `POST /settle {}` still returns `400` with **no** `extension-responses`
   header, which is the correct behaviour — the header is set only on paths that
   actually reach cataloging, never on an early exit.
-- Nothing here changes §6.1 (e2e suite not run), §6.2 (no pubnet deployment) or
-  §6.3 (lexical search). Those remain open.
+- Nothing here changes §6.1 (pubnet canonical-suite run not yet done), §6.2's
+  remaining canonical-suite-on-pubnet gap, or §6.3 (lexical search). Those
+  remain open.
 
 ## 7. Reproduction instructions
 
