@@ -58,3 +58,29 @@ contracts/bond-escrow/target/
 contracts/upto-vellar/target/
 contracts/upto-vellar/test_snapshots/
 .e2e-local/
+vellar-extraction.md
+
+# Internal planning and session files
+answers.md
+questions.md
+prompt.md
+web-mcp-build.md
+scf-form-response.md
+oakvale-business-plan.md
+oakvale-pitch-deck.md
+
+# Internal docs - not for repo
+docs/competitor-study-rail402.md
+docs/competitor-study-turnpike.md
+docs/custom-dashboard-design.md
+docs/full-project-explore.md
+docs/potential-competitors.md
+docs/scf-competitors.md
+
+# Claude and Railway internal files
+.claude/
+.railway-config-pull-*/
+
+# Root vitest config (dashboard
+# related, not needed in repo)
+vitest.config.ts
