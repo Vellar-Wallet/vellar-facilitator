@@ -128,6 +128,44 @@ services:
       # See docs/security-audit.md (F4) for the precondition before enabling.
       - key: SPONSOR_SECRET_KEY
         sync: false
+      # Operator Console (docs/operator-runbook.md). Non-secret boolean
+      # toggle — the plain literal FIRST-BOOT seed for the kill switch, never
+      # a runtime override once Turso has a row (see config.ts's own comment
+      # on FacilitatorConfig.operatorKillSwitchDefault). Left "false" here
+      # deliberately: flipping it requires editing and re-deploying this
+      # file, which is the WRONG tool for an operator response during an
+      # incident — use POST /admin/kill-switch (or the console UI) for that,
+      # which takes effect immediately with no deploy.
+      - key: OPERATOR_KILL_SWITCH
+        value: "false"
+      # THE credential that gates every /admin/* route (X-Admin-Token header,
+      # or the console's own signed session cookie — both checked against
+      # this same value). sync:false, same convention as SPONSOR_SECRET_KEY
+      # immediately above: the real value is set in the Render dashboard,
+      # never committed here.
+      #
+      # Mint it with:  openssl rand -hex 32
+      #
+      # Unlike CATALOG_DB_URL/CATALOG_DB_AUTH_TOKEN above (omitted from this
+      # file entirely), this one IS named here with sync:false rather than
+      # left out — the Operator Console's existence is not itself sensitive
+      # (the spec for it is public), only the token value is, so naming the
+      # variable costs nothing and makes "how do I enable the console"
+      # discoverable from this file alone.
+      #
+      # WHAT IT PERMITS, stated plainly: full control of the kill switch
+      # (pausing/resuming ALL settlement traffic) plus read access to the
+      # settlement dashboard and audit log. Treat it like SPONSOR_SECRET_KEY
+      # — whoever holds it can take the facilitator offline at will.
+      #
+      # Config.ts enforces a minimum length (16 chars) but does not validate
+      # entropy beyond that; a real 32-byte hex token from the command above
+      # clears it by a wide margin. Unset means the Operator Console is
+      # entirely disabled — no /admin/* route is even registered (see
+      # server.ts's own AdminOptions comment) — which is the safe default
+      # for a fresh deployment that has not yet decided on an operator.
+      - key: ADMIN_SECRET
+        sync: false
 
   # ── DEMO SELLER — for the end-to-end ownership-verification walkthrough ────
   #

@@ -138,7 +138,90 @@ export interface CatalogStore {
   getEntriesWithoutEmbeddings(): Promise<Array<{ resource_key: string; payload: string }>>;
   /** Every stored embedding, for the in-memory search cache. */
   loadEmbeddings(): Promise<Array<{ resource_key: string; embedding: number[] }>>;
+
+  // ── Operator Console ────────────────────────────────────────────────────
+
+  /** The kill switch's current state. `undefined` means the row has never
+   *  been written — the caller (server boot) seeds it from
+   *  OPERATOR_KILL_SWITCH on first read, per config.ts's own doc comment on
+   *  that variable. Never throws StoreInvalidError for "no row yet"; that is
+   *  the ordinary, expected state of a freshly migrated database. */
+  getKillSwitchState(): Promise<KillSwitchState | undefined>;
+  /** Replace the kill switch's single row. Whatever this resolves to is
+   *  IMMEDIATELY durable — the caller (POST /admin/kill-switch) updates its
+   *  own in-memory cache only after this succeeds, never before, so the two
+   *  can never observably disagree about what the last successful toggle
+   *  set. */
+  setKillSwitchState(state: KillSwitchState): Promise<void>;
+  /** Append one row to admin_audit_log. Never throws on a malformed `detail`
+   *  — the caller passes a plain object and this serializes it; a value that
+   *  cannot be JSON.stringify'd (a BigInt, a circular reference) is a caller
+   *  bug, not a condition this method degrades around. */
+  appendAuditLog(entry: AuditLogEntry): Promise<void>;
+  /** Paginated, most-recent-first read of admin_audit_log, optionally
+   *  filtered to one action. `total` is the COUNT ignoring limit/offset, so a
+   *  caller can render "showing 20 of 143" without a second round trip. */
+  queryAuditLog(opts: AuditLogQuery): Promise<{ entries: AuditLogRow[]; total: number }>;
+  /** Settlement aggregates for /admin/dashboard, computed directly from
+   *  admin_audit_log's settlement_success/settlement_failure rows — see the
+   *  admin_audit_log_action_created_at index this is designed to hit. `since`
+   *  values are inclusive lower bounds in epoch ms; omit a window to cover
+   *  all time (used for the all-time `total`/`totalVolumeUsdc` fields). */
+  settlementAggregates(opts: {
+    last24hSince: number;
+    last7dSince: number;
+  }): Promise<SettlementAggregates>;
   close(): Promise<void>;
+}
+
+export interface KillSwitchState {
+  enabled: boolean;
+  reason: string | undefined;
+  /** Who flipped it — always "operator" today (the only actor a
+   *  single-X-Admin-Token deployment can distinguish), kept as a field
+   *  rather than a hardcoded literal so a future multi-operator deployment
+   *  (distinct tokens, or a real auth system) can populate it without a
+   *  schema change. */
+  actor: string | undefined;
+  updatedAt: number;
+}
+
+export interface AuditLogEntry {
+  action: string;
+  actor?: string | undefined;
+  /** Serialized to JSON as-is. Event-specific fields (hash, payTo, network,
+   *  rejection reason, …) live here; settlement amount does NOT — see
+   *  amountStroops below. */
+  detail?: Record<string, unknown> | undefined;
+  /** Present only for settlement_success rows — the settled amount, in the
+   *  asset's smallest unit, as reported by the settle pipeline. Its own
+   *  column (not folded into `detail`) because settlementAggregates() SUMs
+   *  it directly; see admin_audit_log's own schema comment. */
+  amountStroops?: number | undefined;
+  createdAt: number;
+}
+
+export interface AuditLogQuery {
+  limit: number;
+  offset: number;
+  action?: string;
+}
+
+export interface AuditLogRow {
+  id: number;
+  action: string;
+  actor: string;
+  detail: Record<string, unknown> | undefined;
+  createdAt: number;
+}
+
+export interface SettlementAggregates {
+  total: number;
+  last24h: number;
+  last7d: number;
+  successCount: number;
+  totalVolumeStroops: string;
+  last24hVolumeStroops: string;
 }
 
 // ── Numbers ────────────────────────────────────────────────────────────────
@@ -261,6 +344,37 @@ const SCHEMA = [
      last_updated INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS entry_last_updated ON entry (last_updated DESC)`,
+  // Operator Console — kill switch. Single-row table (id is always 1): the
+  // kill switch has exactly one state for the whole facilitator, never a
+  // per-resource or per-merchant one, so there is nothing a second row could
+  // represent. Turso is the ONLY source of truth for this state — see
+  // OPERATOR_KILL_SWITCH's own doc comment in config.ts for why the env var
+  // is a first-boot seed only, never a runtime override.
+  `CREATE TABLE IF NOT EXISTS kill_switch (
+     id         INTEGER PRIMARY KEY CHECK (id = 1),
+     enabled    INTEGER NOT NULL,
+     reason     TEXT,
+     actor      TEXT,
+     updated_at INTEGER NOT NULL
+   )`,
+  // Operator Console — audit log. Append-only: every operator action and
+  // every settlement/catalog outcome worth reviewing later gets one row.
+  // `detail` is a JSON blob for event-specific fields (hash, amount, payTo,
+  // network, rejection reason, …) EXCEPT `amount_stroops`, which is its own
+  // column — the /admin/dashboard settlement-volume aggregate needs to SUM
+  // it, and summing a value buried in a JSON blob is the wrong tradeoff when
+  // the alternative is one extra nullable column. See the (action,
+  // created_at) index below: the dashboard's 24h/7d/success-rate queries all
+  // filter on action and range-scan on created_at together.
+  `CREATE TABLE IF NOT EXISTS admin_audit_log (
+     id             INTEGER PRIMARY KEY,
+     action         TEXT NOT NULL,
+     actor          TEXT DEFAULT "operator",
+     detail         TEXT,
+     amount_stroops INTEGER,
+     created_at     INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS admin_audit_log_action_created_at ON admin_audit_log (action, created_at DESC)`,
 ];
 
 export class LibsqlCatalogStore implements CatalogStore {
@@ -369,7 +483,13 @@ export class LibsqlCatalogStore implements CatalogStore {
       this.client.execute("SELECT name FROM sqlite_master WHERE type = 'table'"),
     );
     const names = new Set(tables.rows.map((r) => r.name));
-    for (const required of ["ownership", "entry"]) {
+    // kill_switch / admin_audit_log added alongside the Operator Console.
+    // CREATE TABLE IF NOT EXISTS never runs under initReadOnly(), so a
+    // database that predates this migration is exactly the "never
+    // initialized" case below — a maintenance script correctly refuses to
+    // proceed rather than silently running against a store the operator
+    // console cannot use.
+    for (const required of ["ownership", "entry", "kill_switch", "admin_audit_log"]) {
       if (!names.has(required)) {
         throw new StoreInvalidError(
           new Error(
@@ -653,6 +773,140 @@ export class LibsqlCatalogStore implements CatalogStore {
       }
     }
     return out;
+  }
+
+  // ── Operator Console ────────────────────────────────────────────────────
+
+  async getKillSwitchState(): Promise<KillSwitchState | undefined> {
+    const res = await this.run(() =>
+      this.client.execute("SELECT enabled, reason, actor, updated_at FROM kill_switch WHERE id = 1"),
+    );
+    const row = res.rows[0];
+    if (!row) return undefined;
+    return {
+      enabled: Number(row.enabled) === 1,
+      reason: typeof row.reason === "string" ? row.reason : undefined,
+      actor: typeof row.actor === "string" ? row.actor : undefined,
+      updatedAt: Number(row.updated_at ?? 0),
+    };
+  }
+
+  /** INSERT ... ON CONFLICT, not UPDATE: the row may not exist yet on a
+   *  database that has never had the kill switch toggled, and id=1 is fixed
+   *  by the CHECK constraint, so there is exactly one row this can ever be. */
+  async setKillSwitchState(state: KillSwitchState): Promise<void> {
+    this.assertWritable("setKillSwitchState");
+    await this.run(() =>
+      this.client.execute({
+        sql: `INSERT INTO kill_switch (id, enabled, reason, actor, updated_at) VALUES (1, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, reason = excluded.reason,
+                                            actor = excluded.actor, updated_at = excluded.updated_at`,
+        args: [state.enabled ? 1 : 0, state.reason ?? null, state.actor ?? null, state.updatedAt] as InArgs,
+      }),
+    );
+  }
+
+  async appendAuditLog(entry: AuditLogEntry): Promise<void> {
+    this.assertWritable("appendAuditLog");
+    await this.run(() =>
+      this.client.execute({
+        sql: `INSERT INTO admin_audit_log (action, actor, detail, amount_stroops, created_at)
+              VALUES (?, ?, ?, ?, ?)`,
+        args: [
+          entry.action,
+          entry.actor ?? "operator",
+          entry.detail !== undefined ? JSON.stringify(entry.detail) : null,
+          entry.amountStroops ?? null,
+          entry.createdAt,
+        ] as InArgs,
+      }),
+    );
+  }
+
+  async queryAuditLog(opts: AuditLogQuery): Promise<{ entries: AuditLogRow[]; total: number }> {
+    // Two queries, not one window-function query: libSQL's SQLite dialect
+    // supports COUNT(*) OVER() but splitting them keeps this readable and the
+    // audit log is never large enough (operator-driven writes plus one row
+    // per settle/catalog event) for a second indexed query to matter.
+    const whereClause = opts.action !== undefined ? "WHERE action = ?" : "";
+    const whereArgs = opts.action !== undefined ? [opts.action] : [];
+    const [rowsRes, countRes] = await Promise.all([
+      this.run(() =>
+        this.client.execute({
+          sql: `SELECT id, action, actor, detail, created_at FROM admin_audit_log ${whereClause}
+                ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+          args: [...whereArgs, opts.limit, opts.offset] as InArgs,
+        }),
+      ),
+      this.run(() =>
+        this.client.execute({
+          sql: `SELECT COUNT(*) as total FROM admin_audit_log ${whereClause}`,
+          args: whereArgs as InArgs,
+        }),
+      ),
+    ]);
+    const entries = rowsRes.rows.map((r) => {
+      const detailRaw = r.detail;
+      let detail: Record<string, unknown> | undefined;
+      if (typeof detailRaw === "string") {
+        try {
+          detail = JSON.parse(detailRaw) as Record<string, unknown>;
+        } catch {
+          // A row written by something other than appendAuditLog — surface
+          // it as absent rather than throwing, same "a bad row costs only
+          // its own field, not the whole read" posture as loadEmbeddings.
+          detail = undefined;
+        }
+      }
+      return {
+        id: Number(r.id),
+        action: String(r.action),
+        actor: String(r.actor ?? "operator"),
+        detail,
+        createdAt: Number(r.created_at ?? 0),
+      };
+    });
+    return { entries, total: Number(countRes.rows[0]?.total ?? 0) };
+  }
+
+  async settlementAggregates(opts: {
+    last24hSince: number;
+    last7dSince: number;
+  }): Promise<SettlementAggregates> {
+    // ONE query, not four — every count/sum this needs is a conditional
+    // aggregate over the same action-filtered, index-covered row set, so
+    // four separate COUNT(*) WHERE queries would each re-scan the same rows
+    // the (action, created_at) index already narrows in one pass.
+    const res = await this.run(() =>
+      this.client.execute({
+        sql: `
+          SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as last24h,
+            SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as last7d,
+            SUM(CASE WHEN action = 'settlement_success' THEN 1 ELSE 0 END) as success_count,
+            COALESCE(SUM(CASE WHEN action = 'settlement_success' THEN amount_stroops ELSE 0 END), 0) as total_volume,
+            COALESCE(SUM(CASE WHEN action = 'settlement_success' AND created_at >= ? THEN amount_stroops ELSE 0 END), 0) as last24h_volume
+          FROM admin_audit_log
+          WHERE action IN ('settlement_success', 'settlement_failure')
+        `,
+        args: [opts.last24hSince, opts.last7dSince, opts.last24hSince] as InArgs,
+      }),
+    );
+    const row = res.rows[0];
+    return {
+      total: Number(row?.total ?? 0),
+      last24h: Number(row?.last24h ?? 0),
+      last7d: Number(row?.last7d ?? 0),
+      successCount: Number(row?.success_count ?? 0),
+      // BigInt-safe as a string: a stroop total across enough settlements can
+      // exceed Number.MAX_SAFE_INTEGER, and libSQL returns large integers as
+      // JS `bigint` when they don't fit — String() is safe for both a number
+      // and a bigint row value, unlike Number() which would silently lose
+      // precision on the bigint case.
+      totalVolumeStroops: String(row?.total_volume ?? 0),
+      last24hVolumeStroops: String(row?.last24h_volume ?? 0),
+    };
   }
 
   async close(): Promise<void> {

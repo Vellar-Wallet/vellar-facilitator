@@ -80,11 +80,22 @@ describe("initReadOnly — schema verification without DDL", () => {
     // Build the OLD three-column ownership shape directly, bypassing
     // init()'s own migration path entirely, so this test proves the check
     // fires rather than proving init() already fixed the thing being tested.
+    // kill_switch/admin_audit_log ARE created (empty, current shape) — this
+    // test isolates the ownership.verified_at check specifically, and
+    // without these two tables present the table-existence check earlier in
+    // initReadOnly() would fire first and mask the assertion this test
+    // exists to make.
     await anyWriter.client.execute(
       "CREATE TABLE ownership (resource_key TEXT NOT NULL, pay_to TEXT NOT NULL, bound_at INTEGER NOT NULL, PRIMARY KEY (resource_key, pay_to))",
     );
     await anyWriter.client.execute(
       "CREATE TABLE entry (resource_key TEXT PRIMARY KEY, payload TEXT NOT NULL, last_updated INTEGER NOT NULL, embedding TEXT)",
+    );
+    await anyWriter.client.execute(
+      "CREATE TABLE kill_switch (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, reason TEXT, actor TEXT, updated_at INTEGER NOT NULL)",
+    );
+    await anyWriter.client.execute(
+      "CREATE TABLE admin_audit_log (id INTEGER PRIMARY KEY, action TEXT NOT NULL, actor TEXT DEFAULT \"operator\", detail TEXT, amount_stroops INTEGER, created_at INTEGER NOT NULL)",
     );
     await writer.close();
 
@@ -101,6 +112,13 @@ describe("initReadOnly — schema verification without DDL", () => {
     );
     await anyWriter.client.execute(
       "CREATE TABLE entry (resource_key TEXT PRIMARY KEY, payload TEXT NOT NULL, last_updated INTEGER NOT NULL)",
+    );
+    // See the sibling test above for why these two are created here too.
+    await anyWriter.client.execute(
+      "CREATE TABLE kill_switch (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, reason TEXT, actor TEXT, updated_at INTEGER NOT NULL)",
+    );
+    await anyWriter.client.execute(
+      "CREATE TABLE admin_audit_log (id INTEGER PRIMARY KEY, action TEXT NOT NULL, actor TEXT DEFAULT \"operator\", detail TEXT, amount_stroops INTEGER, created_at INTEGER NOT NULL)",
     );
     await writer.close();
 
