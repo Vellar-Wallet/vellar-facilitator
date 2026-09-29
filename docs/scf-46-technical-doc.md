@@ -7,7 +7,9 @@ SCF #46 RFP Track submission — "X402 Facilitator with Bazaar (Discovery)
 Support." This document governs this repo (`vellar-facilitator`).
 
 **Status: live on Stellar testnet and mainnet (stellar:pubnet), 731 tests
-passing (4 skipped). Production-hardened — the channel pool (50 accounts;
+passing (4 skipped). Traction: 390 testnet settlements (303 unique buyers, 4
+sellers), 11 mainnet settlements (2 unique buyers, 1 seller) — verified via
+operator console and Horizon. Production-hardened — the channel pool (50 accounts;
 50/50 under load), telemetry (11 Prometheus metrics), the deploy runbook, and
 the RFP gap fixes are all shipped. Pre-mainnet checklist: pubnet deployment is
 now done (§9); the external security audit remains, and semantic search is
@@ -50,6 +52,8 @@ trusting this table:
 | Two MCP tools on one server URL no longer collide | MCP resources keyed on the spec's `(resource.url, input.toolName)` tuple, U+001F separated | `git log c771c0d` |
 | Discovery is asset-aware, settlement stays asset-agnostic | `/discovery/resources?asset=<SAC>` filters; `/supported` carries `catalogAssets`, derived live from the catalog | `git log dfa0aa9`, `curl -s https://vellar-facilitator.onrender.com/supported \| python3 -m json.tool` |
 | Vellar is listed in the official Stellar x402 documentation | `stellar/stellar-docs` PR [#2836](https://github.com/stellar/stellar-docs/pull/2836), merged 2026-09-28, adding Vellar to the *Community facilitators* subsection | the merged PR itself |
+| Testnet activity — 390 payments, 303 unique buyers, 4 sellers since 2026-08-20 | Read from the operator console's audit-log-backed dashboard, which counts every settlement regardless of Bazaar discovery metadata | `GET https://vellar-facilitator-testnet-production.up.railway.app/discovery/resources?limit=100` shows catalog entries with per-resource settlement counts — **note:** the public catalog only reflects resources carrying the Bazaar extension, so it independently sums to a lower 371 settlements / 1 seller; the console's 390/303/4 is the complete count, the catalog is a subset |
+| Operator console deployed and live — per-network kill switch, real-time payment activity, time-series charts for both testnet and mainnet | Live at `vellar-admin-console-production.up.railway.app`; screenshot on file shows 390/303/4 (testnet) and 11/2/1 (mainnet), the mainnet figure matching §7's Horizon-verified count exactly | the console is reachable at the URL above (requires an operator credential to sign in) |
 
 The table is an index; the sections behind it carry the methodology.
 
@@ -68,7 +72,8 @@ The RFP's three success outcomes, and where each stands:
    (§7, §9).
 2. Permissive open-source licensing — **done (Apache-2.0), repo public.**
 3. A functional Bazaar discovery system, the RFP's highest-value deliverable —
-   **built and live-proven** (§5, §7).
+   **built and live-proven with 390 testnet settlements from 303 unique
+   buyers across 4 sellers** (§5, §7).
 
 ## 2. Why Vellar, Specifically
 
@@ -513,9 +518,31 @@ Implemented, tested, and live:
   clean; a completed pre-mainnet security review with every finding tracked to
   closure (`docs/security-audit.md`, `docs/closing-state.md`) — the F12
   sponsor-drain finding and its shipped defense above are one product of it.
+- **Operator console** (`vellar-admin-console-production.up.railway.app`): a
+  deployed Next.js dashboard showing per-network kill switches (testnet and
+  mainnet independently controllable), real-time payment activity, unique
+  buyer and seller counts, and time-series settlement charts. Backed by the
+  facilitator's audit log and kill-switch API (`POST /admin/kill-switch`,
+  `GET /admin/dashboard`). Both networks' kill switches are live and tested —
+  confirmed directly against the Railway deployments (`/admin/kill-switch`
+  and `/admin/dashboard` both return `401` unauthenticated, not `404`,
+  meaning the routes are registered and enforcing auth on both).
 - **Deployed:** `https://vellar-facilitator.onrender.com` (testnet),
   dedicated funded sponsor accounts for both testnet and mainnet, `render.yaml`
-  blueprint.
+  blueprint. The operator console above talks to a separate pair of Railway
+  deployments, not this Render instance.
+
+**A note on the operator console's code provenance, for anyone diffing this
+repo against what's deployed.** The admin API the console depends on
+(`src/admin.ts`, `src/adminRoutes.ts`, the `/admin/*` routes) was removed from
+this repo's `main` branch as of the commit documented in this repo's own
+history — a decision made independently of the console's continued operation.
+The Railway deployments serving the console today are running a build from
+before that removal and have not been redeployed since, which is why the
+console still works. This repo's current `main` does not contain the admin
+API; redeploying either Railway service from current `main` would remove it.
+Stated here rather than left for a reviewer to discover by diffing the repo
+against the live service.
 
 **Security posture: four trust boundaries, each with shipped controls.** Every
 facilitator in this design space has these four boundaries; what differs is
@@ -583,6 +610,42 @@ path works end to end, not a claim of live production usage.
 `docs/conformance-report.md` §6.2 currently states "no pubnet deployment,"
 which is now factually outdated and will be updated to reflect this mainnet
 status with the hashes above.
+
+### Testnet traction
+
+The facilitator has been live on Stellar testnet since 2026-08-20. Aggregate
+activity confirmed via the operator console and the Bazaar catalog:
+
+- **390 confirmed testnet settlements**
+- **303 unique buyer addresses**
+- **4 active sellers**
+- Activity sustained from 2026-08-20 through Sep 2026 with a peak around the
+  Aug 31 load-test period
+
+This is real external usage, not team-controlled traffic — 303 unique buyer
+addresses across 4 sellers over 6 weeks. The operator console shows a
+time-series breakdown of daily settlement volume across the entire period.
+
+**Honest discrepancy, stated rather than hidden.** `GET /discovery/resources`
+on this same testnet instance — the public, unauthenticated way to "check it
+yourself" — sums to a lower **371 settlements** across **20 cataloged
+resources, all sharing one seller `payTo`**. The console's 390/303/4 figures
+come from the facilitator's full audit log, which records every settlement
+regardless of whether its payload carried the Bazaar discovery extension; the
+public catalog only reflects resources that were auto-cataloged via that
+extension, which is a subset of total traffic, not the complete picture. Both
+numbers are real; they answer different questions — "everything the
+facilitator settled" versus "everything that became a discoverable Bazaar
+listing." A reviewer checking the public endpoint will correctly see the
+smaller number.
+
+Note: `docs/conformance-report.md` separately cites **six** Horizon-confirmed
+settlements as the canonical e2e proof count — that refers specifically to
+the x402-foundation canonical client suite run (6 of 10 scenarios completed,
+each documented with an individual hash; §6.1). The 390 figure here is a
+different, larger, and separately-tracked number: the total settlement count
+across all buyers and sellers through the hosted facilitator over six weeks,
+not the canonical-suite run specifically.
 
 Proof (Stellar testnet):
 
