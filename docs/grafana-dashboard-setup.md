@@ -92,7 +92,7 @@ the scrape loop has no business taking `/settle` down with it.
 
 ## The scrape target
 
-- **URL:** `https://vellar-facilitator.onrender.com/metrics`
+- **URL:** `https://vellar-facilitator-production.up.railway.app/metrics`
 - **Scrape interval:** 15s
 - **Auth:** none (the endpoint is intentionally public)
 
@@ -101,7 +101,7 @@ Configured in `alloy/config.alloy`:
 ```alloy
 prometheus.scrape "facilitator" {
   targets = [{
-    __address__ = "vellar-facilitator.onrender.com",
+    __address__ = "vellar-facilitator-production.up.railway.app",
   }]
   scheme          = "https"
   metrics_path    = "/metrics"

@@ -3,8 +3,11 @@
 
 # Vellar Facilitator — Technical Document
 
-SCF #46 RFP Track submission — "X402 Facilitator with Bazaar (Discovery)
-Support." This document governs this repo (`vellar-facilitator`).
+SCF #46 Open Track resubmission — the discovery and trust layer for x402
+agent payments on Stellar (facilitator, Bazaar, MCP discovery). This document
+governs this repo (`vellar-facilitator`). The x402 RFP that governed the
+SCF #45 submission is closed and will not reopen; this round is judged on the
+Open Track.
 
 **Status: live on Stellar testnet and mainnet (stellar:pubnet), 731 tests
 passing (4 skipped). Traction: 390 testnet settlements (303 unique buyers, 4
@@ -15,7 +18,7 @@ the RFP gap fixes are all shipped. Pre-mainnet checklist: pubnet deployment is
 now done (§9); the external security audit remains, and semantic search is
 shipped but not yet claimed as met — see the checklist at the top of §9.**
 The facilitator, Bazaar discovery, the MCP server, and the trust layer are
-implemented, tested, and deployed at `https://vellar-facilitator.onrender.com`,
+implemented, tested, and deployed at `https://vellar-facilitator-testnet-production.up.railway.app`,
 with on-chain settlements to show for it on both networks (§7). The
 pre-mainnet security review is complete with every finding tracked to closure
 (`docs/security-audit.md`; final statuses in `docs/closing-state.md`). One
@@ -35,22 +38,22 @@ trusting this table:
 
 | Claim | Verified | Check it yourself |
 | --- | --- | --- |
-| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through `vellar-facilitator.onrender.com` and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§3), or `./demo.sh` for the full local loop — the latter was broken from `6f5de85` until [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) was fixed and merged, and now provisions the 50 channel accounts `config.ts` requires |
+| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through `vellar-facilitator-testnet-production.up.railway.app` and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§3), or `./demo.sh` for the full local loop — the latter was broken from `6f5de85` until [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) was fixed and merged, and now provisions the 50 channel accounts `config.ts` requires |
 | Payments settle on-chain; the sponsor pays the fee (testnet) | tx `1da6f9e6…e039` Horizon-confirmed successful, `fee_account` = this facilitator's sponsor | hashes in §7, stellar.expert or Horizon |
 | Payments settle on-chain; the sponsor pays the fee (**mainnet**) | 11 settlements Sep 17–21 2026, every `fee_account` matching the mainnet sponsor `GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H`, invoking the documented mainnet USDC SAC | hashes in §7, Horizon (`horizon.stellar.org`) |
 | Canonical testnet USDC end to end, no faucet | tx `f9b743c5…8c98` (ledger 4106526) and `cda3cbaa…50ea` (ledger 4137813) | §7 |
-| Hosted instance live; catalog survives restart | `/health` answered in 42.8 s from cold (the documented ~45 s), non-empty catalog at 19 s uptime | `curl https://vellar-facilitator.onrender.com/health` |
+| Hosted instance live; catalog survives restart | `/health` answers, non-empty catalog | `curl https://vellar-facilitator-testnet-production.up.railway.app/health` |
 | `verified_only` refuses honestly rather than serving a misleading empty list | live `400 verified_only_unavailable` with the reason and a pointer to the field that does work | `curl '…/discovery/resources?verified_only=true'` |
 | Tests and types | 731 passed, 4 skipped; `tsc --noEmit` clean. Plus 16 Rust contract tests (upto-vellar) | `npm test`, `npm run typecheck`, `cargo test` in `contracts/upto-vellar` |
 | Pre-mainnet security review complete | every finding carries a final status | `docs/security-audit.md`, `docs/closing-state.md` |
 | Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
-| `upto` settles for the metered actual, not the signed ceiling | three earlier settlements against the hosted instance — actual/ceiling pairs 555000/1500000, 312000/800000, 417000/1200000 | `curl https://vellar-explorer.onrender.com/payments/<hash>`, or the feed at `explorer.vellar.xyz` |
+| `upto` settles for the metered actual, not the signed ceiling | three earlier settlements against the hosted instance — actual/ceiling pairs 555000/1500000, 312000/800000, 417000/1200000 | `curl https://vellar-explorer-production.up.railway.app/payments/<hash>`, or the feed at `explorer.vellar.xyz` |
 | Concurrency is solved, with a negative control | channel pool: **50/50** settled, **0** `txBadSeq`, p95 **11,956 ms**. Single-signer control on the same run: **1/50**, **48** `txBadSeq` | `git log 6f5de85`, raw data in `load-test-results-2026-08-31T11-15-47-630Z.json` |
-| Operational telemetry is live | 11 named `vellar_*` metrics on a public `/metrics`, forwarded to Grafana Cloud | `git log 97107b1`, `curl -s https://vellar-facilitator.onrender.com/metrics \| grep -c '^# HELP vellar_'` → 11 |
+| Operational telemetry is live | 11 named `vellar_*` metrics on a public `/metrics`, forwarded to Grafana Cloud | `git log 97107b1`, `curl -s https://vellar-facilitator-testnet-production.up.railway.app/metrics \| grep -c '^# HELP vellar_'` → 11 |
 | An operator can stand up a new instance from nothing | `docs/deploy-runbook.md` — all `config.ts` environment variables, provisioning, verification, and the operational gaps stated plainly | `git log 9c9bad3` |
 | A seller learns whether their listing was cataloged | `EXTENSION-RESPONSES` on `/settle`, carried out of the error-swallowing hook via the same `AsyncLocalStorage` capture the channel pool uses | `git log c771c0d` |
 | Two MCP tools on one server URL no longer collide | MCP resources keyed on the spec's `(resource.url, input.toolName)` tuple, U+001F separated | `git log c771c0d` |
-| Discovery is asset-aware, settlement stays asset-agnostic | `/discovery/resources?asset=<SAC>` filters; `/supported` carries `catalogAssets`, derived live from the catalog | `git log dfa0aa9`, `curl -s https://vellar-facilitator.onrender.com/supported \| python3 -m json.tool` |
+| Discovery is asset-aware, settlement stays asset-agnostic | `/discovery/resources?asset=<SAC>` filters; `/supported` carries `catalogAssets`, derived live from the catalog | `git log dfa0aa9`, `curl -s https://vellar-facilitator-testnet-production.up.railway.app/supported \| python3 -m json.tool` |
 | Vellar is listed in the official Stellar x402 documentation | `stellar/stellar-docs` PR [#2836](https://github.com/stellar/stellar-docs/pull/2836), merged 2026-09-28, adding Vellar to the *Community facilitators* subsection | the merged PR itself |
 | Testnet activity — 390 payments, 303 unique buyers, 4 sellers since 2026-08-20 | Read from the operator console's audit-log-backed dashboard, which counts every settlement regardless of Bazaar discovery metadata | `GET https://vellar-facilitator-testnet-production.up.railway.app/discovery/resources?limit=100` shows catalog entries with per-resource settlement counts — **note:** the public catalog only reflects resources carrying the Bazaar extension, so it independently sums to a lower 371 settlements / 1 seller; the console's 390/303/4 is the complete count, the catalog is a subset |
 | Operator console deployed and live — per-network kill switch, real-time payment activity, time-series charts for both testnet and mainnet | Live at `vellar-admin-console-production.up.railway.app`; screenshot on file shows 390/303/4 (testnet) and 11/2/1 (mainnet), the mainnet figure matching §7's Horizon-verified count exactly | the console is reachable at the URL above (requires an operator credential to sign in) |
@@ -72,8 +75,8 @@ The RFP's three success outcomes, and where each stands:
    (§7, §9).
 2. Permissive open-source licensing — **done (Apache-2.0), repo public.**
 3. A functional Bazaar discovery system, the RFP's highest-value deliverable —
-   **built and live-proven with 390 testnet settlements from 303 unique
-   buyers across 4 sellers** (§5, §7).
+   **built and live: 390 testnet settlements across 4 sellers and 303 unique
+   addresses** (§5, §7).
 
 ## 2. Why Vellar, Specifically
 
@@ -527,10 +530,10 @@ Implemented, tested, and live:
   confirmed directly against the Railway deployments (`/admin/kill-switch`
   and `/admin/dashboard` both return `401` unauthenticated, not `404`,
   meaning the routes are registered and enforcing auth on both).
-- **Deployed:** `https://vellar-facilitator.onrender.com` (testnet),
-  dedicated funded sponsor accounts for both testnet and mainnet, `render.yaml`
-  blueprint. The operator console above talks to a separate pair of Railway
-  deployments, not this Render instance.
+- **Deployed:** `https://vellar-facilitator-testnet-production.up.railway.app`
+  (testnet) and `https://vellar-facilitator-production.up.railway.app`
+  (pubnet), dedicated funded sponsor accounts for both networks. The operator
+  console talks to these same Railway deployments.
 
 **A note on the operator console's code provenance, for anyone diffing this
 repo against what's deployed.** The admin API the console depends on
@@ -619,12 +622,10 @@ activity confirmed via the operator console and the Bazaar catalog:
 - **390 confirmed testnet settlements**
 - **303 unique buyer addresses**
 - **4 active sellers**
-- Activity sustained from 2026-08-20 through Sep 2026 with a peak around the
-  Aug 31 load-test period
+- Activity sustained from 2026-08-20 through Sep 2026
 
-This is real external usage, not team-controlled traffic — 303 unique buyer
-addresses across 4 sellers over 6 weeks. The operator console shows a
-time-series breakdown of daily settlement volume across the entire period.
+The operator console shows a time-series breakdown of daily settlement volume
+across the entire period.
 
 **Honest discrepancy, stated rather than hidden.** `GET /discovery/resources`
 on this same testnet instance — the public, unauthenticated way to "check it
@@ -829,19 +830,8 @@ without them. The container is disposable; the data is not.
 unauthenticated `GET /metrics`, scraped by Alloy and forwarded to a Grafana
 Cloud dashboard.
 
-**Cost today: nothing beyond mainnet sponsor funding.** Every hosting service
-is on the free tier and the Turso and Grafana Cloud usage sits inside their
-free allowances. A move to Render's `starter` plan (~$7/mo) was approved and
-rescinded the same day for budget; `render.yaml` carries the one-line change
-behind an explicit billing warning. This is a stated constraint rather than an
-oversight, and it has a cost:
-
-**Cold start is ~45 seconds.** The free tier spins a service down after ~15
-minutes idle, and spin-down destroys the container rather than pausing it, so
-the first request after idle pays a full boot. Measured at 42.8 s live and 35.7 s
-in an earlier run. The catalog survives it because the data is in Turso, but the
-latency is real and is the single most visible limitation of the hosted
-instance.
+**Hosting: Railway, paid, always-on.** No idle spin-down, no cold start. The
+catalog lives in Turso, so it survives a restart.
 
 **To run your own instance** you need the environment variables enumerated in
 `docs/deploy-runbook.md`, of which the ones carrying real authority are never

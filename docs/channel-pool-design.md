@@ -1,6 +1,9 @@
 # Design: channel-account pool for settlement sequence-number contention
 
-**Status: DESIGN ONLY. No implementation code. Not reviewed. Not started.**
+**Status: BUILT.** Implemented 2026-08-31 (`src/channelPool.ts`,
+`src/channelMonitor.ts`), wired into `src/facilitator.ts`. The design below
+is kept as the record of the decisions it locked in, not as a forward-looking
+proposal — do not cite this document as evidence the pool is unbuilt.
 
 Three decisions locked before this draft:
 - **Pool exhaustion**: reject-fast, error `pool_exhausted`, `retryable: true`.

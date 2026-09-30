@@ -791,18 +791,8 @@ without them. The container is disposable; the data is not.
 unauthenticated `GET /metrics`, scraped by Alloy and forwarded to a Grafana
 Cloud dashboard.
 
-**Cost today: nothing.** Every service is on the free tier and the Turso and
-Grafana Cloud usage sits inside their free allowances. A move to Render's
-`starter` plan (~$7/mo) was approved and rescinded the same day for budget;
-`render.yaml` carries the one-line change behind an explicit billing warning.
-This is a stated constraint rather than an oversight, and it has a cost:
-
-**Cold start is ~45 seconds.** The free tier spins a service down after ~15
-minutes idle, and spin-down destroys the container rather than pausing it, so
-the first request after idle pays a full boot. Measured at 42.8 s live and 35.7 s
-in an earlier run. The catalog survives it because the data is in Turso, but the
-latency is real and is the single most visible limitation of the hosted
-instance.
+**Hosting: Railway, paid, always-on.** No idle spin-down, no cold start. The
+catalog lives in Turso, so it survives a restart.
 
 **To run your own instance** you need the 25 environment variables enumerated in
 `docs/deploy-runbook.md`, of which three carry real authority and are never in

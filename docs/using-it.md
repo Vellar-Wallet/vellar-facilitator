@@ -12,7 +12,7 @@ the whole loop with both example scripts, use
 [`guide.md`](./guide.md); for the project overview and hosted-instance caveats,
 the [README](../README.md). This page does not repeat either.
 
-**Hosted testnet instance:** `https://vellar-facilitator.onrender.com`
+**Hosted testnet instance:** `https://vellar-facilitator-testnet-production.up.railway.app`
 Read [§ What will bite you](#what-will-bite-you-on-the-hosted-instance) before
 you rely on it, and [§ Who this is ready for](#who-this-is-ready-for) before you
 point anything real at it.
@@ -125,7 +125,7 @@ import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { bazaarResourceServerExtension } from "@x402/extensions/bazaar";
 
 const server = new x402ResourceServer(
-  new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" }),
+  new HTTPFacilitatorClient({ url: "https://vellar-facilitator-testnet-production.up.railway.app" }),
 )
   .register("stellar:testnet", new ExactStellarScheme())
   .registerExtension(bazaarResourceServerExtension); // opt in to discovery
@@ -229,7 +229,7 @@ because verification runs *after* settlement and never blocks it.
 How to notice:
 
 ```sh
-curl -s https://vellar-facilitator.onrender.com/health
+curl -s https://vellar-facilitator-testnet-production.up.railway.app/health
 # → "unverifiableEntries": 1   when any entry's URL can never be verified
 #   (http, private address, or a route template — a structural problem, not a
 #    transient one)
@@ -238,7 +238,7 @@ curl -s https://vellar-facilitator.onrender.com/health
 # carry the key at all. Do not read "no such field" as "the endpoint does not
 # report this"; check for its presence, not its value.
 
-curl -s 'https://vellar-facilitator.onrender.com/discovery/resources' \
+curl -s 'https://vellar-facilitator-testnet-production.up.railway.app/discovery/resources' \
   | python3 -c 'import sys,json; [print(i["resource"], i["trust"]["ownerVerified"]) for i in json.load(sys.stdin)["items"]]'
 ```
 
@@ -371,7 +371,7 @@ import { HTTPFacilitatorClient } from "@x402/core/http";
 import { withBazaar } from "@x402/extensions/bazaar";
 
 const bazaar = withBazaar(
-  new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" }),
+  new HTTPFacilitatorClient({ url: "https://vellar-facilitator-testnet-production.up.railway.app" }),
 ).extensions.bazaar;
 
 const { items } = await bazaar.listResources({ network: "stellar:testnet" });
@@ -437,58 +437,15 @@ pays, but lists nothing.
 
 ## What will bite you on the hosted instance
 
-Six things, in the order you will meet them.
+Five things, in the order you will meet them.
 
 | | What | What to do |
 | --- | --- | --- |
-| **1** | **~45s on the first request, at any hour.** The service sleeps after 15 minutes idle and there is **no reliable warm window** — see below | **Assume you will pay it.** Send a warming `GET /health` first (exempt from rate limiting) and give it a 120s timeout, or expect your first real call to hang for ~45s. It then stays warm 15 min past your last call |
-| **2** | **Roughly 1 settle in 3 fails**, with an empty `transaction` and one of two reasons: `settle_exact_stellar_transaction_submission_failed` or `settle_exact_stellar_transaction_failed` | **Retry — and no, you did not pay twice.** See below |
-| **3** | **Trust badges are inert.** `verification` and `acceptsVerification` are always `"unknown"` | Read `ownerVerified` instead — that one works. The badge source is deployed nowhere and is not switching on soon (README has the dependency chain) |
-| **4** | **`?verified_only=true` is refused with a 400** (`verified_only_unavailable`) | Do not use it. It filters on the inert field, and the refusal names `ownerVerified` as the signal that works |
-| **5** | **`curl -I` on a paid route returns 200, not 402** | Debug with `GET`, not `HEAD` — a HEAD request does not carry the payment challenge, so the route looks unpaid when it is working correctly |
-| **6** | **Your first settlement writes to a shared catalog, and the write is one-way** | Know this before you settle, not after — see below |
-
-### About the cold start — there is no warm window
-
-> **Status 2026-08-15:** still free tier — an always-on move was approved and
-> rescinded for budget the same day; `render.yaml` carries the ready one-line
-> change behind a billing warning. Everything below remains current behaviour.
-
-This page used to claim a keep-alive held the instance warm during
-`00:00–07:59` and `12:00–19:59 UTC`, and that inside those hours there was
-nothing to do. **That claim was false and has been withdrawn.** The schedule
-exists; the delivery does not.
-
-Measured on 2026-08-11/12 from the workflow's own run history:
-
-| | |
-| --- | --- |
-| Cron on `main` | `*/5 0-7,12-19 * * *` — 12 pings/hour |
-| Actually delivered, 12:00–19:59 on 2026-08-11 | **6 runs out of 96 — 6.2%** |
-| Shortest gap between consecutive runs (10 gaps) | **47 minutes** |
-| Median gap | 68 minutes |
-| Gaps shorter than Render's 15-minute idle timeout | **0 of 10** |
-
-GitHub's scheduled workflows are best-effort and were delivering roughly hourly
-regardless of the interval requested. Render sleeps after 15 minutes idle, so a
-~60-minute ping gap leaves ~45 minutes of sleep inside every "warm" hour.
-**Tightening the cron does not help** — `*/5` is already the tightest useful
-value and it produced ~1 run/hour.
-
-This is not theoretical. A cold start was measured at **44.76s at 17:01 UTC**,
-inside the old advertised window, falling exactly between the 16:24 and 17:25
-runs; `/health` reported `uptimeSeconds: 48` immediately afterwards, which means
-the process started when the request arrived.
-
-**Making a warm window real needs an external pinger** — a GitHub Actions cron
-cannot do it. An uptime monitor on a 5-minute check (UptimeRobot's free tier,
-~5 minutes to set up) is dependable in the way this is not. Note the budget
-interaction before adding one: a monitor left on 24/7 keeps the instance awake
-~744 h/month against a **750 h per-workspace** Free allowance, which would
-suspend every Free service in the workspace. Give it a maintenance window
-matching the hours you actually want, rather than leaving it always-on.
-
-Until that exists, treat the service as **always cold** and warm it yourself.
+| **1** | **Roughly 1 settle in 3 fails**, with an empty `transaction` and one of two reasons: `settle_exact_stellar_transaction_submission_failed` or `settle_exact_stellar_transaction_failed` | **Retry — and no, you did not pay twice.** See below |
+| **2** | **Trust badges are inert.** `verification` and `acceptsVerification` are always `"unknown"` | Read `ownerVerified` instead — that one works. The badge source is deployed nowhere and is not switching on soon (README has the dependency chain) |
+| **3** | **`?verified_only=true` is refused with a 400** (`verified_only_unavailable`) | Do not use it. It filters on the inert field, and the refusal names `ownerVerified` as the signal that works |
+| **4** | **`curl -I` on a paid route returns 200, not 402** | Debug with `GET`, not `HEAD` — a HEAD request does not carry the payment challenge, so the route looks unpaid when it is working correctly |
+| **5** | **Your first settlement writes to a shared catalog, and the write is one-way** | Know this before you settle, not after — see below |
 
 ### Your first settlement writes to a shared catalog, permanently
 
@@ -581,8 +538,7 @@ confusingly on-chain.
 
 Do not. Three reasons, none of them about the code:
 
-1. **It is a free-tier testnet demo.** One instance, no uptime commitment, a
-   ~45s cold start at any hour (there is no reliable warm window), and a sponsor
+1. **It is a testnet demo.** One instance, no uptime commitment, and a sponsor
    account funded for demonstration.
 2. **`stellar:testnet` only.** Testnet assets are not money.
 3. **Spend controls are log-only on testnet.** The protections against a funded

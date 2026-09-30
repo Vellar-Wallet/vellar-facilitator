@@ -98,7 +98,7 @@ at signing time.
    and sponsors the fee from its own sponsor account.
 5. The response carries the transaction hash. The buyer never holds XLM.
 
-Verify it: `curl -s https://vellar-facilitator.onrender.com/supported` shows
+Verify it: `curl -s https://vellar-facilitator-testnet-production.up.railway.app/supported` shows
 `scheme: "exact"` with `extra.areFeesSponsored: true`.
 
 ### 3.2 `upto`
@@ -216,7 +216,7 @@ reranking problem, not a retrieval one**, and it is why the RFP's search item is
 not claimed as met (§6, S1).
 
 Verify it live:
-`curl -s "https://vellar-facilitator.onrender.com/discovery/search?query=barcode+for+a+link&limit=3"`
+`curl -s "https://vellar-facilitator-testnet-production.up.railway.app/discovery/search?query=barcode+for+a+link&limit=3"`
 returns `/qr` first, a query that shares no token with that listing.
 
 ### 4.3 Discovery API
@@ -411,14 +411,8 @@ unauthenticated `/metrics`, forwarded to Grafana Cloud.
 **Embeddings** use Voyage AI's free tier, rate-limited to 3 requests/minute. The
 backfill script retries `429` specifically and fails fast on anything else.
 
-**Cost today: nothing.** Every service is on a free tier. A move to Render's
-`starter` plan (~$7/mo) was approved and rescinded the same day for budget;
-`render.yaml` carries the one-line change behind an explicit billing warning.
-
-**Cold start is ~45 seconds.** The free tier destroys the container after ~15
-minutes idle, so the first request after idle pays a full boot. Measured at
-42.8s live. The catalog survives because the data is in Turso, but the latency
-is the single most visible limitation of the hosted instance.
+**Hosting: Railway, paid, always-on.** No idle spin-down, no cold start. The
+catalog lives in Turso, so it survives a restart.
 
 **To self-host** you need the 25 environment variables enumerated in
 `docs/deploy-runbook.md`, of which three carry real authority and are never in
@@ -447,7 +441,7 @@ step and starting the next. Both numbers are reported rather than the flattering
 one. Settled `aa1e0395…5ddd`, ledger 4570443, fee paid by the sponsor.
 
 **The demo seller** (`examples/seller.mjs`, live at
-`vellar-seller-demo.onrender.com`) serves **19 paid routes across 12 domains**, image generation, design, document processing, version control, developer
+`vellar-seller-demo-testnet-production.up.railway.app`) serves **19 paid routes across 12 domains**, image generation, design, document processing, version control, developer
 tooling, content generation, data transformation, security, scheduling,
 measurement, meteorology, and Stellar utilities. Every route declares full
 Bazaar metadata, which is what makes the search evaluation in §4.2 possible.
@@ -567,9 +561,9 @@ npx license-checker --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;CC
 ```sh
 npm test                 # 635 passed, 4 skipped
 npm run typecheck        # clean
-curl -s https://vellar-facilitator.onrender.com/health
-curl -s https://vellar-facilitator.onrender.com/supported
-curl -s "https://vellar-facilitator.onrender.com/discovery/search?query=barcode+for+a+link&limit=3"
+curl -s https://vellar-facilitator-testnet-production.up.railway.app/health
+curl -s https://vellar-facilitator-testnet-production.up.railway.app/supported
+curl -s "https://vellar-facilitator-testnet-production.up.railway.app/discovery/search?query=barcode+for+a+link&limit=3"
 ```
 
 Deeper references: `docs/conformance-report.md` (the honest scorecard),

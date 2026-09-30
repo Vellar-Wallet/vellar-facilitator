@@ -482,18 +482,17 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
 
 ### Steps
 
-1. Wake the seller (free instances sleep after 15 min; the first request takes
-   ~1 min):
+1. Confirm the seller answers:
 
    ```sh
-   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 150 \
-     https://vellar-seller-demo.onrender.com/quote     # expect 402
+   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 30 \
+     https://vellar-seller-demo-testnet-production.up.railway.app/quote     # expect 402
    ```
 
 2. Confirm it advertises its PUBLIC address, not localhost — **one request**:
 
    ```sh
-   curl -sS https://vellar-seller-demo.onrender.com/whoami | python3 -m json.tool
+   curl -sS https://vellar-seller-demo-testnet-production.up.railway.app/whoami | python3 -m json.tool
    ```
 
    `verifiable: true` is the precondition. `resourceUrl` must be public https;
@@ -503,26 +502,29 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
    The longer form, if you want to see the challenge itself:
 
    ```sh
-   curl -sS -D- -o /dev/null https://vellar-seller-demo.onrender.com/quote \
+   curl -sS -D- -o /dev/null https://vellar-seller-demo-testnet-production.up.railway.app/quote \
      | grep -i '^payment-required:' | sed 's/^payment-required: //' | tr -d '\r' \
      | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["resource"]["url"], d["accepts"][0]["payTo"])'
    ```
 
-   The URL must be `https://…onrender.com/quote`. If it reads
+   The URL must be `https://…railway.app/quote`. If it reads
    `http://localhost:…`, `PUBLIC_BASE_URL` is unset on the seller service —
    fix that before going further, or the test verifies nothing real.
 
 3. Run the gate with the payTo from step 2:
 
    ```sh
-   LIVE_SELLER_URL=https://vellar-seller-demo.onrender.com/quote \
+   LIVE_SELLER_URL=https://vellar-seller-demo-testnet-production.up.railway.app/quote \
    LIVE_SELLER_PAYTO=<payTo from step 2> \
    npx vitest run src/ownership.live.test.ts
    ```
 
 ### What a pass looks like
 
-Every stage is printed, and all of them must be real:
+Every stage is printed, and all of them must be real. Example trace captured
+against the old Render host — DNS/TLS values will differ on Railway, but the
+shape (every stage real, `VERDICT match`, `CONTROL mismatch`) is what to look
+for:
 
 ```
 DNS      vellar-seller-demo.onrender.com -> 216.24.57.7 (family 4)

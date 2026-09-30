@@ -26,7 +26,7 @@ prometheus.scrape "facilitator" {
   // optional, and the scheme argument, not a port suffix, is what selects
   // 443 vs. 80).
   targets = [{
-    __address__ = "vellar-facilitator.onrender.com",
+    __address__ = "vellar-facilitator-production.up.railway.app",
   }]
   scheme          = "https"
   metrics_path    = "/metrics"

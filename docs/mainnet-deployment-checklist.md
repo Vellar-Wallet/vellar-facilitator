@@ -216,8 +216,8 @@ Expect `400` with `success`, `transaction`, `network`, and a non-null
 > **This step is blocked today, and that is worth knowing before Step 1.**
 >
 > A settlement needs a seller advertising a paid endpoint on `stellar:pubnet`.
-> `vellar-seller-demo.onrender.com` is **testnet-only** — it is pinned to testnet
-> USDC and a testnet `payTo` in `render.yaml`.
+> The demo seller is **testnet-only** — it is pinned to testnet USDC and a
+> testnet `payTo`.
 
 You need either:
 

@@ -3,17 +3,18 @@
 
 # vellar-facilitator
 
-An x402 payment facilitator for Stellar with **Bazaar discovery** — verify and
+An x402 payment facilitator for Stellar with **Bazaar discovery**: verify and
 settle HTTP-402 payments for any seller, and let agents find payable resources
 without hardcoded integrations.
 
-> **Status: working on testnet, pre-production.** The full loop is live-proven
-> (see [`docs/decisions.md`](./docs/decisions.md) for transaction hashes): a
-> policy-governed Soroban smart account paid a Bazaar-discoverable resource, this
-> facilitator verified and settled it on-chain, and the resource became
-> searchable automatically.
+> **Status: live on Stellar testnet and mainnet.** 11 x402 settlements
+> confirmed on mainnet (Sept 17-21, 2026; see
+> [`docs/mainnet-evidence.md`](./docs/mainnet-evidence.md) for the full
+> transaction table). 15 testnet proofs verify exactly on the ledger,
+> including 6 settlements from the canonical x402 e2e suite with unmodified
+> clients (see [`docs/decisions.md`](./docs/decisions.md)).
 >
-> **The pre-mainnet security review is complete** — see
+> **The pre-mainnet security review is complete.** See
 > [`docs/closing-state.md`](./docs/closing-state.md) for every finding with its
 > final status, and [`docs/security-audit.md`](./docs/security-audit.md) for the
 > detail. Running it is documented in
@@ -24,29 +25,10 @@ without hardcoded integrations.
 Both are properties of *this deployment*, not of the code, and both are more
 surprising to find by experiment than to be told.
 
-**1. First request after idle takes ~45 seconds, at any hour.** Render spins a
-free service down after 15 minutes without traffic and the container is
-replaced, not paused; measured cold start **44.76 seconds**. You pay it once —
-the service then stays warm for 15 minutes past your last request.
+**1. The hosted instance runs on Railway (paid, always-on) — no cold start.**
 
-The warm-window story, honestly: the original */5 keep-alive cron was retired
-2026-08-15 on delivery measurement — GitHub's scheduler ran it at 18–52 minute
-gaps against a 15-minute idle timeout, so it spent pool hours on a coin flip.
-Since 2026-08-21 a narrower **best-effort keep-warm cron**
-(`.github/workflows/keep-warm.yml`) pings every 10 minutes during reviewer
-hours only (07:00–21:00 UTC, weekdays — the widest window that fits the
-shared free-tier pool for two services with real margin, see the workflow's
-own header for the math) — margin against the timeout, **not a
-guarantee**, for exactly the measured reason above; outside those hours, and
-whenever a ping slips, the cold start applies. **The instance remains on the
-free tier** (a paid always-on move was approved and rescinded for budget the
-same day; `render.yaml` carries the ready-to-apply config behind a loud billing
-warning). So: still assume the ~45s cold start unless you are inside the
-warmed window. History: [`using-it.md` § About the cold
-start](./docs/using-it.md#about-the-cold-start--there-is-no-warm-window).
-
-The catalog survives either way: it lives in libSQL/Turso rather than on the
-container, so your listings and ownership bindings are there when it wakes.
+The catalog lives in libSQL/Turso rather than on the container, so listings
+and ownership bindings survive a restart.
 
 **2. THE TRUST LAYER IS INERT HERE. Every verification badge reads `"unknown"`,
 and `?verified_only=true` is refused with an explicit 400.** Not a bug and not
