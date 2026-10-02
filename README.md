@@ -1,5 +1,4 @@
-<img width="5410" height="2088" alt="Full Logo White" src="https://github.com/user-attachments/assets/5482e051-094a-42f7-af68-278888ad2be6" />
-
+https://github.com/user-attachments/assets/a29f3b1b-ad82-4c29-9c84-b289d8f96a5b
 
 # vellar-facilitator
 
