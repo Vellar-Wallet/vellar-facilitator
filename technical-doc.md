@@ -3,22 +3,26 @@
 
 # Vellar Facilitator — Technical Document
 
-SCF #45 RFP Track submission — "X402 Facilitator with Bazaar (Discovery)
+SCF #46 Open Track submission — "X402 Facilitator with Bazaar (Discovery)
 Support." This document governs this repo (`vellar-facilitator`). It is
 separate infrastructure from the Vellar wallet product; the two share x402
 domain expertise, not code.
 
-**Status: live on Stellar testnet, 670 tests passing. Production-hardened —
-the channel pool (50 accounts; 50/50 under load), telemetry (11 Prometheus
-metrics), the deploy runbook, and the RFP gap fixes are all shipped.
-Pre-mainnet: the external security audit and the pubnet deployment remain, and
-semantic search is shipped but not yet claimed as met — see the checklist at the
-top of §9.**
+**Status: live on Stellar testnet and mainnet, 731 tests passing (4 skipped).
+Production-hardened — the channel pool (50 accounts; 50/50 under load),
+telemetry (11 Prometheus metrics), the deploy runbook, and the RFP gap fixes
+are all shipped. Pre-mainnet: the external security audit remains; the
+facilitator has settled an initial, limited set of real payments on mainnet
+(§8), and semantic search is shipped but not yet claimed as met — see the
+checklist at the top of §9.**
 The facilitator, Bazaar discovery, the MCP server, and the trust layer are
-implemented, tested, and deployed at `https://vellar-facilitator.onrender.com`,
-with on-chain settlements to show for it (§8). The pre-mainnet security review
-is complete with every finding tracked to closure (`docs/security-audit.md`;
-final statuses in `docs/closing-state.md`). One qualifier, stated here rather
+implemented, tested, and deployed at
+`https://vellar-facilitator-testnet-production.up.railway.app` (testnet) and
+`https://vellar-facilitator-production.up.railway.app` (mainnet), with
+on-chain settlements to show for it (§8). The pre-mainnet security review has
+been run against every trust boundary below; most findings are closed, and the
+remaining open ones are named rather than hidden (`docs/security-audit.md`;
+statuses in `docs/closing-state.md`). One qualifier, stated here rather
 than discovered later: the trust layer's *reputation* half (third-party
 verification verdicts) is inert on the hosted deployment — every verdict
 degrades to `unknown` until a verdict source is stood up (§6, §8) — while its
@@ -28,30 +32,32 @@ architecture and the path to mainnet that the SCF Build Award funds.
 ## Evidence at a Glance
 
 Every load-bearing claim in this document, re-verified in one sweep on
-2026-08-21, with the rows below the divider added and checked on 2026-09-04.
-Each row names where to check it without trusting this table:
+2026-08-21, with the rows below the divider added and checked on 2026-09-04,
+and hosting/test-count figures refreshed on 2026-10-05 following the move from
+Render to Railway. Each row names where to check it without trusting this
+table:
 
 | Claim | Verified | Check it yourself |
 | --- | --- | --- |
-| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through `vellar-facilitator.onrender.com` and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§4), or `./demo.sh` for the full local loop — the latter was broken from `6f5de85` until [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) was fixed and merged, and now provisions the 50 channel accounts `config.ts` requires |
+| The full loop works today against the hosted instance | A fresh buyer, funded from zero, settled tx [`aa1e0395…5ddd`](https://stellar.expert/explorer/testnet/tx/aa1e0395204e53380b267bd4a107b6018db48e7a1646c1bd4f7ce59a3ce65ddd) (ledger 4570443) through the hosted testnet facilitator and unlocked the resource | `examples/buyer-classic.mjs` with `PAYER_SECRET` and `RESOURCE_URL` (§4), or `./demo.sh` for the full local loop — the latter was broken from `6f5de85` until [#90](https://github.com/Vellar-Wallet/vellar-facilitator/issues/90) was fixed and merged, and now provisions the 50 channel accounts `config.ts` requires |
 | Payments settle on-chain; the sponsor pays the fee | tx `1da6f9e6…e039` Horizon-confirmed successful, `fee_account` = this facilitator's sponsor | hashes in §8, stellar.expert or Horizon |
 | Provenance gating works both ways | tx `8bde387b…6faf` settled while attested; the identical payment post-revoke was rejected inside `__check_auth` | §8 |
 | Canonical testnet USDC end to end, no faucet | tx `f9b743c5…8c98` (ledger 4106526) and `cda3cbaa…50ea` (ledger 4137813) | §8 |
-| Hosted instance live; catalog survives restart | `/health` answered in 42.8 s from cold (the documented ~45 s), non-empty catalog at 19 s uptime | `curl https://vellar-facilitator.onrender.com/health` |
+| Hosted instance live; catalog survives restart | Railway hosting is paid and always-on (no idle spin-down, no cold start); catalog in libSQL/Turso survives a restart | `curl https://vellar-facilitator-testnet-production.up.railway.app/health` |
 | `verified_only` refuses honestly rather than serving a misleading empty list | live `400 verified_only_unavailable` with the reason and a pointer to the field that does work | `curl '…/discovery/resources?verified_only=true'` |
-| Tests and types | 670 passed, 4 skipped; `tsc --noEmit` clean. Plus 105 Rust contract tests (89 bond-escrow, 16 upto-vellar) | `npm test`, `npm run typecheck`, `cargo test` in each `contracts/*` |
-| Pre-mainnet security review complete | every finding carries a final status | `docs/security-audit.md`, `docs/closing-state.md` |
+| Tests and types | 731 passed, 4 skipped; `tsc --noEmit` clean. Plus 105 Rust contract tests (89 bond-escrow, 16 upto-vellar) | `npm test`, `npm run typecheck`, `cargo test` in each `contracts/*` |
+| Pre-mainnet security review run against every trust boundary | most findings closed; the remaining open ones are named, not hidden | `docs/security-audit.md`, `docs/closing-state.md` |
 | Reliability is measured, not asserted | the scheduled settle probe is green on its cron (five runs/day observed), each run settling real payments with a no-retry control arm beside the retry | the repo's Actions tab, `settle-probe.yml` |
 | Agents can use it | the MCP server lists `x402_list_resources` / `x402_search_resources` against the hosted instance | `npx tsx src/mcp.ts` |
-| `upto` settles for the metered actual, not the signed ceiling, and an independent service says so | three settlements against the hosted instance — actual/ceiling pairs 555000/1500000, 312000/800000, 417000/1200000 — each shows on `explorer.vellar.xyz` with `scheme: upto` and `settled by: vellar`, verified by neither this repo nor its author | `curl https://vellar-explorer.onrender.com/payments/<hash>`, or the feed at `explorer.vellar.xyz` |
+| `upto` settles for the metered actual, not the signed ceiling, and an independent service says so | three settlements against the hosted instance — actual/ceiling pairs 555000/1500000, 312000/800000, 417000/1200000 — each shows on `explorer.vellar.xyz` with `scheme: upto` and `settled by: vellar`, verified by neither this repo nor its author | the feed at `explorer.vellar.xyz` |
 | *— shipped since the 2026-08-21 sweep, verified 2026-09-04 —* | | |
 | Concurrency is solved, with a negative control | channel pool: **50/50** settled, **0** `txBadSeq`, p95 **11,956 ms**. Single-signer control on the same run: **1/50**, **48** `txBadSeq` | `git log 6f5de85`, raw data in `load-test-results-2026-08-31T11-15-47-630Z.json` |
-| Operational telemetry is live | 11 named `vellar_*` metrics on a public `/metrics`, forwarded to Grafana Cloud | `git log 97107b1`, `curl -s https://vellar-facilitator.onrender.com/metrics \| grep -c '^# HELP vellar_'` → 11 |
+| Operational telemetry is live | 11 named `vellar_*` metrics on a public `/metrics`, forwarded to Grafana Cloud | `git log 97107b1`, `curl -s https://vellar-facilitator-testnet-production.up.railway.app/metrics \| grep -c '^# HELP vellar_'` → 11 |
 | An operator can stand up a new instance from nothing | `docs/deploy-runbook.md` — 445 lines, all 25 `config.ts` environment variables, provisioning, verification, and the operational gaps stated plainly | `git log 9c9bad3` |
 | A seller learns whether their listing was cataloged | `EXTENSION-RESPONSES` on `/settle`, carried out of the error-swallowing hook via the same `AsyncLocalStorage` capture the channel pool uses | `git log c771c0d` |
 | Two MCP tools on one server URL no longer collide | MCP resources keyed on the spec's `(resource.url, input.toolName)` tuple, U+001F separated | `git log c771c0d` |
-| Discovery is asset-aware, settlement stays asset-agnostic | `/discovery/resources?asset=<SAC>` filters; `/supported` carries `catalogAssets`, derived live from the catalog | `git log dfa0aa9`, `curl -s https://vellar-facilitator.onrender.com/supported \| python3 -m json.tool` |
-| Agents can reach the Bazaar from inside a web page | 6 WebMCP tools — 3 core plus 3 generated live from the Bazaar catalog | [`vellar-webmcp.onrender.com`](https://vellar-webmcp.onrender.com), [`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp) |
+| Discovery is asset-aware, settlement stays asset-agnostic | `/discovery/resources?asset=<SAC>` filters; `/supported` carries `catalogAssets`, derived live from the catalog | `git log dfa0aa9`, `curl -s https://vellar-facilitator-testnet-production.up.railway.app/supported \| python3 -m json.tool` |
+| Agents can reach the Bazaar from inside a web page | 6 WebMCP tools — 3 core plus 3 generated live from the Bazaar catalog | [`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp) |
 
 The table is an index; the sections behind it carry the methodology.
 
@@ -402,12 +408,15 @@ Implemented, tested, and live:
 - **Facilitator:** `/verify`, `/settle`, `/supported`. Any SEP-41 token (USDC
   default), classic keypairs and Soroban smart accounts, sponsored fees, raised
   fee ceiling for policy-governed payments, replay resistance via ledger-bounded
-  auth entries. **Conformance against the x402-foundation canonical client suite
-  has not yet been run** — the wire shape is verified live endpoint by endpoint
-  (`/supported` carries `areFeesSponsored`; every rejection carries a non-null
-  machine-readable reason), but the canonical-client run and the x402 repo's own
-  e2e suite are outstanding. See `docs/conformance-report.md` for the current
-  status, the known gaps, and the plan to close them before mainnet.
+  auth entries. **Conformance against the x402-foundation canonical client
+  suite has been run on testnet** — six scenarios settled real payments end to
+  end on 2026-09-08, every hash Horizon-confirmed (§9 has the full account).
+  What's still outstanding is the equivalent run on pubnet, now that an
+  initial set of real mainnet settlements exists; the wire shape is also
+  verified live endpoint by endpoint (`/supported` carries
+  `areFeesSponsored`; every rejection carries a non-null machine-readable
+  reason). See `docs/conformance-report.md` for the current status, the known
+  gaps, and the plan to close the pubnet half.
 - **Sponsor defense (audit finding F12):** the audit showed sponsor drain is
   *not* self-limiting — a self-dealer minting their own SEP-41 token settles
   self→self at zero cost to themselves while the sponsor pays every network
@@ -480,8 +489,7 @@ Implemented, tested, and live:
   USDC and USDT0, including USDT0's `auth_revocable` / `auth_clawback_enabled`
   flags — verified against mainnet Horizon on 2026-09-04 — and why that clawback
   risk sits with the seller rather than with a non-custodial facilitator.
-- **WebMCP tools** ([`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp),
-  live at [`vellar-webmcp.onrender.com`](https://vellar-webmcp.onrender.com)):
+- **WebMCP tools** ([`Vellar-Wallet/vellar-webmcp`](https://github.com/Vellar-Wallet/vellar-webmcp)):
   browser-native tools exposing this facilitator's Bazaar to an agent running in
   the page. **6 WebMCP tools are registered at runtime:** 3 core tools
   (`search_vellar_bazaar`, `pay_and_call`, `check_vellar_earnings`) plus 3
@@ -552,14 +560,15 @@ Implemented, tested, and live:
   manual wiring. This closes the seller onboarding gap: the wallet
   is the x402 payer, this facilitator is verify/settle, the
   extension is how a developer becomes a seller in under a minute.
-- **Test suite and security review:** 670 tests (`vitest run`) plus 105 Rust
-  contract tests, including
-  mutation-named guards and the wire-conformance suites above; a completed
-  pre-mainnet security review with every finding tracked to closure
+- **Test suite and security review:** 731 tests (`vitest run`, 4 skipped) plus
+  105 Rust contract tests, including
+  mutation-named guards and the wire-conformance suites above; a pre-mainnet
+  security review run against every trust boundary above, most findings
+  closed and the remaining open ones named rather than hidden
   (`docs/security-audit.md`, `docs/closing-state.md`) — the F12 sponsor-drain
   finding and its shipped defense above are one product of it.
-- **Deployed:** `https://vellar-facilitator.onrender.com`, dedicated funded
-  sponsor account, `render.yaml` blueprint.
+- **Deployed:** Railway (paid, always-on), dedicated funded sponsor account,
+  on both testnet and mainnet.
 
 **Security posture: four trust boundaries, each with shipped controls.** Every
 facilitator in this design space has these four boundaries; what differs is
@@ -573,17 +582,17 @@ code in this repo today:
 | Catalog/search → agent | Prompt injection through listing text the facilitator faithfully serves | Seller-authored text is nonce-fenced before it reaches an agent's context (see the MCP bullet above) |
 | Facilitator → Stellar RPC | Lost or ambiguous responses; degraded, load-balanced nodes | Real submission status captured per request (upstream discards it — #3125); retry only the one status that provably was not forwarded, terminal statuses untouched; ledger-skew retry at verify/settle |
 
-The completed security review walks these boundaries
+The pre-mainnet security review walks these boundaries
 (`docs/security-audit.md`); `docs/closing-state.md` holds each finding's
-final status.
+status — most closed, the remaining open ones named there rather than
+glossed over.
 
 Hosted-demo caveats, stated plainly. **The catalog is durable** — libSQL/Turso
 since 2026-08-11, verified across a real spin-down with ownership bindings
-intact; an empty catalog means an empty catalog, not a restart. The free tier
-sleeps when idle (~45 s cold start, measured; a best-effort keep-warm cron
-pings every 10 minutes during 07:00–21:00 UTC weekdays — margin against the
-idle timeout, not a guarantee, since GitHub's scheduler measurably slips). An
-always-on move is specified and priced in `render.yaml`, pending budget. Under burst access the testnet RPC declined to forward roughly 1
+intact; an empty catalog means an empty catalog, not a restart. **Hosting is
+Railway, paid and always-on** — no idle spin-down, no cold start; the earlier
+Render free-tier deployment (and its ~45 s cold start and keep-warm cron) has
+been retired. Under burst access the testnet RPC declined to forward roughly 1
 settle in 3, with nothing spent (`TRY_AGAIN_LATER`, diagnosed in
 `docs/diagnosis-settle-failures.md`); the facilitator now retries that status
 itself (§8, Reliability engine), error bodies still carry the real RPC status
@@ -632,7 +641,7 @@ struck through in milestone 1 below).
 | 1 | External security audit | ⏳ Not started | Longest lead time — start first. Firms covering Stellar/Soroban: OtterSec, Halborn, Cure53, Trail of Bits. |
 | 2 | Channel-account balance monitoring | ✅ Done | Automated via `src/channelMonitor.ts` (commit `c88d79f`). Disables on low balance, auto-enables on recovery, fail-open with a 5-failure staleness limit. |
 | 3 | Semantic search (embeddings + eval harness) | ⚠️ Partial | Hybrid semantic search shipped (`969a56c`, 2026-09-08). Lexical (synonym expansion, Porter stemmer, weighted scoring, trust ranking) fused with Voyage AI `voyage-code-3` embeddings via RRF. Measured: semantic-query MRR 0.717, NDCG@3 0.789, against 0.264 / 0.263 lexical-only; the original ten queries are unchanged, which is why hybrid was chosen over replacement. **Item remains partial:** the eval corpus is one seller's demo (19 entries) and five of ten semantic queries miss first place, so the right answers are being retrieved but not always ranked first. Full ✅ requires a diverse real-world corpus and a top-1 improvement, not more embedding coverage. `docs/search-eval.md` carries the methodology and the baseline-versus-hybrid table. |
-| 4 | Pubnet deployment + live settlement test | ⏳ Not started | Pre-deploy code fixes merged (`c88d79f` channel monitor, `b392c97` STELLAR_NETWORK validation). Remaining: generate mainnet keypairs, fund accounts, new Turso DB, update Render env vars, deploy, confirm live settlement on pubnet. A real `exact`-scheme settled tx hash on pubnet closes `docs/conformance-report.md` §6.2. |
+| 4 | Pubnet deployment + live settlement test | ⚠️ Partial | Pre-deploy code fixes merged (`c88d79f` channel monitor, `b392c97` STELLAR_NETWORK validation). The facilitator is deployed on Railway mainnet and has settled an initial, limited set of real `exact`-scheme payments (11 settlements, 3.10 USDC, Sept 17–21, 2026, team-funded test wallet — `docs/mainnet-evidence.md`), closing `docs/conformance-report.md` §6.2's settled-tx-hash requirement. Remaining before this is a production mainnet launch rather than an initial proof: external third-party usage, the `upto` scheme on pubnet, and the production uptime/monitoring bar in Tranche 3. |
 | 5 | `upto` channel-pool integration | ⏳ Blocked | Concurrent `upto` settlements can `txBadSeq` — the scheme shares the sponsor's sequence instead of taking a pool lane. Blocked on the upstream wire format (x402-foundation/x402 #3134). `src/upto.ts`. |
 | 6 | USDT0 mainnet trustlines | ⏳ Not started | Only where a *seller* accepts USDT0 — their `payTo` needs the trustline. Channel accounts need none (they hold no payment asset; §8, `docs/channel-pool-design.md` §5). `docs/asset-support.md`. |
 | 7 | x402 Foundation listing | ⏳ Not started | A docs PR to x402-foundation/x402, after mainnet settlement is confirmed live. **Separately**, Stellar Developer Docs PR [#2836](https://github.com/stellar/stellar-docs/pull/2836) was filed 2026-09-08 (ready for review, unreviewed), adding Vellar to the *Community facilitators* subsection of the x402 facilitators page. That is a different repository and a different listing; it predates mainnet and does **not** close this item, which stays gated on mainnet settlement. |
@@ -718,12 +727,19 @@ launch. Three milestones (final = mainnet, per SCF):
    honest status, not accepted. Also in this milestone: V2 (CAP-0071-02)
    credential support so passkey-signed x402 payments settle; the provenance
    attestor and agent-key mint/revoke UX productionized.
-3. **Mainnet launch.** Facilitator + its three provenance contracts (attestation
-   registry, verified-recipient policy, spending-limit policy) deployed to
-   pubnet after an external security audit (SCF audit credits) with findings
-   remediated — a second, independent review on top of the already-completed
-   pre-mainnet review (§8), not the first look;
-   proven uptime; mainnet USDC / multi-asset support; professional user testing.
+3. **Mainnet launch.** The facilitator and its already-shipped Tranche 1–2
+   deliverables deployed to pubnet after an external security audit (SCF audit
+   credits) with findings remediated — a second, independent review on top of
+   the already-completed pre-mainnet review (§8), not the first look; proven
+   uptime; mainnet USDC / multi-asset support; professional user testing. **No
+   new Soroban contract is funded by this award.** The provenance attestation
+   registry, verified-recipient policy, and spending-limit policy named in an
+   earlier draft of this plan were out-of-scope smart-account product work,
+   removed after SCF #45 panel feedback; they are not part of this submission's
+   funded scope. An initial, limited set of real exact-scheme payments has
+   already settled on mainnet with a team-funded test wallet (11 settlements,
+   3.10 USDC total, Sept 17–21, 2026 — `docs/mainnet-evidence.md`); this
+   milestone is the production launch beyond that initial proof.
 
    **The x402 e2e conformance suite has been run.** On 2026-09-08, against the
    live facilitator at upstream HEAD `241df66`, six scenarios settled real
@@ -740,11 +756,33 @@ launch. Three milestones (final = mainnet, per SCF):
    half is not yet claimed.
 
 Mainnet-specific engineering: pubnet RPC + real USDC SAC configuration
-(network plumbing exists via `STELLAR_NETWORK=pubnet`, currently untested),
-mainnet fee/pricing configuration, sponsor-account funding and monitoring, and
-the higher uptime/observability bar production traffic demands.
+(`STELLAR_NETWORK=pubnet`, exercised by the 11 mainnet settlements above but
+not yet at production volume), mainnet fee/pricing configuration,
+sponsor-account funding and monitoring, and the higher uptime/observability
+bar production traffic demands.
 
-## 10. Operating Commitments
+## 10. Team
+
+Two engineers, both full-time on Vellar; no other job, contract, or grant
+competes for their time.
+
+**Ejere David — Founder & Lead Engineer.** Fullstack and blockchain engineer,
+5+ years. Former Stellar Fellowship member and open-source contributor across
+the Stellar ecosystem (KindFi, Boundless, Trustless Work); won Best Technical
+Integration at the Boundless x Trustless Work Hackathon. Leads the facilitator
+core, the `upto` scheme, V2 credentials, and mainnet releases.
+[`github.com/davedumto`](https://github.com/davedumto).
+
+**Nwokedi Chigozirim — Backend & Infrastructure Engineer.** Backend engineer,
+4 years, a Stellar builder proficient in writing Soroban contracts. Leads
+search quality, the `upto` scheme on the channel pool, conformance CI,
+self-hosting, and production operations. Second key-holder and on-call for
+production. [`github.com/chigozirim007`](https://github.com/chigozirim007).
+
+Both engineers hold Railway and sponsor-key access, so production operation
+does not depend on one person.
+
+## 11. Operating Commitments
 
 - **Decentralization.** The facilitator is a semi-trusted verify/settle relay,
   inherent to x402's current design. It holds no user funds or private keys; a
@@ -768,31 +806,29 @@ the higher uptime/observability bar production traffic demands.
   will cover: settlement volume, uptime, open issues, and progress against the
   pre-mainnet checklist (§9).
 
-## 11. Infrastructure
+## 12. Infrastructure
 
 What runs where, at what cost. The full operator guide is
 [`docs/deploy-runbook.md`](./docs/deploy-runbook.md); this section is the
 summary.
 
-**Three services, all on Render's free tier**, defined in `render.yaml`:
+**Services on Railway**, paid, always-on:
 
 | Service | Runtime | Role |
 | --- | --- | --- |
-| `vellar-facilitator` | node | The facilitator itself: `/verify`, `/settle`, `/supported`, discovery, MCP, `/metrics` |
-| `vellar-seller-demo` | node | A public demo merchant with eight paid routes, so ownership verification can be exercised against a real hostname with a valid certificate |
+| `vellar-facilitator` | node | The facilitator itself: `/verify`, `/settle`, `/supported`, discovery, MCP, `/metrics` — deployed separately on testnet and mainnet |
+| `vellar-seller-demo` | node | A public demo merchant with paid routes, so ownership verification can be exercised against a real hostname with a valid certificate — deployed separately on testnet and mainnet |
+| `vellar-admin-console` | node | Operator console: audit log, kill switch, account status |
 | `vellar-alloy` | docker | Grafana Alloy, which scrapes `/metrics` and pushes to Grafana Cloud. Grafana Cloud's Prometheus is push-based and cannot scrape an arbitrary public URL itself |
 
 **Persistence** is libSQL/Turso, a managed cloud database, not a disk. That is
-deliberate: a Render disk costs money and activates three findings (G-5, G-6,
-G-7) that stay dormant without one, while an external store gives durability
-without them. The container is disposable; the data is not.
+deliberate: a platform disk costs money and activates three findings (G-5,
+G-6, G-7) that stay dormant without one, while an external store gives
+durability without them. The container is disposable; the data is not.
 
 **Observability** is 11 named `vellar_*` Prometheus metrics on a public,
 unauthenticated `GET /metrics`, scraped by Alloy and forwarded to a Grafana
 Cloud dashboard.
-
-**Hosting: Railway, paid, always-on.** No idle spin-down, no cold start. The
-catalog lives in Turso, so it survives a restart.
 
 **To run your own instance** you need the 25 environment variables enumerated in
 `docs/deploy-runbook.md`, of which three carry real authority and are never in
@@ -801,7 +837,7 @@ Everything else has a documented default or is optional. `VERIFICATION_API_URL`
 is deliberately unset, which is why every trust verdict degrades to `unknown`
 (§6).
 
-## 12. Non-Goals
+## 13. Non-Goals
 
 - Not a Vellar wallet feature; ships no changes to the wallet SDK or app.
-- No claim of exclusivity — see §10.
+- No claim of exclusivity — see §11.

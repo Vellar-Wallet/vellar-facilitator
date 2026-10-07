@@ -12,6 +12,10 @@ node_modules/
 !.env.recording.example
 *.log
 
+# Holds a live MCP server config with a secret key in plaintext (set up for
+# the agent-pays-for-a-resource demo). Never commit.
+.mcp.json
+
 # Local libSQL catalog. docs/guide.md tells you to `mkdir -p data` and point
 # CATALOG_DB_URL at file:./data/catalog.db to run a facilitator locally, so
 # following the guide leaves an untracked database here. It holds resource
