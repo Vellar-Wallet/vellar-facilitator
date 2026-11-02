@@ -4,6 +4,68 @@ Newest first. Same convention as the vela-wallet repo: record what was
 decided or discovered, with enough evidence that a future reader can verify
 it.
 
+## 2026-11-03 — Dependabot triage: three alerts deferred, not fixed, with reasons
+
+Triage of all 70 open Dependabot alerts on `main` (`security/dependabot-triage`)
+fixed every runtime high/critical with a non-breaking version bump. Three
+alerts are deliberately left open — not overlooked, not dismissed without
+review — because no non-breaking fix exists for any of them. Recorded here so
+each can be dismissed on GitHub with a justification that points back to this
+entry, rather than silently ignored.
+
+**1. `vitest` / `@vitest/mocker` (medium, dev/test-only).** Patched versions
+are `4.1.11`/`4.1.12`; the installed `3.2.7` is the latest `3.x` release — no
+patch exists within the current major. `vitest` 3→4 is a real breaking
+upgrade (new peer `vite@^6||^7||^8` range, new `@vitest/*` companion package
+versions, and vitest's own major releases have historically changed config
+shape and snapshot format). This repo's entire test suite (836 tests) runs
+through it, so an unverified major bump here would risk destabilizing the
+exact tool every other fix in this triage depends on to prove itself safe.
+Neither package ships in the deployed facilitator process (dev dependency
+only) — zero production exposure either way.
+**Decision: defer. Revisit when upgrading the test toolchain deliberately,
+as its own reviewed change, not as a side effect of a security triage.**
+
+**2. `soroban-env-host` / `stellar-xdr` (low/medium, `contracts/upto-vellar`
+and `contracts/bond-escrow`).** Both crates are pulled in transitively by
+`soroban-sdk = "23"` (pinned in both contracts' `Cargo.toml`), exact-pinned
+by the SDK itself to `23.0.1`/`23.0.0` respectively. `soroban-sdk@23.5.3` —
+the latest release in the installed major — still pins those same two exact
+versions; there is no later `23.x` release that carries the fix. The fix for
+both advisories ships only in the `30.x` line (soroban-env-host's own
+advisory: "the bug will be fixed in protocol 26"), currently only available
+as `30.0.0-rc.1`, an unstable prerelease, not a real version to build a
+deployed contract against. Separately: `soroban-env-host` is the Soroban
+*host* environment used for local `testutils`-feature simulation in
+contract tests, never linked into the deployed WASM contract binary itself
+— the live network's actual host environment is whatever protocol version
+testnet/pubnet validators run, entirely independent of this repo's
+`Cargo.lock`. `stellar-xdr`'s specific bug (`StringM::from_str` bypassing
+max length validation) has no direct call site in either contract's own
+source (`grep -rn "StringM\|from_str" contracts/*/src/*.rs` finds nothing) —
+only `soroban-sdk`'s own internals call it.
+**Decision: defer. No non-breaking fix exists; the only fix is an unreleased
+major. Not reachable from either contract's own logic regardless.**
+
+**3. `zod` (high) on the `3.25.76` line specifically — `@x402/core`,
+`@x402/extensions`, `@x402/stellar` (via `npm audit`), and
+`examples/package-lock.json` (Dependabot alert #107).** The advisory
+(GHSA-mrhx-c7xc-m3w5, "Zod can exhaust memory while validating oversized
+constrained collections") lists its vulnerable range as `< 4.6.6` with no
+version floor. Confirmed directly against the alert's own
+`security_vulnerability.vulnerable_version_range` field. The defect is
+specific to zod v4's internal collection-validation changes; zod 3.x never
+had this code path. `< 4.6.6` as a bare semver comparison is true for any
+3.x version, which is almost certainly why GitHub's advisory matcher flags
+it, but the advisory's own patched-version field (`4.6.6`) and its
+description both describe a v4-only defect. The root `package.json`'s own
+direct `zod` dependency (the genuinely vulnerable one, Dependabot alert
+#108) IS fixed in this triage, to `4.6.7`.
+**Decision: no fix needed or possible on the 3.x line — it was never on the
+vulnerable code path. Treat alert #107 (examples/package-lock.json) and any
+future alert matching this same `< 4.6.6`-with-no-floor shape against a
+zod 3.x resolution as a known advisory-range false positive.**
+
 ## 2026-08-09 — F11 resource-URL hijack: reproduced AND blocked on live testnet
 
 The critical finding from the ownership investigation, demonstrated on-chain as a
