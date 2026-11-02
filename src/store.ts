@@ -44,6 +44,19 @@ export class StoreInvalidError extends Error {
   }
 }
 
+// SQLITE_BUSY retry for consumeRotationAuthorizationAndDisplace only — see
+// that method's doc comment. Short and bounded: this is contention between
+// two callers racing ONE marker, not a network outage, so the backoff only
+// needs to outlast another local interactive transaction's few-millisecond
+// round trip, not a datacenter hop.
+const ROTATION_BUSY_RETRY_ATTEMPTS = 3;
+const ROTATION_BUSY_RETRY_DELAY_MS = [5, 15, 30];
+let rotationBusyRetryDelay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** TEST SEAM — replace the retry delay so contention tests run in milliseconds. */
+export function __setRotationBusyRetryDelayForTest(fn?: (ms: number) => Promise<void>): void {
+  rotationBusyRetryDelay = fn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+}
+
 export interface StoredOwnership {
   /** Canonical resource key: origin + pathname, no query (G-3). */
   resourceKey: string;
@@ -54,6 +67,17 @@ export interface StoredOwnership {
   /** True when ANY row for this key carries a verified_at. Gates displacement
    *  only; never served, and never the source of the `ownerVerified` badge. */
   everVerified?: boolean;
+}
+
+/** One voluntary-rotation marker, as read back from storage. */
+export interface RotationAuthorization {
+  resourceKey: string;
+  oldPayTo: string;
+  newPayTo: string;
+  nonce: string;
+  settledAt: number;
+  expiresAt: number;
+  consumedAt: number | undefined;
 }
 
 export interface StoredEntryRow {
@@ -124,6 +148,50 @@ export interface CatalogStore {
   /** Replace every binding for a URL with one proven claimant. See the
    *  implementation for why this is neither an UPDATE nor a plain INSERT. */
   displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void>;
+  /** Record a voluntary-rotation marker. `INSERT OR IGNORE` on the
+   *  (resourceKey, oldPayTo, newPayTo, nonce) primary key, so a replayed
+   *  settlement of the same marker is a no-op rather than an error — the
+   *  marker already exists, and re-inserting it must not reset consumed_at. */
+  recordRotationAuthorization(auth: {
+    resourceKey: string;
+    oldPayTo: string;
+    newPayTo: string;
+    nonce: string;
+    settledAt: number;
+    expiresAt: number;
+  }): Promise<void>;
+  /** Read-only lookup, for tryDisplace's fast-path check of "does an
+   *  authorization exist at all" before running the Layer-2 probe. Does NOT
+   *  consume — only consumeRotationAuthorizationAndDisplace does that,
+   *  atomically with the ownership move. */
+  lookupRotationAuthorization(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+  ): Promise<RotationAuthorization | undefined>;
+  /**
+   * The one operation that actually performs a voluntary rotation. Consumes
+   * the exact marker (nonce included) and moves the binding in ONE
+   * transaction, so neither can happen without the other:
+   *
+   *  - consume without displace would burn a marker on a probe that then
+   *    failed, or let two concurrent callers both think they won it.
+   *  - displace without consume would let the same marker be replayed.
+   *
+   * The ownership move only happens if the row AT COMMIT TIME is still bound
+   * to exactly `oldPayTo` — read from the database, not from the caller's
+   * in-memory snapshot, because the binding can change between when the
+   * caller last checked and when this call runs. Returns false (and leaves
+   * everything unchanged) if the marker was already consumed or expired, or
+   * the current owner is no longer `oldPayTo`.
+   */
+  consumeRotationAuthorizationAndDisplace(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+    nonce: string,
+    now: number,
+  ): Promise<boolean>;
   /**
    * Attach a semantic embedding to an existing entry.
    *
@@ -375,6 +443,22 @@ const SCHEMA = [
      created_at     INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS admin_audit_log_action_created_at ON admin_audit_log (action, created_at DESC)`,
+  // Voluntary rotation markers (docs/proposal-voluntary-rotation.md). One row
+  // per (resourceKey, oldPayTo, newPayTo, nonce) authorized by a real settled
+  // payment from oldPayTo. consumed_at is set the moment a marker enables a
+  // displacement ATTEMPT — successful or not — so it can never be replayed;
+  // see consumeRotationAuthorizationAndDisplace for why that has to happen in
+  // the same transaction as the ownership move, not as a separate write.
+  `CREATE TABLE IF NOT EXISTS rotation_authorization (
+     resource_key TEXT NOT NULL,
+     old_pay_to   TEXT NOT NULL,
+     new_pay_to   TEXT NOT NULL,
+     nonce        TEXT NOT NULL,
+     settled_at   INTEGER NOT NULL,
+     expires_at   INTEGER NOT NULL,
+     consumed_at  INTEGER,
+     PRIMARY KEY (resource_key, old_pay_to, new_pay_to, nonce)
+   )`,
 ];
 
 export class LibsqlCatalogStore implements CatalogStore {
@@ -708,6 +792,203 @@ export class LibsqlCatalogStore implements CatalogStore {
         "write",
       ),
     );
+  }
+
+  async recordRotationAuthorization(auth: {
+    resourceKey: string;
+    oldPayTo: string;
+    newPayTo: string;
+    nonce: string;
+    settledAt: number;
+    expiresAt: number;
+  }): Promise<void> {
+    this.assertWritable("recordRotationAuthorization");
+    await this.run(() =>
+      this.client.execute({
+        // OR IGNORE: a replayed settlement of an identical marker (same
+        // resourceKey/oldPayTo/newPayTo/nonce) must not reset consumed_at on
+        // an already-consumed row, or re-arm a marker that was already spent.
+        sql: `INSERT OR IGNORE INTO rotation_authorization
+                (resource_key, old_pay_to, new_pay_to, nonce, settled_at, expires_at, consumed_at)
+              VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+        args: [
+          auth.resourceKey,
+          auth.oldPayTo,
+          auth.newPayTo,
+          auth.nonce,
+          auth.settledAt,
+          auth.expiresAt,
+        ] as InArgs,
+      }),
+    );
+  }
+
+  async lookupRotationAuthorization(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+  ): Promise<RotationAuthorization | undefined> {
+    const res = await this.run(() =>
+      this.client.execute({
+        sql: `SELECT resource_key, old_pay_to, new_pay_to, nonce, settled_at, expires_at, consumed_at
+              FROM rotation_authorization
+              WHERE resource_key = ? AND old_pay_to = ? AND new_pay_to = ?
+              ORDER BY settled_at DESC
+              LIMIT 1`,
+        args: [resourceKey, oldPayTo, newPayTo] as InArgs,
+      }),
+    );
+    const r = res.rows[0];
+    if (!r) return undefined;
+    if (
+      typeof r.resource_key !== "string" ||
+      typeof r.old_pay_to !== "string" ||
+      typeof r.new_pay_to !== "string" ||
+      typeof r.nonce !== "string"
+    ) {
+      throw new StoreInvalidError(new Error("rotation_authorization row has a non-string key field"));
+    }
+    return {
+      resourceKey: r.resource_key,
+      oldPayTo: r.old_pay_to,
+      newPayTo: r.new_pay_to,
+      nonce: r.nonce,
+      settledAt: Number(r.settled_at ?? 0),
+      expiresAt: Number(r.expires_at ?? 0),
+      consumedAt: r.consumed_at === null || r.consumed_at === undefined ? undefined : Number(r.consumed_at),
+    };
+  }
+
+  /**
+   * An INTERACTIVE transaction, not batch() — the one place in this file that
+   * departs from the "batch over transaction" rule displaceOwnership's own
+   * comment states. Every other write here fires a fixed set of statements
+   * unconditionally; this one has to BRANCH on an intermediate row count
+   * (did the consume actually claim the marker?) before deciding whether the
+   * ownership move may proceed at all, and batch() cannot see one
+   * statement's result before issuing the next. The extra round trip is the
+   * cost of that branch, same tradeoff bindAndUpsertEntry's comment argues
+   * against — paid here because, unlike there, there is no fixed statement
+   * set to send in one shot.
+   *
+   * Three outcomes, not two:
+   *  - marker already consumed/expired/never existed -> rowsAffected 0 on the
+   *    consume -> rollback, return false. Covers replay AND the race where
+   *    two concurrent callers both read a live marker but only one may spend
+   *    it.
+   *  - marker consumed, but the binding is no longer `oldPayTo` by commit
+   *    time (a concurrent re-verify or a concurrent rotation moved it first)
+   *    -> the owner-row read does not match `oldPayTo` -> ROLLBACK THE WHOLE
+   *    TRANSACTION, including the consume, and return false. The rollback is
+   *    deliberate: the marker is still durable and still consumable by a
+   *    later attempt, because the state it was invalidated against might
+   *    itself be transient (e.g. a concurrent re-verify that could fail and
+   *    leave the original binding in place). Burning a marker permanently on
+   *    a snapshot that might not hold would be the fail-OPEN direction — it
+   *    would discard a legitimate rotation's only proof over a race it did
+   *    not cause.
+   *  - both succeed -> commit, return true.
+   *
+   * The ownership guard reads `pay_to` from THIS transaction's own view of
+   * the database, never from the caller's in-memory boundPayTo snapshot —
+   * the whole point is that the binding may have changed since the caller
+   * last looked.
+   *
+   * RETRY ON SQLITE_BUSY, bounded and local to this method only. Local-file
+   * SQLite (the test harness every store test here uses) raises SQLITE_BUSY
+   * when a second interactive transaction tries to write while this one
+   * still holds its lock — classified as StoreUnreachableError by
+   * classifyStoreError, correctly, since it is transient by construction.
+   * Two legitimately concurrent rotation attempts on the SAME marker are
+   * exactly this shape: one acquires the write lock first, the other must
+   * wait or retry. Retrying HERE, rather than leaving it to the caller,
+   * keeps the public contract honest — "resolves to true or false, never
+   * throws on contention" — regardless of whether production Turso (a
+   * networked server, not a local file) would even reach this path; it
+   * costs nothing when it never fires.
+   */
+  async consumeRotationAuthorizationAndDisplace(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+    nonce: string,
+    now: number,
+  ): Promise<boolean> {
+    this.assertWritable("consumeRotationAuthorizationAndDisplace");
+    const attempts = ROTATION_BUSY_RETRY_ATTEMPTS;
+    for (let attempt = 0; attempt <= attempts; attempt++) {
+      try {
+        return await this.run(() =>
+          this.attemptConsumeRotationAuthorizationAndDisplace(resourceKey, oldPayTo, newPayTo, nonce, now),
+        );
+      } catch (err) {
+        const isBusy = String((err as Error)?.message ?? err)
+          .toUpperCase()
+          .includes("SQLITE_BUSY");
+        if (!isBusy || attempt === attempts) throw err;
+        console.warn(
+          `[store] consumeRotationAuthorizationAndDisplace attempt ${attempt + 1}/${attempts + 1} hit ` +
+            `SQLITE_BUSY (a concurrent writer holds the lock) — retrying`,
+        );
+        await rotationBusyRetryDelay(ROTATION_BUSY_RETRY_DELAY_MS[attempt] ?? ROTATION_BUSY_RETRY_DELAY_MS.at(-1) ?? 0);
+      }
+    }
+    // Unreachable: the loop above always returns or throws.
+    throw new Error("unreachable");
+  }
+
+  private async attemptConsumeRotationAuthorizationAndDisplace(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+    nonce: string,
+    now: number,
+  ): Promise<boolean> {
+    const tx = await this.client.transaction("write");
+    try {
+      const consumeResult = await tx.execute({
+        sql: `UPDATE rotation_authorization
+              SET consumed_at = ?
+              WHERE resource_key = ? AND old_pay_to = ? AND new_pay_to = ? AND nonce = ?
+                AND consumed_at IS NULL AND expires_at > ?`,
+        args: [now, resourceKey, oldPayTo, newPayTo, nonce, now] as InArgs,
+      });
+      if (consumeResult.rowsAffected !== 1) {
+        await tx.rollback();
+        return false;
+      }
+      // Read-then-gate, inside the transaction, so the check and the write
+      // see the same snapshot: is the CURRENT first-bound row for this key
+      // (the one boundPayTo[0] mirrors in memory) still oldPayTo?
+      const ownerRow = await tx.execute({
+        sql: `SELECT pay_to FROM ownership
+              WHERE resource_key = ?
+              ORDER BY bound_at ASC, rowid ASC
+              LIMIT 1`,
+        args: [resourceKey] as InArgs,
+      });
+      if (ownerRow.rows[0]?.pay_to !== oldPayTo) {
+        await tx.rollback();
+        return false;
+      }
+      // Full replace, same shape as displaceOwnership: delete EVERY row for
+      // this key (including any operator-added secondary address from a
+      // runbook §1 rotation), then insert the one proven new owner. A
+      // partial delete would leave a stale secondary address bound.
+      await tx.execute({
+        sql: "DELETE FROM ownership WHERE resource_key = ?",
+        args: [resourceKey] as InArgs,
+      });
+      await tx.execute({
+        sql: "INSERT INTO ownership (resource_key, pay_to, bound_at, verified_at) VALUES (?, ?, ?, ?)",
+        args: [resourceKey, newPayTo, now, now] as InArgs,
+      });
+      await tx.commit();
+      return true;
+    } catch (err) {
+      await tx.rollback().catch(() => {});
+      throw err;
+    }
   }
 
   /**

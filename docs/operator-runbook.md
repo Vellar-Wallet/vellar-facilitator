@@ -294,6 +294,57 @@ payment, and the merchant's money are unaffected throughout.
 > becomes frequent enough to hurt, the right fix is to carry an operator-signed
 > rotation authorization on the payload — not to trust the challenge again.
 
+### 1a. Self-service rotation (no operator needed) — the case this procedure no longer covers
+
+This box's own closing line asked for "an operator-signed rotation
+authorization on the payload." `docs/proposal-voluntary-rotation.md` is that,
+built: not operator-signed, but **owner-signed** — the old owner proves
+continuity by paying as themselves, which is a stronger proof than an
+operator's say-so and needs no one awake at 2am.
+
+**This narrows §1 to one case.** Everything above this box still applies
+in full to **Case 2 — the lost key**: the merchant can no longer sign as the
+old owner at all, so there is nothing for a marker to authorize. That stays
+exactly the manual, out-of-band procedure described above.
+
+**Case 1 — the merchant still holds the old key** does not need you:
+
+1. The merchant runs `examples/rotate-classic.mjs` (or the equivalent against
+   their own client) with `OLD_OWNER_SECRET` set to the account that
+   currently owns the resource. This settles one small real payment to the
+   facilitator's sponsor address, carrying a `rotation` extension —
+   `{ resourceUrl, oldPayTo, newPayTo, nonce }`.
+2. The facilitator checks a **three-way match** before recording anything:
+   the authenticated payer of that settlement, the `oldPayTo` the payload
+   claims, and the resource's current bound owner must all be the same
+   address. A settlement from anyone else — including someone who merely
+   claims to be the old owner in the extension — records nothing. See
+   `BazaarCatalog.authorizeRotation`.
+3. Within the marker's 72-hour window, the merchant settles **one real
+   payment from the new address** against the resource in the ordinary way.
+   That settlement is what actually moves the binding: `tryDisplace` finds
+   the live marker, bypasses the one-way latch for that one attempt, and
+   still runs the ordinary Layer-2 probe — the resource's own 402 challenge
+   must name the new address — before anything changes. A marker alone moves
+   nothing; it only authorizes the attempt.
+4. **Settlement stats carry over.** Unlike an ordinary (unverified→verified)
+   displacement, a voluntary rotation does not reset `trust.settlements` —
+   the old owner authorized this successor, so it is the same merchant
+   changing address, not a new party taking over an abandoned URL.
+
+**Why this does not reopen the hole the box above warns about.** The
+automation that box refuses would accept "the current challenge names the new
+address" as sufficient on its own — which a domain takeover can also produce.
+Voluntary rotation requires that PLUS a real settlement signed by the old
+key, which a domain buyer or a compromised endpoint never has. Two proofs,
+neither sufficient alone, same shape as TOFU + Layer 2 everywhere else in
+this document.
+
+**If the marker settles but the rotation never completes** (new owner never
+settles within 72 hours, or their endpoint's 402 does not yet name them): the
+marker simply expires, unconsumed. Nothing was changed, nothing needs
+cleaning up, and the merchant can simply settle a fresh marker.
+
 ---
 
 ## 2. "The service is healthy but `/discovery/resources` is empty"

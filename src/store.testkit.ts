@@ -17,6 +17,7 @@ import {
   type AuditLogRow,
   type CatalogStore,
   type KillSwitchState,
+  type RotationAuthorization,
   type SettlementAggregates,
   type StoredEntryRow,
   type StoredOwnership,
@@ -79,6 +80,32 @@ export class FailingStore implements CatalogStore {
   }
   displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void> {
     return this.inner.displaceOwnership(resourceKey, newPayTo, at);
+  }
+  recordRotationAuthorization(auth: {
+    resourceKey: string;
+    oldPayTo: string;
+    newPayTo: string;
+    nonce: string;
+    settledAt: number;
+    expiresAt: number;
+  }): Promise<void> {
+    return this.inner.recordRotationAuthorization(auth);
+  }
+  lookupRotationAuthorization(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+  ): Promise<RotationAuthorization | undefined> {
+    return this.inner.lookupRotationAuthorization(resourceKey, oldPayTo, newPayTo);
+  }
+  consumeRotationAuthorizationAndDisplace(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+    nonce: string,
+    now: number,
+  ): Promise<boolean> {
+    return this.inner.consumeRotationAuthorizationAndDisplace(resourceKey, oldPayTo, newPayTo, nonce, now);
   }
   saveEmbedding(resourceKey: string, embedding: number[]): Promise<void> {
     return this.inner.saveEmbedding(resourceKey, embedding);

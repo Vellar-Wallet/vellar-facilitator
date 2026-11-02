@@ -6,6 +6,13 @@ import { verifyResourceOwnership, type OwnershipVerdict } from "./ownership.js";
 import type { CatalogStore } from "./store.js";
 import { logAuditEvent } from "./admin.js";
 
+/** How long a voluntary-rotation marker stays consumable after settlement.
+ *  Long enough to actually complete a rotation (re-point DNS, redeploy the
+ *  endpoint to prove control from the new address) without leaving a
+ *  forgotten marker live indefinitely. docs/proposal-voluntary-rotation.md
+ *  §4 proposed this value; confirmed, not re-derived. */
+const ROTATION_AUTHORIZATION_EXPIRY_MS = 72 * 60 * 60 * 1000;
+
 /**
  * RFP gap #2 — EXTENSION-RESPONSES. What the cataloging hook below actually
  * decided, for a caller (server.ts's /settle handler) that has no other way
@@ -115,6 +122,49 @@ export function registerBazaar(
   facilitator.onAfterSettle(async ({ paymentPayload, requirements, result }) => {
     try {
       if (!result.success) return;
+
+      // Voluntary rotation (docs/proposal-voluntary-rotation.md). Checked
+      // BEFORE extractDiscoveryInfo, deliberately: a marker settlement pays
+      // the sponsor's own address and carries NO Bazaar discovery extension,
+      // so it would never survive the `if (!discovered) return` below. This
+      // is not a discovery-catalog concern at all — it reads its own
+      // extension key directly off the settled payload, independent of
+      // whether Bazaar's extension is present.
+      //
+      // Fire-and-forget, same contract as tryDisplace/reverify below: this
+      // must never delay or fail the settle response, which has already gone
+      // on-chain by the time this hook runs.
+      const rotation = paymentPayload.extensions?.rotation;
+      if (rotation && typeof rotation === "object") {
+        const r = rotation as Record<string, unknown>;
+        // `resourceUrl`, not a pre-canonicalized key — authorizeRotation
+        // canonicalizes internally, the same contract every other entry
+        // point into the catalog (upsertFromPayment, tryDisplace) already
+        // uses. A client sending an already-canonical key would still work
+        // (canonicalization is idempotent), but the field name states the
+        // actual contract rather than an implementation detail.
+        if (
+          typeof r.resourceUrl === "string" &&
+          typeof r.oldPayTo === "string" &&
+          typeof r.newPayTo === "string" &&
+          typeof r.nonce === "string"
+        ) {
+          void catalog
+            .authorizeRotation(
+              r.resourceUrl,
+              result.payer,
+              r.oldPayTo,
+              r.newPayTo,
+              r.nonce,
+              Date.now(),
+              Date.now() + ROTATION_AUTHORIZATION_EXPIRY_MS,
+            )
+            .catch((err) => {
+              console.warn(`[bazaar] rotation authorization failed for ${r.resourceUrl}:`, err);
+            });
+        }
+      }
+
       const discovered = extractDiscoveryInfo(paymentPayload, requirements);
       if (!discovered) {
         // A real, distinct outcome — not "capture never ran". The hook DID

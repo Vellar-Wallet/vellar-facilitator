@@ -4,6 +4,7 @@ import {
   loadWithRetry,
   StoreInvalidError,
   type CatalogStore,
+  type RotationAuthorization,
   type StoredEntryRow,
 } from "./store.js";
 import type { PaymentRequirements } from "@x402/core/types";
@@ -1241,6 +1242,77 @@ export class BazaarCatalog {
   }
 
   /**
+   * Voluntary rotation (docs/proposal-voluntary-rotation.md): record a marker
+   * authorizing `oldPayTo` to hand this resource to `newPayTo`, from a real
+   * settlement where `oldPayTo` was itself the payer.
+   *
+   * THE TRAP, stated precisely because it is the one place a shortcut becomes
+   * a vulnerability. `authenticatedPayer` is the cryptographically
+   * authenticated payer of THIS settlement (x402Facilitator's own verified
+   * result) — never forgeable. `claimedOldPayTo` is client-echoed content
+   * from the payment's `extensions.rotation.oldPayTo` field — exactly as
+   * forgeable as any other extension payload. Without the three-way match
+   * below, anyone could settle a tiny payment claiming to be "rotating" an
+   * address they have never controlled.
+   *
+   * The gate lives HERE, not at the call site, for the same reason G-4's gate
+   * lives in recordSettlement rather than at bazaar.ts: a caller forgetting
+   * to check is exactly how a vulnerability like this gets shipped.
+   *
+   * No-op (not an error) whenever any of these hold, because none of them is
+   * the caller's fault to handle — this fires from a fire-and-forget settle
+   * hook, same contract as tryDisplace/reverify:
+   *  - no store configured (a marker can only ever be read back through one)
+   *  - the three addresses do not all agree
+   *  - newPayTo === oldPayTo (nothing to rotate to)
+   *  - the resource has no entry, or isn't currently bound to oldPayTo at all
+   */
+  async authorizeRotation(
+    resourceUrl: string,
+    authenticatedPayer: string | undefined,
+    claimedOldPayTo: string,
+    newPayTo: string,
+    nonce: string,
+    settledAt: number,
+    expiresAt: number,
+  ): Promise<void> {
+    if (!this.store) return;
+    const key = BazaarCatalog.canonicalResourceKey(resourceUrl);
+    const entry = this.entries.get(key);
+    const currentOwner = entry?.boundPayTo[0];
+    if (newPayTo === claimedOldPayTo) {
+      console.warn(`[catalog] rotation authorization refused for ${key}: newPayTo equals oldPayTo — nothing to rotate to`);
+      return;
+    }
+    if (
+      !authenticatedPayer ||
+      authenticatedPayer !== claimedOldPayTo ||
+      claimedOldPayTo !== currentOwner
+    ) {
+      console.warn(
+        `[catalog] rotation authorization refused for ${key}: three-way match failed — authenticated payer ` +
+          `(${authenticatedPayer || "<none>"}), claimed oldPayTo (${claimedOldPayTo}), and current owner ` +
+          `(${currentOwner ?? "<none>"}) must all agree`,
+      );
+      return;
+    }
+    try {
+      await this.store.recordRotationAuthorization({
+        resourceKey: key,
+        oldPayTo: claimedOldPayTo,
+        newPayTo,
+        nonce,
+        settledAt,
+        expiresAt,
+      });
+    } catch (err) {
+      console.error(
+        `[catalog] could not persist rotation authorization for ${key}: ${String((err as Error)?.message ?? err)}`,
+      );
+    }
+  }
+
+  /**
    * G-2 displacement — the ONLY path by which a bound URL changes hands without
    * an operator.
    *
@@ -1315,9 +1387,39 @@ export class BazaarCatalog {
     // payments arrive here every time. A line per payment would bury the
     // outcomes that matter under the one that never does.
     if (entry.boundPayTo.includes(claimant)) return "skipped";
+
+    // Voluntary rotation (docs/proposal-voluntary-rotation.md): resolved ONCE,
+    // here, before the latch gate — read-only, does NOT consume. Looked up as
+    // (key, CURRENT bound owner, claimant), so a marker authorizing A->B can
+    // never be found while probing C: a lookup keyed on C as newPayTo simply
+    // finds nothing, which is what keeps constraint 2 (A->B cannot complete
+    // as A->C) structural rather than a check someone could forget.
+    //
+    // This bypasses ONLY the one-way latch below. It grants nothing on its
+    // own — claimant still has to pass the ordinary Layer-2 probe exactly as
+    // an unverified-binding displacement already does. Two independent
+    // proofs (marker + probe), neither sufficient alone.
+    // Snapshotted as a PRIMITIVE, not read off `entry` again later: `entry`
+    // is a live object reference into `this.entries`, and a concurrent
+    // rotation mutates an existing entry's boundPayTo IN PLACE (see below) —
+    // so re-reading `entry.boundPayTo[0]` after the probe would silently
+    // observe the mutation that already happened, making the "did the owner
+    // change while we probed" check always agree with itself.
+    const ownerAtStart = entry.boundPayTo[0] ?? "";
+    const rotation = this.store
+      ? await this.store.lookupRotationAuthorization(key, ownerAtStart, claimant)
+      : undefined;
+    const hasLiveRotationAuth = (r: RotationAuthorization | undefined): r is RotationAuthorization =>
+      r !== undefined && r.consumedAt === undefined && r.expiresAt > now;
+
     // THE ONE-WAY GATE. Read from the durable latch, never from the badge.
-    if (this.everVerified.has(key))
-      return outcome("skipped", "binding was PROVEN once and is permanently non-displaceable (one-way latch)");
+    if (this.everVerified.has(key)) {
+      if (!hasLiveRotationAuth(rotation))
+        return outcome("skipped", "binding was PROVEN once and is permanently non-displaceable (one-way latch)");
+      // fall through — the latch is bypassed for THIS attempt only. Every
+      // check below (empty binding, templated key, frozen catalog, cooldown,
+      // the Layer-2 probe itself) still runs in full.
+    }
     // An empty binding has no claimant to displace and no proof to weigh; it is
     // the tampered state bindLoadedEntry warns about, not a live URL.
     if (entry.boundPayTo.length === 0)
@@ -1363,13 +1465,85 @@ export class BazaarCatalog {
         `the resource's own 402 challenge did not name the claimant (verdict "${verdict}")`,
       );
 
-    // Re-check the latch: the probe was awaited, and a concurrent re-verify may
-    // have proven the incumbent while we were off the CPU. Losing that race
-    // would displace a binding that had become non-displaceable mid-flight.
-    if (this.everVerified.has(key))
-      return outcome("skipped", "incumbent was proven by a concurrent re-verify while the probe was in flight");
+    // Re-check the latch: the probe was awaited, and a concurrent re-verify (or
+    // a concurrent rotation) may have changed things while we were off the
+    // CPU. Re-resolve against the CURRENT entry, don't trust the pre-probe
+    // read — the marker was valid for the state that existed when tryDisplace
+    // STARTED, not necessarily for whatever is true now.
+    const currentEntry = this.entries.get(key);
+    const stillOldOwner = currentEntry?.boundPayTo[0] === ownerAtStart;
+    if (this.everVerified.has(key)) {
+      if (!hasLiveRotationAuth(rotation) || !stillOldOwner)
+        return outcome(
+          "skipped",
+          "incumbent was proven (or rotated) by a concurrent operation while the probe was in flight",
+        );
+      // fall through — still bypassing the latch only, for the rotation path.
+    }
 
     const displaced = [...entry.boundPayTo];
+
+    if (hasLiveRotationAuth(rotation) && this.everVerified.has(key)) {
+      // Store-gated, not memory-gated: consumeRotationAuthorizationAndDisplace
+      // re-checks the owner row AND consumes the exact marker in one
+      // transaction. A memory check here is only a fast path — the binding
+      // can still move between this line and that transaction committing,
+      // which is exactly what the store-level guard exists to catch (test 11
+      // in store.rotation.test.ts). If it returns false, nothing moved
+      // anywhere and this call must not touch in-memory state either.
+      if (!this.store) {
+        // No store configured: a rotation marker can only have been recorded
+        // through the store, so this branch is unreachable in practice, but
+        // fail closed rather than silently falling through to a memory-only
+        // "displacement" that the three-way match never actually gated.
+        return outcome("refused", "rotation requires a configured store — none is set");
+      }
+      let moved: boolean;
+      try {
+        moved = await this.store.consumeRotationAuthorizationAndDisplace(
+          key,
+          rotation.oldPayTo,
+          rotation.newPayTo,
+          rotation.nonce,
+          now,
+        );
+      } catch (err) {
+        console.error(
+          `[catalog] rotation write FAILED for ${key} — binding UNCHANGED: ${String(
+            (err as Error)?.message ?? err,
+          )}`,
+        );
+        return "refused";
+      }
+      if (!moved)
+        return outcome(
+          "refused",
+          "rotation marker could not be consumed at commit time (already spent, expired, or the " +
+            "binding moved again concurrently) — nothing was changed",
+        );
+
+      // STATS CARRY OVER, deliberately unlike an ordinary displacement.
+      //
+      // The old owner AUTHORIZED this successor by settling the marker as
+      // themselves — this is the same merchant changing address, not a new
+      // party taking over an abandoned or squatted URL. Resetting stats here
+      // would discard a real history for no reason; RA-13's "don't assert a
+      // provenance you don't have" concern does not apply, because the
+      // provenance (this merchant, this history) is exactly what the marker
+      // proved continuous.
+      entry.boundPayTo = [claimant];
+      this.ownership.set(key, [claimant]);
+      this.everVerified.add(key);
+      this.setVerifiedOwner(key, true);
+      this.save();
+      console.warn(
+        `[catalog] ROTATED ${key}: ${displaced.join(", ")} -> ${claimant}, authorized by a marker settled ` +
+          `by the previous owner. Settlement stats were CARRIED OVER — this is the same merchant, not a ` +
+          `new one.`,
+      );
+      return "displaced";
+    }
+
     if (this.store) {
       try {
         await this.store.displaceOwnership(key, claimant, now);
