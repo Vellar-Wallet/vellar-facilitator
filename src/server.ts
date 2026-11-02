@@ -3,7 +3,7 @@ import rateLimit from "@fastify/rate-limit";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
+import { Networks, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { getNetworkPassphrase } from "@x402/stellar";
 import type { Network, PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
@@ -205,8 +205,23 @@ export async function buildServer(
    * payability.ts's own doc comment on filterPayableOnly).
    */
   payability?: PayabilityResolver,
+  /**
+   * G-10 — Soroban RPC URL, for the fire-and-forget spend-reservation
+   * reconciliation after a settlement submits. Appended at the end for the
+   * same reason as `payability` above. Undefined means reconciliation
+   * never runs: a reservation stays at its real SUBMITTED fee (adjusted by
+   * `submittedFee`, which needs no RPC call) rather than the flat estimate
+   * — still a real improvement over pre-G-10 accounting, just not adjusted
+   * a second time down to the exact fee_charged.
+   */
+  rpcUrl?: string,
 ) {
   const { facilitator, pool } = built;
+  // G-10 — one shared RPC client for reconciliation's getTransaction calls.
+  // Lazily undefined when rpcUrl is not provided, matching every other
+  // optional capability in this function (trust, payability, admin): the
+  // reconciliation step below simply never fires rather than throwing.
+  const facilitatorRpcServer = rpcUrl ? new rpc.Server(rpcUrl) : undefined;
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // /settle idempotency guard (2026-09-19 incident: a dashboard double-click
   // fired two independent /settle calls carrying the SAME signed transaction
@@ -815,6 +830,7 @@ export async function buildServer(
       // whichever attempt actually settled.
       let result;
       let rpcStatus;
+      let submittedFee: { hash: string; stroops: number } | undefined;
       let acquiredAddress: string | undefined;
       let catalogOutcome: CatalogOutcome | undefined;
       try {
@@ -861,6 +877,7 @@ export async function buildServer(
         }
         result = captured.value.value.value;
         rpcStatus = captured.value.rpcStatus;
+        submittedFee = captured.value.submittedFee;
         catalogOutcome = captured.value.value.catalogOutcome;
       } catch (err) {
         policy?.refundUnspent(reservation);
@@ -900,8 +917,43 @@ export async function buildServer(
       // submission (verification/signing/send), meaning ZERO sponsor XLM was spent.
       // A non-empty hash means it was submitted and fees were charged, even if the
       // transaction then failed, so that reservation correctly stands.
+      //
+      // This also covers txBadSeq and an exhausted TRY_AGAIN_LATER retry: both
+      // arrive with an empty `transaction` (the library's own
+      // `status !== "PENDING"` check sets it to "" before ever assigning a
+      // hash — src/rpcstatus.ts's Item 4 fix already resolved the ambiguous
+      // "did it actually land" case INLINE, during the retry loop, so a
+      // TRY_AGAIN_LATER that survives to here is confirmed never-forwarded,
+      // not merely assumed to be).
       if (policy && result.success === false && !result.transaction) {
         policy.refundUnspent(reservation);
+      }
+      // G-10 — a transaction that WAS submitted (success, or a post-submission
+      // ledger failure — either way a real fee was charged) gets its
+      // reservation corrected down from the flat estimate to the REAL
+      // submitted fee immediately (awaited: this is exactly the
+      // submit-to-reconcile gap the durability requirement is about), then
+      // reconciled to the real fee_charged in the background once
+      // getTransaction confirms the outcome (fire-and-forget: the buyer
+      // already has their answer, and the spend ledger catching up a few
+      // hundred ms later costs nothing a buyer can observe — same
+      // fire-and-forget discipline as bazaar.ts's tryDisplace/reverify).
+      if (policy && result.transaction && submittedFee) {
+        await policy.adjustReservation(reservation, submittedFee.stroops);
+        void reconcileSpendReservation({
+          policy,
+          reservation,
+          hash: submittedFee.hash,
+          // Approximately "now" is correct here: this reservation was
+          // created moments ago, in THIS same request, not reloaded from a
+          // restart — the age-based unreconcilable check inside
+          // reconcileSpendReservation only matters for the boot-time reload
+          // path, where the real original `at` is what SpendPolicy.boot()
+          // re-seeds from storage.
+          reservedAt: Date.now(),
+          rpcServer: facilitatorRpcServer,
+          log: (msg) => request.log.warn(msg),
+        });
       }
       // Surface what the RPC actually said. Without this a caller sees
       // `settle_exact_stellar_transaction_submission_failed` and cannot tell
@@ -1451,8 +1503,13 @@ if (isDirectRun) {
     horizonUrl: horizonUrlFor(config.network),
     networkPassphrase: networkPassphraseFor(config.network),
   });
-  // Per-settle spend is estimated at the fee ceiling (worst case) since the real
-  // simulated fee is not exposed on the verify response — over-counting fails safe.
+  // Initial reservation is still the fee-ceiling estimate (worst case, since
+  // the real fee is not known until facilitator.settle() actually submits —
+  // see policy.ts's own header comment), but G-10 adjusts it down to the
+  // real tx.fee immediately after, then to the real fee_charged once
+  // confirmed. `store` persists reservations so a crash between submit and
+  // reconcile cannot lose or double-count spend; omitted (no CATALOG_DB_URL)
+  // means exactly pre-G-10 in-memory-only behaviour.
   const policy = createSpendPolicy({
     network: config.network,
     rateWindowMs: config.spend.rateWindowMs,
@@ -1462,7 +1519,9 @@ if (isDirectRun) {
     perUrlMax: config.spend.perUrlMax,
     perPayToMax: config.spend.perPayToMax,
     unboundPoolMax: config.spend.unboundPoolMax,
+    ...(store ? { store } : {}),
   });
+  await policy.boot();
   // Fix 3: sponsor balance guard. Derive the sponsor public key and poll its XLM
   // balance from Horizon. The first check is not awaited (startup is not blocked);
   // a failed check leaves settle allowed (fail open).
@@ -1540,6 +1599,7 @@ if (isDirectRun) {
     bondEscrow,
     admin,
     payability,
+    rpcUrl,
   );
 
   // Basic alerting (spec §6) — only meaningful with a console to read the
@@ -1672,4 +1732,112 @@ async function fetchXlmBalanceStroops(horizonUrl: string, publicKey: string): Pr
   if (!native?.balance) throw new Error("no native balance on sponsor account");
   // Horizon reports XLM with 7 decimals; convert to integer stroops.
   return Math.round(Number(native.balance) * 10_000_000);
+}
+
+/**
+ * G-10 — the RPC's transaction-history retention window, measured LIVE
+ * against both DEFAULT_RPC endpoints (rpc-defaults.ts) this facilitator
+ * actually uses, via a plain JSON-RPC `getHealth` POST to each:
+ *
+ *   testnet -> ledgerRetentionWindow: 120960
+ *             oldestLedgerCloseTime 1793049912, latestLedgerCloseTime 1793654760
+ *             (604848s / 120959 ledgers = ~5.00s/ledger = 7.00 days)
+ *   pubnet  -> ledgerRetentionWindow: 120960 (same value)
+ *
+ * Both measured 2026-11-02. The official docs disagree with each other
+ * across versions (24h in one page, 7 days in the current reference, 2h on
+ * a third-party provider's docs) — this number came from asking the actual
+ * endpoints, not from picking a doc to trust. A conservative MARGIN below
+ * the measured 7 days, not the exact figure: retention is an operator
+ * setting on someone else's infrastructure and could legitimately be
+ * shorter on a future provider change; treating "maybe not found yet" as
+ * "definitely past retention" too early would mark a reservation
+ * unreconcilable while a real answer was still available.
+ */
+const RPC_RETENTION_WINDOW_MS = 5 * 24 * 60 * 60 * 1000; // 5 days — margin below the measured 7
+
+/**
+ * Reconcile one spend reservation against the real on-chain outcome.
+ * Fire-and-forget at BOTH call sites (immediately after a settlement
+ * submits, and at boot for reservations SpendPolicy.boot() re-seeded) —
+ * never awaited by anything that could fail a request because of it.
+ *
+ * NOT_FOUND is retried with backoff for a SHORT window (this reconciles a
+ * transaction @x402/stellar's own pollForTransaction already waited on
+ * before returning, so an immediate NOT_FOUND is almost always propagation
+ * lag, not a real gap) before falling back to the reservation's AGE to
+ * decide "keep trying later" from "past the RPC's retention window,
+ * genuinely unreconcilable" — never the other way around, and never
+ * guessed from a single NOT_FOUND.
+ */
+async function reconcileSpendReservation(opts: {
+  policy: SpendPolicy;
+  reservation: number | undefined;
+  hash: string;
+  reservedAt: number;
+  rpcServer: rpc.Server | undefined;
+  log: (msg: string) => void;
+  now?: () => number;
+  delayFn?: (ms: number) => Promise<void>;
+}): Promise<void> {
+  if (!opts.rpcServer || opts.reservation === undefined) return;
+  const now = opts.now ?? Date.now;
+  const delay = opts.delayFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const NOT_FOUND_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+
+  for (const waitMs of [0, ...NOT_FOUND_RETRY_DELAYS_MS]) {
+    if (waitMs > 0) await delay(waitMs);
+    let txResult;
+    try {
+      txResult = await opts.rpcServer.getTransaction(opts.hash);
+    } catch (err) {
+      opts.log(
+        `[policy] reconciliation getTransaction(${opts.hash.slice(0, 12)}…) failed: ` +
+          `${String((err as Error)?.message ?? err)} — will retry`,
+      );
+      continue;
+    }
+    if (txResult.status === "SUCCESS" || txResult.status === "FAILED") {
+      let feeCharged: number;
+      try {
+        feeCharged = Number(
+          (txResult as { resultXdr: { feeCharged(): { toString(): string } } }).resultXdr
+            .feeCharged()
+            .toString(),
+        );
+      } catch (err) {
+        opts.log(
+          `[policy] could not decode feeCharged for ${opts.hash.slice(0, 12)}… ` +
+            `(${String((err as Error)?.message ?? err)}) — reservation stays at its submitted-fee estimate`,
+        );
+        return;
+      }
+      await opts.policy.adjustReservation(opts.reservation, feeCharged, "reconciled");
+      return;
+    }
+    // NOT_FOUND. Fall through to the next retry delay, unless the
+    // reservation is already old enough that NOT_FOUND means "past
+    // retention" rather than "not propagated yet".
+    if (now() - opts.reservedAt > RPC_RETENTION_WINDOW_MS) {
+      await opts.policy.adjustReservation(
+        opts.reservation,
+        opts.policy.reservedStroops(opts.reservation) ?? 0,
+        "unreconcilable",
+      );
+      return;
+    }
+  }
+  // Exhausted the short retry budget, still NOT_FOUND, and not yet past
+  // retention: genuinely "not confirmed yet" rather than "gone". Nothing
+  // further happens here — the reservation stays 'open' at its submitted-
+  // fee amount, and if it survives a restart, SpendPolicy.boot() will
+  // re-seed it and a LATER reconciliation (triggered by whatever boot-time
+  // caller exists for that path) gets another chance with a now-much-older
+  // reservedAt, which is what actually decides unreconcilable — not this
+  // short-lived retry budget giving up.
+  opts.log(
+    `[policy] reconciliation for ${opts.hash.slice(0, 12)}… still NOT_FOUND after ${
+      NOT_FOUND_RETRY_DELAYS_MS.length
+    } retries — leaving the reservation open at its submitted-fee estimate; a later reconciliation attempt will retry`,
+  );
 }

@@ -21,6 +21,7 @@ import {
   type SettlementAggregates,
   type StoredEntryRow,
   type StoredOwnership,
+  type StoredSpendReservation,
 } from "./store.js";
 
 /** A store on a fresh temp file. Survives across BazaarCatalog instances, so it
@@ -106,6 +107,15 @@ export class FailingStore implements CatalogStore {
     now: number,
   ): Promise<boolean> {
     return this.inner.consumeRotationAuthorizationAndDisplace(resourceKey, oldPayTo, newPayTo, nonce, now);
+  }
+  saveSpendReservation(reservation: StoredSpendReservation): Promise<void> {
+    return this.inner.saveSpendReservation(reservation);
+  }
+  loadOpenSpendReservations(sinceAt: number): Promise<StoredSpendReservation[]> {
+    return this.inner.loadOpenSpendReservations(sinceAt);
+  }
+  deleteElapsedSpendReservations(beforeAt: number): Promise<void> {
+    return this.inner.deleteElapsedSpendReservations(beforeAt);
   }
   saveEmbedding(resourceKey: string, embedding: number[]): Promise<void> {
     return this.inner.saveEmbedding(resourceKey, embedding);

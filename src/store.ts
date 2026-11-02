@@ -80,6 +80,21 @@ export interface RotationAuthorization {
   consumedAt: number | undefined;
 }
 
+/**
+ * G-10 — one spend-ceiling reservation, as read back from or written to
+ * storage. Mirrors SpendPolicy's in-memory globalSpend entry
+ * ({at, stroops, id}) plus the fields a restart needs to tell "still open,
+ * reconcile it" from "already settled, nothing more to do" apart.
+ */
+export interface StoredSpendReservation {
+  id: number;
+  /** Matches globalSpend's `at` — when the window started for this
+   *  reservation, so a restart re-seeds it at the SAME age, not a fresh one. */
+  at: number;
+  stroops: number;
+  status: "open" | "reconciled" | "unreconcilable";
+}
+
 export interface StoredEntryRow {
   resourceKey: string;
   /** The StoredEntry as JSON. Parsed and validated by the catalog's own schema —
@@ -192,6 +207,32 @@ export interface CatalogStore {
     nonce: string,
     now: number,
   ): Promise<boolean>;
+  /**
+   * G-10 — persist one spend reservation so the global spend ceiling
+   * survives a restart. An UPSERT: the same `id` is written three times
+   * over a reservation's life (reserve, adjust-to-submitted-fee,
+   * adjust-to-fee-charged), and each write replaces the row rather than
+   * adding one — `id` is the primary key, not an append log.
+   */
+  saveSpendReservation(reservation: StoredSpendReservation): Promise<void>;
+  /** Spend reservations still inside a live window as of `sinceAt` (the
+   *  caller computes this as `now - spendWindowMs`) — what SpendPolicy
+   *  re-seeds its in-memory globalSpend array from at boot. Returns rows of
+   *  EVERY status: 'reconciled' is a more precise number for the SAME real
+   *  spend, not a reason to stop counting it, so filtering by status here
+   *  would silently undercount the ceiling the moment a reservation
+   *  finishes reconciling. A reservation whose window has already elapsed
+   *  is NOT returned regardless of status; it has no further job to do
+   *  (see evaluate()'s own window filter, which would drop it on the very
+   *  next check anyway) and is cleaned up separately, never loaded back in
+   *  just to be immediately pruned. */
+  loadOpenSpendReservations(sinceAt: number): Promise<StoredSpendReservation[]>;
+  /** Delete reservations whose window elapsed before `beforeAt`. Called
+   *  opportunistically (not on a timer — this repo has no background
+   *  scheduler for store maintenance), so the table never grows
+   *  unboundedly: a reservation has no reason to exist once nothing can
+   *  read it as "open" any more. */
+  deleteElapsedSpendReservations(beforeAt: number): Promise<void>;
   /**
    * Attach a semantic embedding to an existing entry.
    *
@@ -459,6 +500,21 @@ const SCHEMA = [
      consumed_at  INTEGER,
      PRIMARY KEY (resource_key, old_pay_to, new_pay_to, nonce)
    )`,
+  // G-10 — spend-ceiling reservations, so a crash between submit and
+  // reconcile cannot lose or double-count real sponsor spend. `id` mirrors
+  // SpendPolicy's own in-memory reservation id (monotonic per process, but
+  // used here only as a stable row key — restart-survival re-seeds the
+  // in-memory counter separately, see SpendPolicy's own boot-load comment).
+  // `at` is the reservation's ORIGINAL window-start time, not when a row was
+  // last written, so a restart re-seeds it at the same age rather than a
+  // fresh one — an already-half-elapsed window must not reset to full.
+  `CREATE TABLE IF NOT EXISTS spend_reservation (
+     id      INTEGER PRIMARY KEY,
+     at      INTEGER NOT NULL,
+     stroops INTEGER NOT NULL,
+     status  TEXT NOT NULL CHECK (status IN ('open', 'reconciled', 'unreconcilable'))
+   )`,
+  `CREATE INDEX IF NOT EXISTS spend_reservation_at ON spend_reservation (at)`,
 ];
 
 export class LibsqlCatalogStore implements CatalogStore {
@@ -989,6 +1045,56 @@ export class LibsqlCatalogStore implements CatalogStore {
       await tx.rollback().catch(() => {});
       throw err;
     }
+  }
+
+  async saveSpendReservation(reservation: StoredSpendReservation): Promise<void> {
+    this.assertWritable("saveSpendReservation");
+    await this.run(() =>
+      this.client.execute({
+        sql: `INSERT INTO spend_reservation (id, at, stroops, status) VALUES (?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET at = excluded.at, stroops = excluded.stroops,
+                                             status = excluded.status`,
+        args: [reservation.id, reservation.at, reservation.stroops, reservation.status] as InArgs,
+      }),
+    );
+  }
+
+  async loadOpenSpendReservations(sinceAt: number): Promise<StoredSpendReservation[]> {
+    // EVERY status, not just 'open'. `status` is bookkeeping about whether
+    // reconciliation has finished, not about whether the reservation still
+    // represents real spend inside its window — a 'reconciled' row is the
+    // SAME real sponsor spend as an 'open' one, just with a more precise
+    // number attached, and it counts against the ceiling for the rest of
+    // its window exactly the same way. Only `at > sinceAt` (still inside
+    // the window) decides whether a row is re-seeded; filtering by status
+    // here would silently stop counting real spend the moment it finishes
+    // reconciling, which is backwards — reconciling a reservation makes its
+    // number MORE trustworthy, never less relevant to the ceiling.
+    const res = await this.run(() =>
+      this.client.execute({
+        sql: `SELECT id, at, stroops, status FROM spend_reservation WHERE at > ?`,
+        args: [sinceAt] as InArgs,
+      }),
+    );
+    const isNumeric = (v: unknown): v is number | bigint => typeof v === "number" || typeof v === "bigint";
+    const isStatus = (v: unknown): v is StoredSpendReservation["status"] =>
+      v === "open" || v === "reconciled" || v === "unreconcilable";
+    return res.rows.map((r) => {
+      if (!isNumeric(r.id) || !isNumeric(r.at) || !isNumeric(r.stroops) || !isStatus(r.status)) {
+        throw new StoreInvalidError(new Error("spend_reservation row has an unexpected shape"));
+      }
+      return { id: Number(r.id), at: Number(r.at), stroops: Number(r.stroops), status: r.status };
+    });
+  }
+
+  async deleteElapsedSpendReservations(beforeAt: number): Promise<void> {
+    this.assertWritable("deleteElapsedSpendReservations");
+    await this.run(() =>
+      this.client.execute({
+        sql: "DELETE FROM spend_reservation WHERE at <= ?",
+        args: [beforeAt] as InArgs,
+      }),
+    );
   }
 
   /**

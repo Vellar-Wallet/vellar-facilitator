@@ -54,7 +54,24 @@ export interface CapturedRpcStatus {
   latestLedger?: number;
 }
 
-const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus }>();
+/**
+ * G-10 — the fee actually submitted, captured UNCONDITIONALLY (unlike
+ * CapturedRpcStatus, which only records non-PENDING outcomes): the spend
+ * policy needs this on every settlement, success or failure, to reserve the
+ * real transaction's own fee instead of the flat MAX_TX_FEE_STROOPS
+ * estimate. Read directly off the `tx` object passed into sendTransaction —
+ * `TransactionBase.fee`, the SAME object about to be submitted, so this is
+ * exactly what the network will be asked to charge, never a guess and never
+ * a second simulation of a possibly-different transaction.
+ */
+export interface CapturedSubmittedFee {
+  /** The hex transaction hash, so a caller can later getTransaction() it. */
+  hash: string;
+  /** TransactionBase.fee, in stroops — the max the network may charge. */
+  stroops: number;
+}
+
+const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus; submittedFee?: CapturedSubmittedFee }>();
 
 /**
  * Submission retry — TRY_AGAIN_LATER only, twice, six seconds apart.
@@ -139,10 +156,15 @@ export function __setRpcRetryDelayForTest(fn?: (ms: number) => Promise<void>): v
  */
 export async function withRpcStatusCapture<T>(
   fn: () => Promise<T>,
-): Promise<{ value: T; rpcStatus: CapturedRpcStatus | undefined }> {
+): Promise<{
+  value: T;
+  rpcStatus: CapturedRpcStatus | undefined;
+  submittedFee: CapturedSubmittedFee | undefined;
+}> {
   return store.run({}, async () => {
     const value = await fn();
-    return { value, rpcStatus: store.getStore()?.captured };
+    const slot = store.getStore();
+    return { value, rpcStatus: slot?.captured, submittedFee: slot?.submittedFee };
   });
 }
 
@@ -150,6 +172,13 @@ export async function withRpcStatusCapture<T>(
  *  `withRpcStatusCapture`; undefined everywhere else, by design. */
 export function capturedRpcStatus(): CapturedRpcStatus | undefined {
   return store.getStore()?.captured;
+}
+
+/** The submitted fee recorded so far in the CURRENT scope — see
+ *  CapturedSubmittedFee's own doc comment. Same validity rule as
+ *  capturedRpcStatus(). */
+export function capturedSubmittedFee(): CapturedSubmittedFee | undefined {
+  return store.getStore()?.submittedFee;
 }
 
 function decodeErrorCode(sendResult: Record<string, unknown>): string | undefined {
@@ -251,6 +280,26 @@ export function installRpcStatusCapture(log: (msg: string) => void = console.war
     return;
   }
   proto.sendTransaction = async function patched(this: unknown, tx: unknown) {
+    // G-10 — capture the real fee unconditionally, before the first attempt.
+    // Identical across every retry in this function (same `tx`, see the
+    // retry loop's own doc comment), so one read here is enough. Never
+    // blocks or fails the submission: a malformed `tx` simply means nothing
+    // is captured, same "diagnostics never break a settlement" rule as the
+    // status capture below.
+    try {
+      const hashable = tx as { hash?: () => Buffer; fee?: string } | undefined;
+      if (typeof hashable?.hash === "function" && typeof hashable.fee === "string") {
+        const stroops = Number(hashable.fee);
+        if (Number.isFinite(stroops)) {
+          const slot = store.getStore();
+          if (slot) slot.submittedFee = { hash: hashable.hash().toString("hex"), stroops };
+        }
+      }
+    } catch {
+      /* Diagnostics must never break a settlement — see decodeErrorCode's
+         sibling reasoning below. */
+    }
+
     let result = await original.call(this, tx);
 
     for (let attempt = 1; attempt <= SUBMIT_RETRY_MAX && result?.status === "TRY_AGAIN_LATER"; attempt++) {

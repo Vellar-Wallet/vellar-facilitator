@@ -303,6 +303,14 @@ describe("documented rationale — module constants", () => {
 //
 // Raise the unbound pool, or drop the hard floor, and that stops being true.
 // These assertions fail if either happens, which is the point.
+//
+// UNCHANGED BY G-10 (2026-11-02). Both assertions below are about
+// maxTransactionFeeStroops — the flat 500,000-stroop estimate's WORST-CASE
+// theoretical capacity (globalPerWindow = ceiling / flat estimate) — not
+// about real accounted spend. G-10 corrects what gets BOOKED after a
+// settlement submits; it does not change the configured flat estimate
+// checkSettle() still reserves before anything about the real transaction
+// is known, so this arithmetic is exactly as valid as before.
 describe("documented rationale — G-8 stays bounded by the sponsor balance", () => {
   const c = loadConfig(base);
 
