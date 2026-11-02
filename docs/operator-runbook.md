@@ -717,13 +717,69 @@ Requirements, in full, are in
   the entire trap;
 - **≥ 12 of them**, concurrent, inside 60s (sequential tops out at 6 per window
   at the measured ~8s per settle, and can never reach the threshold);
-- **there is no enforce flag** — `policy.ts:112` keys enforcement off
-  `network === "stellar:pubnet"`. On testnet, assert on the structured log
-  `{ payTo, wouldReject }` (`server.ts:216`); for the actual 503, run a local
-  instance with `STELLAR_NETWORK=pubnet` against testnet RPC;
+- **there is no enforce flag** — `policy.ts:198` (the `enforced` getter) keys
+  enforcement off `network === "stellar:pubnet"`. On testnet, assert on the
+  structured log `{ payTo, wouldReject }` (`server.ts:805-808`); for the actual
+  503, run a local instance with `STELLAR_NETWORK=pubnet` against testnet RPC;
 - **assert on the response body, never on a success count.** A tripped budget is
   `503 {error: "settlement_refused"}`. A sequence collision is a submission error
   containing `tx_bad_seq`. They are indistinguishable by count alone.
+
+(Line references above checked against the current `feat/mainnet-readiness`
+HEAD as of 2026-11-02 — re-grep before trusting them again; this file moved
+twice already during that branch's own G-10 work.)
+
+## 7a. Demonstrating F12 against mainnet — prepare only, do not run
+
+The procedure above is for testnet, where F12 cannot refuse anything. Mainnet
+is different in two ways that change the demonstration rather than just its
+target host:
+
+1. **F12 actually enforces there.** `enforced` (`policy.ts:198`) is `true` on
+   `network === "stellar:pubnet"`, so a real `503 {error: "settlement_refused"}`
+   is observable directly against the live instance — no local
+   `STELLAR_NETWORK=pubnet` workaround needed.
+2. **The shared-source-account trap does not apply.** The testnet walkthrough's
+   1-success/10-failure result came from twelve settles sharing one
+   `SIM_SOURCE_ACCOUNT` and racing on its sequence number.
+   `examples/buyer-classic.mjs`'s own header note records that the official
+   x402 SDK scheme no longer uses `SIM_SOURCE_ACCOUNT` — sequence numbers come
+   from each payer's own account — and settlement-side concurrency is
+   isolated by the facilitator's channel pool (`CHANNEL_POOL_SIZE`,
+   `src/config.ts:444`; sized for 50 true-concurrent settles per
+   `docs/channel-pool-design.md` §2, only 2 of which the 11 real mainnet
+   settlements ever used — see `docs/mainnet-evidence.md`). A `tx_bad_seq`
+   collision is therefore not expected on a mainnet run, and must not be
+   treated as a stand-in for a refusal if one somehow occurs anyway — same
+   rule as below, just less likely to matter.
+
+A full prepare-only specification, written as commented-out steps so every
+detail is concrete, is at
+[`examples/demonstrate-f12-mainnet.mjs`](../examples/demonstrate-f12-mainnet.mjs).
+It is **not runnable as written and must not be run without a deliberate
+decision to fund real accounts** — summary:
+
+- **13 funded mainnet payer accounts** (11 to clear the default `perUrlMax`
+  of 10, one more to confirm the refusal isn't a rate-problem tail per
+  `walkthrough-results.md` §W-2 item 2's reasoning, one held in reserve for a
+  pre-flight sanity settle). ~0.5 XLM + 0.20 USDC each is generous headroom
+  for a single 0.10 USDC settle — the smallest amount already proven live in
+  `docs/mainnet-evidence.md`. The facilitator's sponsor pays the real network
+  fee via fee-bump; payers need no fee budget of their own.
+- **One shared resource URL**, all 13 payers settling against it, so they
+  share one `perUrlMax` bucket.
+- **12 of the 13 fired concurrently** (`Promise.allSettled`, not `Promise.all`
+  — one rejection must not blind the rest), inside the 60s `rateWindowMs`
+  (`policy.ts:474`'s default) — the budget's window, not an arbitrary choice.
+- **Proof the control fired, mainnet-specific**: the response bodies first
+  (10 `2xx`, the rest `503 settlement_refused`); the `{ payTo, wouldReject }`
+  and `settlement_refused` log lines for the same window; the `/metrics`
+  diff — `vellar_settle_total{outcome="success"}` up by exactly 10,
+  `vellar_settle_total{outcome="failure"}` and
+  `vellar_settle_errors_total{reason=...}` up by the refused count, and
+  `vellar_spend_unreconcilable_total` **not** moving (a G-10 regression, not
+  an F12 signal, if it does); then Horizon confirmation of all 10 successful
+  tx hashes, so the denominator is real settlements, never requests sent.
 
 ## Related
 
