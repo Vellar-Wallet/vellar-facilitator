@@ -9,7 +9,7 @@ import type { Network, PaymentPayload, PaymentRequirements } from "@x402/core/ty
 import { loadConfig } from "./config.js";
 import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
-import { defaultRpcFor, horizonUrlFor } from "./rpc-defaults.js";
+import { defaultRpcFor, horizonUrlFor, networkPassphraseFor } from "./rpc-defaults.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
@@ -19,8 +19,10 @@ import {
   annotateTrust,
   filterVerifiedOnly,
   rerankVerifiedFirst,
+  type TrustedDiscoveryResource,
   type TrustResolver,
 } from "./trust.js";
+import { annotatePayability, filterPayableOnly, type PayabilityResolver } from "./payability.js";
 import { createSpendPolicy, type SpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
 import { createChannelMonitor } from "./channelMonitor.js";
@@ -73,6 +75,12 @@ interface ListQuery {
   offset?: string;
   /** Trust-layer filter: "true" keeps only verification-verified entries. */
   verified_only?: string;
+  /** Payability filter: "true" drops not_payable accepts entries (keeping
+   *  payable and unknown ones visible), and drops a listing entirely only if
+   *  nothing remains. See filterPayableOnly's own doc comment for why this
+   *  has no honest-refusal 400 the way verified_only does — there is no
+   *  deployment-level "unavailable" state for this check. */
+  payable_only?: string;
   /** Vellar extension (not an x402 spec filter): keep only listings with an
    *  accepts entry for this exact asset. Validated by parseAssetFilter. */
   asset?: string;
@@ -187,6 +195,16 @@ export async function buildServer(
    * both exist.
    */
   admin?: AdminOptions,
+  /**
+   * Item 2 — live payability check. Appended at the end rather than grouped
+   * near `trust` above, to avoid reordering every existing positional call
+   * site across the test suite. Undefined behaves exactly like `trust`
+   * undefined does: discovery responses carry no payability annotation and
+   * payable_only is simply never applied, rather than refusing anything —
+   * there is no "unavailable" state for this check to refuse against (see
+   * payability.ts's own doc comment on filterPayableOnly).
+   */
+  payability?: PayabilityResolver,
 ) {
   const { facilitator, pool } = built;
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
@@ -1129,21 +1147,26 @@ export async function buildServer(
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.offset !== undefined ? { offset: Number(q.offset) } : {}),
     });
-    if (!trust) return response;
-    let items = await annotateTrust(
-      response.items,
-      trust,
-      (url) => catalog.isVerifiedOwner(url),
-      (url) => catalog.isEverVerified(url),
-    );
-    if (q.verified_only === "true") {
-      const before = items.length;
-      items = filterVerifiedOnly(items);
+    if (!trust && !payability) return response;
+    let items: TrustedDiscoveryResource[] = trust
+      ? await annotateTrust(
+          response.items,
+          trust,
+          (url) => catalog.isVerifiedOwner(url),
+          (url) => catalog.isEverVerified(url),
+        )
+      : response.items;
+    if (payability) items = await annotatePayability(items, payability);
+    let before = items.length;
+    if (q.verified_only === "true") items = filterVerifiedOnly(items);
+    if (q.payable_only === "true") items = filterPayableOnly(items);
+    if (q.verified_only === "true" || q.payable_only === "true") {
       // `total` must describe what the caller can actually page through. The
-      // catalog computes it before the trust layer exists, so a verified_only
-      // filter applied afterwards used to leave `items: []` sitting next to
-      // `total: 1` — a response that contradicts itself, which invites a client
-      // to distrust every other number in it. Reduced by what this page dropped.
+      // catalog computes it before either filter exists, so applying one
+      // afterwards used to leave `items: []` sitting next to `total: 1` — a
+      // response that contradicts itself, which invites a client to distrust
+      // every other number in it. Reduced by what this page dropped, across
+      // BOTH filters combined (either can drop a listing the other kept).
       const dropped = before - items.length;
       return {
         ...response,
@@ -1174,18 +1197,21 @@ export async function buildServer(
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
     });
-    if (!trust) return response;
+    if (!trust && !payability) return response;
     // Annotate, then verified-first within the relevance ranking (stable), or
     // hard-filter when the caller asked for verified_only.
-    let resources = await annotateTrust(
-      response.resources,
-      trust,
-      (url) => catalog.isVerifiedOwner(url),
-      (url) => catalog.isEverVerified(url),
-    );
-    resources = q.verified_only === "true"
-      ? filterVerifiedOnly(resources)
-      : rerankVerifiedFirst(resources);
+    let resources: TrustedDiscoveryResource[] = trust
+      ? await annotateTrust(
+          response.resources,
+          trust,
+          (url) => catalog.isVerifiedOwner(url),
+          (url) => catalog.isEverVerified(url),
+        )
+      : response.resources;
+    if (payability) resources = await annotatePayability(resources, payability);
+    resources =
+      q.verified_only === "true" ? filterVerifiedOnly(resources) : rerankVerifiedFirst(resources);
+    if (q.payable_only === "true") resources = filterPayableOnly(resources);
     return { ...response, resources };
   });
 
@@ -1401,6 +1427,30 @@ if (isDirectRun) {
     // Now the one shared map, so this cannot drift from upto.ts and bond.ts.
     rpcUrl: config.rpcUrl ?? defaultRpcFor(config.network),
   });
+  // Item 2 — live payability check (BUILD-PLAN). Same shared-map discipline
+  // as trust's rpcUrl above: Horizon's URL and the network passphrase both
+  // come from rpc-defaults.ts, not a local re-derivation.
+  //
+  // Unlike trust's rpcUrl, which is OPTIONAL there (undefined just skips the
+  // live wasm-hash cross-check, a degraded-but-valid mode), payability has no
+  // RPC-less mode at all — without it, name() can never be simulated and
+  // every asset resolves to "unknown" forever. defaultRpcFor returning
+  // undefined is already documented as unreachable in production (it only
+  // happens for a network with no configured default, which config.network's
+  // own type never allows); fail loudly here rather than silently build a
+  // resolver that can never do its job.
+  const rpcUrl = config.rpcUrl ?? defaultRpcFor(config.network);
+  if (!rpcUrl) {
+    throw new Error(
+      `No RPC URL available for network "${config.network}" — set STELLAR_RPC_URL explicitly`,
+    );
+  }
+  const { createPayabilityResolver } = await import("./payability.js");
+  const payability = createPayabilityResolver({
+    rpcUrl,
+    horizonUrl: horizonUrlFor(config.network),
+    networkPassphrase: networkPassphraseFor(config.network),
+  });
   // Per-settle spend is estimated at the fee ceiling (worst case) since the real
   // simulated fee is not exposed on the verify response — over-counting fails safe.
   const policy = createSpendPolicy({
@@ -1489,6 +1539,7 @@ if (isDirectRun) {
     config.network,
     bondEscrow,
     admin,
+    payability,
   );
 
   // Basic alerting (spec §6) — only meaningful with a console to read the

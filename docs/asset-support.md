@@ -122,6 +122,78 @@ request time from the catalog itself — a new asset appears automatically once 
 real settlement catalogs a listing that accepts it, with no config change and no
 deploy.
 
+## Live payability check
+
+Ownership verification answers "is this listing theirs"; this answers "can
+they be paid right now". For each `accepts` entry, the facilitator checks
+whether that entry's `payTo` currently holds what it would take to receive
+the priced asset, so a buyer can be warned before a settlement that would
+fail on-chain for a reason that has nothing to do with who owns the listing.
+
+The check is per-`accepts`-entry, three-valued, and never collapses to a
+single flag:
+
+| Verdict | Meaning |
+| --- | --- |
+| `payable` | This specific accepts option can be paid right now. |
+| `not_payable` | A classic account's trustline for this asset is missing or unauthorized. |
+| `unknown` | The check could not be completed (Horizon/RPC timeout or error) — never read as proof of either side. |
+
+`unknown` is never rendered as `not_payable`. A check this deployment could
+not perform is not evidence that a merchant cannot be paid.
+
+Surfaced on the wire as `trust.acceptsPayability`, index-aligned with
+`accepts` — the same shape as `trust.acceptsVerification`:
+
+```json
+{
+  "resource": "https://api.example.com/forecast",
+  "accepts": [{ "scheme": "exact", "asset": "CBIELTK6…", "payTo": "GABC…" }],
+  "trust": {
+    "acceptsPayability": ["payable"]
+  }
+}
+```
+
+### How each payTo/asset shape is checked
+
+- **A classic (`G…`) `payTo`, any asset.** Every asset in a payment
+  requirement is a Stellar Asset Contract (SAC) id, never a raw classic
+  asset — so the check first resolves the SAC to its classic identity via a
+  read-only simulated `name()` call (every SAC exposes this per SEP-41; it
+  returns `"CODE:ISSUER"`, or the literal string `"native"` for the
+  native-asset SAC). The classic identity is then checked against Horizon's
+  trustline data for that account: present and `is_authorized: true` →
+  `payable`; absent, or present but unauthorized → `not_payable`.
+- **Native XLM, a classic (`G…`) `payTo`.** No trustline concept applies —
+  `payable` whenever the account exists on the ledger at all.
+- **A contract (`C…`) `payTo`, any asset.** A contract holding a SAC balance
+  needs no classic trustline at all — `payable` immediately, no Horizon call.
+- **A non-SAC Soroban token** (the simulated `name()` call fails, or returns
+  something not shaped like a SEP-41 asset name) **→ `unknown`**. The
+  facilitator has no registry of token contracts to fall back on, matching
+  this document's own "no allowlist" stance for the asset filter above.
+
+A SAC's resolved classic identity is cached permanently per asset — it is a
+structural fact about the contract (what asset does it wrap), not live state
+that can go stale. The per-`(payTo, asset)` payability verdict itself is
+cached with a TTL: 5 minutes for a resolved `payable`/`not_payable` verdict,
+30 seconds for `unknown` — a failed check is not held anywhere near as long
+as a real answer, so a transient Horizon blip clears quickly rather than
+masking a real trustline for minutes.
+
+### `payable_only` filter
+
+`GET /discovery/resources` and `/discovery/search` both accept
+`?payable_only=true`. Unlike `verified_only`, there is no deployment-level
+"unavailable" state to refuse against here — Horizon and RPC endpoints are
+always derived from the configured network, with no unconfigured case — so
+`payable_only` is never refused with a 400. It prunes `not_payable` accepts
+entries from each listing's `accepts` array (keeping `payable` and `unknown`
+ones, with their verdict still visible) and drops a listing entirely only
+when nothing payable or unknown remains. `pagination.total` is adjusted to
+match, same discipline as `verified_only`.
+
 ## Mainnet roadmap
 
 The following USDT0 integrations are scoped for the mainnet launch, not the

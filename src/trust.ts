@@ -82,6 +82,19 @@ export type TrustedDiscoveryResource = DiscoveryResource & {
      * "persisted" when some of `settlements` was inherited from disk.
      */
     statsSource?: "observed" | "persisted";
+    /**
+     * Item 2 — live payability, per accepts entry, index-aligned with
+     * `accepts` (same shape as `acceptsVerification` above). Declared here
+     * as a plain literal union rather than importing payability.ts's own
+     * `Payability` type, to avoid a circular type dependency (payability.ts
+     * imports TrustedDiscoveryResource from this file) — the two are
+     * structurally identical, which TypeScript treats as the same type
+     * wherever they meet. Independent of ownership/verification: a listing
+     * can be fully owner-verified and still have a not_payable option (the
+     * merchant removed a trustline), and vice versa, so this is never
+     * clamped by ownerVerified the way acceptsVerification is.
+     */
+    acceptsPayability?: ("payable" | "not_payable" | "unknown")[];
   };
 };
 

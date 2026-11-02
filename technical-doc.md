@@ -670,14 +670,28 @@ launch. Three milestones (final = mainnet, per SCF):
    (`docs/deploy-runbook.md`, `9c9bad3`: prerequisites, all 25 environment
    variables read out of `config.ts`, sponsor and channel-account provisioning,
    post-deploy verification, and the operational gaps stated plainly).
-   Remaining: **a live
-   trustline/payability check on every discovery entry** — read-time
-   confirmation that the listed `payTo` currently holds a trustline for the
-   priced asset, so a buyer is warned before attempting a settlement that
-   would fail on-chain (ownership verification answers "is this listing
-   theirs"; this answers "can they be paid right now"); **voluntary
-   rotation for verified bindings** — proposed design at
-   `docs/proposal-voluntary-rotation.md`, not yet implemented. **A public
+   ~~A live trustline/payability check on every discovery entry~~ —
+   **delivered** (`src/payability.ts`): read-time confirmation that each
+   `accepts` entry's `payTo` currently holds a trustline for the priced
+   asset, so a buyer is warned before attempting a settlement that would
+   fail on-chain (ownership verification answers "is this listing theirs";
+   this answers "can they be paid right now"). Three-valued
+   (`payable`/`not_payable`/`unknown`), per-accepts-entry, cached (5 min for
+   a resolved verdict, 30s for `unknown` — a failed check is not held as
+   long as a real answer). Classic `G…` addresses are checked against
+   Horizon's trustline + authorization state; `C…` contract addresses need
+   no classic trustline at all and read as payable directly; native XLM is
+   payable whenever the account exists. An optional `payable_only` filter on
+   both discovery routes prunes `not_payable` accepts entries (keeping
+   `unknown` ones visible with their verdict — never silently promoted
+   either way) and drops a listing only when nothing payable or unknown
+   remains.
+   ~~Voluntary rotation for verified bindings~~ — **delivered**
+   (`docs/proposal-voluntary-rotation.md`, `src/catalog.ts`'s
+   `authorizeRotation`): a merchant who still holds their old signing key
+   rotates a verified binding with one marker settlement, three-way matched
+   against the authenticated payer; the lost-key case stays the manual
+   operator procedure (`docs/operator-runbook.md` §1). **A public
    transaction explorer is live** at
    [`explorer.vellar.xyz`](https://explorer.vellar.xyz) — a separate repo
    (`Vellar-Wallet/vellar-explorer`), independently built and operated,
