@@ -395,15 +395,16 @@ export async function buildServer(
     // verified yet", which every entry reads as while VERIFICATION_API_URL is
     // unset. Omitted at zero so a healthy catalog stays quiet.
     ...(catalog.unverifiableCount > 0 ? { unverifiableEntries: catalog.unverifiableCount } : {}),
-    // Which build is actually serving. Render injects RENDER_GIT_COMMIT.
+    // Which build is actually serving. Railway injects RAILWAY_GIT_COMMIT_SHA;
+    // Render (kept for anyone self-hosting there) injects RENDER_GIT_COMMIT.
     // Without this the only way to answer "is the deploy current?" is to
     // fingerprint behaviour — probing for security headers or an error-message
     // shape — which is archaeology, only works when a release happens to change
     // something externally visible, and let a stale build go unnoticed twice.
     // Now it is a string comparison against `git rev-parse --short HEAD`.
     // Omitted rather than faked when unset, so local runs do not claim a build.
-    ...(process.env.RENDER_GIT_COMMIT
-      ? { commit: process.env.RENDER_GIT_COMMIT.slice(0, 7) }
+    ...((process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RENDER_GIT_COMMIT)
+      ? { commit: (process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RENDER_GIT_COMMIT)!.slice(0, 7) }
       : {}),
     // F3: surfaced so an operator sees a frozen catalog rather than wondering
     // why discovery stopped growing. Settlement is unaffected while frozen.
