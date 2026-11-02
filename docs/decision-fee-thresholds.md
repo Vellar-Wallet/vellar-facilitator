@@ -171,3 +171,50 @@ retired per D-4).
   blocker).
 - The six settle-path controls without live evidence are unchanged by any of
   this; settlement, not simulation, is what proves them.
+
+---
+
+## §3's pubnet measurement — 2026-11-02, 11 real settlements
+
+The pubnet figure §3 said could only come from a real payment now exists:
+11 confirmed mainnet settlements, Sep 17–21 2026 (`docs/mainnet-evidence.md`),
+`fee_charged` read directly from Horizon
+(`GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H`'s transaction
+history) and matched against every documented tx-hash prefix.
+
+| # | Date (UTC) | Tx hash | `fee_charged` (stroops) |
+| --- | --- | --- | --- |
+| 1 | Sep 17 13:19 | `7288cd138c5e2770784738b2903b3728f049f659d3d6da42e19976783edefef3` | 23,565 |
+| 2 | Sep 17 15:33 | `b6898a10abebce5de92b9610fadfac470c48379bffdefb9ce81b581f4e0d3c07` | 23,565 |
+| 3 | Sep 17 21:21 | `6ec03c83e5d7a45ed87603fae5dea18f4c205f65ff73e5fcef6614b606001275` | 23,645 |
+| 4 | Sep 19 03:39 | `3b40e5b23d52388c7905b3a46b31c5e0b709e0b8a4a95125ac674937cbe37925` | 23,565 |
+| 5 | Sep 19 13:41 | `237c91c3044dfc66e7498096637c10ce65041e7a744d9cd65a0cbc3f9d29c1f7` | 23,565 |
+| 6 | Sep 19 20:24 | `09b24dc9fb78c5596cb780fee26c57bb17d5eee0e9cc7035ebae938e54752a14` | 23,678 |
+| 7 | Sep 20 02:43 | `a2d6ee5eab785d6b5a5401028fa7ba414d8b2a6cac0a3568b3f8a8cf98f87f57` | 23,984 |
+| 8 | Sep 20 12:06 | `babb0a72bcb94e80be61dff1fa56ec9a5ebd45c62caa139e03076ced5f55962f` | 23,565 |
+| 9 | Sep 20 12:40 | `3401e34161883219abd3543752f19731fba39b31c108119add8138903ad0d742` | 23,565 |
+| 10 | Sep 20 13:00 | `f5137a9cf90c39bd6680eb5dae3548a0ee2e2b0dffec059072e72882709cefe0` | 23,565 |
+| 11 | Sep 21 12:17 | `4abe6af7e71acb3ceea0fa30a9649768e05d2efb67e04f573112e214a40db458` | 23,565 |
+
+**min 23,565 · median 23,565 · max 23,984** (mean ≈ 23,621).
+
+Next to the testnet figures above: mainnet's real charged fee (23,565–23,984)
+is *lower* than testnet's one real settled figure (28,711), and far lower
+than either testnet simulation (32,655; 140,331).
+
+**This sample does NOT size a threshold, deliberately.** All 11 are plain
+`exact`-scheme transfers from a team-funded wallet (`docs/mainnet-evidence.md`)
+— the policy-governed (smart-account) case that simulates at ~140,331 on
+testnet is not represented at all, and it is exactly the case most likely to
+cost more. Eleven samples of the cheapest case say nothing about the
+expensive one. `MAX_TX_FEE_STROOPS` stays at 500,000 for this reason, not
+despite it: the ceiling has to admit a policy-governed payment, which this
+sample cannot bound.
+
+**The fix is in the accounting, not the ceiling.** G-10's actual finding —
+the spend policy reserves the flat 500,000-stroop estimate per settlement
+against a real charge around 20,000–24,000 on both networks — doesn't need a
+bigger or better sample to fix, because the problem isn't that 500,000 is
+the wrong ESTIMATE; it's that an estimate is being reserved at all when the
+real, transaction-specific simulated fee is already known before submission.
+See `docs/closing-state.md`'s G-10 row for the accounting change.
