@@ -258,3 +258,97 @@ describe("createSpendPolicy — store wiring", () => {
     expect(verdict.allowed).toBe(true);
   });
 });
+
+describe("window-scoping — a reservation counts only toward ITS OWN window, in memory and in the DB", () => {
+  it("in-memory: a reservation older than the spend window stops counting against the ceiling (src/policy.ts:240)", async () => {
+    // evaluate()'s own filter — `this.globalSpend.filter((e) => e.at > t -
+    // this.cfg.spendWindowMs)` — runs on EVERY checkSettle() call, so this
+    // needs no explicit "prune" call to demonstrate: the ceiling simply
+    // stops seeing an elapsed reservation the next time anything is
+    // checked at all, regardless of status.
+    const clock = nowFn();
+    const tightCfg = { ...cfg, spendCeilingStroops: FLAT_ESTIMATE }; // room for exactly one
+    const p = new SpendPolicy(tightCfg, clock.now);
+    const first = p.checkSettle("GMERCHANT");
+    expect(first.allowed, "first settle fits exactly at the ceiling").toBe(true);
+    expect(p.checkSettle("GOTHER").allowed, "a second settle in the SAME window exceeds it").toBe(false);
+
+    clock.advance(cfg.spendWindowMs + 1); // first reservation's window has elapsed
+    expect(
+      p.checkSettle("GOTHER").allowed,
+      "once the first reservation's window elapses, it stops counting — room again",
+    ).toBe(true);
+    void first;
+  });
+
+  it("in-memory: a RECONCILED reservation also stops counting once its window elapses — status does not exempt it", async () => {
+    const clock = nowFn();
+    // Ceiling fits ONE flat-estimate reservation plus the reconciled
+    // 23,565, but not two flat-estimate reservations at once — tight
+    // enough that a second settle's own fresh (flat-estimate) reservation
+    // only fits once the first one has aged out, isolating what status
+    // alone does (vs. what the window elapsing does).
+    const tightCfg = { ...cfg, spendCeilingStroops: FLAT_ESTIMATE + 23_565 - 1 };
+    const p = new SpendPolicy(tightCfg, clock.now);
+    const verdict = p.checkSettle("GMERCHANT");
+    await p.adjustReservation(verdict.reservation, 23_565, "reconciled");
+    expect(
+      p.checkSettle("GOTHER").allowed,
+      "a second settle's own flat-estimate reservation, plus the still-live reconciled one, exceeds the ceiling",
+    ).toBe(false);
+
+    clock.advance(cfg.spendWindowMs + 1);
+    expect(
+      p.checkSettle("GOTHER").allowed,
+      "once the reconciled reservation's window elapses, a fresh settle fits alone — reconciled status did not exempt it from aging out",
+    ).toBe(true);
+  });
+
+  it("DB: deleteElapsedSpendReservations removes rows whose window has elapsed, of every status (src/store.ts)", async () => {
+    const { store } = tmpStore();
+    await store.init();
+    await store.saveSpendReservation({ id: 1, at: 1000, stroops: 100, status: "open" });
+    await store.saveSpendReservation({ id: 2, at: 1000, stroops: 200, status: "reconciled" });
+    await store.saveSpendReservation({ id: 3, at: 1000, stroops: 300, status: "unreconcilable" });
+    await store.saveSpendReservation({ id: 4, at: 999_999, stroops: 400, status: "open" }); // still live
+
+    await store.deleteElapsedSpendReservations(60_000);
+
+    const remaining = await store.loadOpenSpendReservations(0);
+    expect(remaining.map((r) => r.id)).toEqual([4]);
+    await store.close();
+  });
+
+  it("the table does not grow forever on a long-running process that never restarts (src/policy.ts's maybeCleanupDb)", async () => {
+    // boot() cleans up once, at startup — THE GAP this test is for: a
+    // process that stays up (Railway's always-on hosting, specifically)
+    // never calls boot() again, so without an ongoing trigger every
+    // settlement would add a row nothing ever removes.
+    const { store, url } = tmpStore();
+    await store.init();
+    const clock = nowFn();
+    const p = new SpendPolicy(cfg, clock.now, { store });
+
+    // Settle once per (simulated) minute for a while, well past the spend
+    // window each time, so every earlier reservation is elapsed by the
+    // time a later one is reserved.
+    for (let i = 0; i < 20; i++) {
+      p.checkSettle(`G${i}`);
+      clock.advance(60_000); // 1 simulated minute — several spend windows
+    }
+    await new Promise((r) => setTimeout(r, 20)); // let fire-and-forget writes land
+
+    // Without the periodic trigger, all 20 rows would still be sitting in
+    // the table (boot() never ran again). With it, the table has been
+    // swept at least once during those 20 minutes of simulated time
+    // (DB_CLEANUP_INTERVAL_MS is 10 minutes), so it must hold far fewer
+    // than 20 rows by now.
+    const reopened = reopen(url);
+    const stillPresent = await reopened.loadOpenSpendReservations(0);
+    expect(
+      stillPresent.length,
+      "periodic cleanup must have run at least once in 20 simulated minutes — the table is not unbounded",
+    ).toBeLessThan(20);
+    await reopened.close();
+  });
+});

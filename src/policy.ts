@@ -111,6 +111,15 @@ export interface SettleVerdict {
 
 type Clock = () => number;
 
+/** G-10 — how often reserve() opportunistically re-triggers
+ *  deleteElapsedSpendReservations on a long-running process (boot() only
+ *  runs it once, at startup). Deliberately much coarser than the spend
+ *  window itself: this is table-size hygiene, not accounting, so it does
+ *  not need to run anywhere near every settle — it needs to run often
+ *  enough that the table stays bounded, not on a schedule tied to
+ *  correctness. */
+const DB_CLEANUP_INTERVAL_MS = 10 * 60_000; // 10 minutes
+
 /**
  * In-memory, single-instance rolling-window accounting. Timestamps are kept in
  * arrays and pruned on each check; at the configured windows/limits the arrays
@@ -142,6 +151,12 @@ export class SpendPolicy {
    *  Seeded past the highest id loaded from storage at boot() time, so a
    *  restart never reissues an id a still-live persisted row already owns. */
   private nextReservationId = 1;
+  /** G-10 — when deleteElapsedSpendReservations last ran. boot() runs it
+   *  once; on a long-running process that never restarts, that one run is
+   *  the only cleanup the table would EVER get without this — every
+   *  settlement persists a row, and nothing else ever removes one. See
+   *  reserve()'s own opportunistic trigger below. */
+  private lastDbCleanupAt = 0;
 
   constructor(
     cfg: SpendPolicyConfig,
@@ -278,7 +293,32 @@ export class SpendPolicy {
     // site — see server.ts). The durability guarantee this file promises
     // is about the SUBMIT -> RECONCILE gap, not this pre-submission one.
     void this.persist(reservationId, t, this.cfg.perSettleEstimateStroops, "open");
+    this.maybeCleanupDb(t);
     return reservationId;
+  }
+
+  /**
+   * G-10 — opportunistic, time-gated trigger for
+   * deleteElapsedSpendReservations, so the persisted table does not grow
+   * forever on a process that runs for a long time without restarting
+   * (boot() only cleans up once, at startup). Gated on wall-clock time
+   * since the LAST cleanup, not on settle count, so a quiet period does
+   * not need N settles to happen before the table gets tidied, and a busy
+   * one does not run the cleanup query on every single settle.
+   *
+   * Fire-and-forget, same reasoning as persist() above: this is table
+   * hygiene, never something /settle should wait on.
+   */
+  private maybeCleanupDb(t: number): void {
+    if (!this.store) return;
+    if (t - this.lastDbCleanupAt < DB_CLEANUP_INTERVAL_MS) return;
+    this.lastDbCleanupAt = t;
+    void this.store.deleteElapsedSpendReservations(t - this.cfg.spendWindowMs).catch((err) => {
+      this.log(
+        `[policy] periodic spend_reservation cleanup failed (${String((err as Error)?.message ?? err)}) — ` +
+          `will retry on the next trigger; accounting is unaffected either way`,
+      );
+    });
   }
 
   private async persist(
