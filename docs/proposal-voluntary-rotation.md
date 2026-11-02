@@ -197,5 +197,43 @@ by tests — modest next to everything else built this week.
 
 ---
 
+## Addendum — a second trap, found in review of #112, now fixed
+
+The three-way match in §2/§3 (`result.payer === oldPayTo === currentOwner`)
+proves WHO paid. It does not prove WHAT they paid for or WHERE the money
+went. `/settle` is called with the buyer's payload by whoever submits
+it — ordinarily the seller receiving an ordinary purchase, not the buyer
+themselves. That means a malicious seller M receiving a perfectly ordinary
+payment from the resource's real owner A could attach
+`extensions.rotation {oldPayTo: A, newPayTo: M}` to A's own payload before
+relaying it to `/settle`. The three-way match passes — A really did pay, and
+A really is the current owner — and M walks away with a 72h authorization
+to take A's listing, despite A never intending to rotate anything.
+
+**One operational implication worth stating plainly, because it is easy to
+miss:** the marker settlement must be submitted to `/settle` by the owner
+*themselves*, not merely signed by them and handed to someone else to
+submit. Signing only proves who paid; it says nothing about what
+`requirements.payTo`/`scheme`/`network` the submitter presents alongside
+that signature. Anyone holding a signed marker payload could resubmit it
+against different requirements, which is exactly the gap this addendum
+closes server-side — but the operational rule stands regardless: don't hand
+a signed rotation marker to an intermediary.
+
+**The fix:** a rotation extension is only ever honored when the settlement
+that carries it actually paid the facilitator's own configured marker
+address, under the exact scheme, on the facilitator's own network —
+checked both in `bazaar.ts`'s `onAfterSettle` hook (before `authorizeRotation`
+is even called, so a mismatched settlement is ignored and warn-logged) and
+again inside `BazaarCatalog.authorizeRotation` itself (the same
+defense-in-depth posture as every other gate in this file — a caller
+forgetting to check is exactly how a vulnerability like this ships). No
+marker address configured disables voluntary rotation entirely, fail-closed.
+See `bazaar.ts`'s and `catalog.ts`'s own doc comments on `authorizeRotation`
+for the mechanism; `operator-runbook.md` §1a for the operational
+consequence.
+
+---
+
 *Companion: `decision-verified-binding-rotation.md` (option D, now concrete),
 `proposal-operator-rotation-procedure.md` (Case 2, F — not yet written).*

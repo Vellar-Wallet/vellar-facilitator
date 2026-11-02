@@ -215,6 +215,18 @@ export async function buildServer(
    * a second time down to the exact fee_charged.
    */
   rpcUrl?: string,
+  /**
+   * Voluntary rotation's marker address (docs/proposal-voluntary-rotation.md,
+   * fixed in review of #112): the ONLY payTo a settlement's
+   * `extensions.rotation` is ever honored against. Appended at the end for
+   * the same reason as `payability`/`rpcUrl` above. Undefined disables
+   * voluntary rotation entirely — `extensions.rotation` is ignored and
+   * warn-logged on every settlement, same fail-closed posture as the rest
+   * of this gate (see registerBazaar's own doc comment on why). The
+   * production call site passes the sponsor's own public key, derived once
+   * in the isDirectRun boot block below.
+   */
+  rotationMarkerPayTo?: string,
 ) {
   const { facilitator, pool } = built;
   // G-10 — one shared RPC client for reconciliation's getTransaction calls.
@@ -293,7 +305,10 @@ export async function buildServer(
   // `req.ip` is the proxy address, which is only ever used as the fallback when
   // no X-Forwarded-For header is present at all, i.e. a direct connection.
   const app = Fastify({ logger: true, bodyLimit });
-  registerBazaar(facilitator, catalog, admin ? { auditStore: admin.store } : {});
+  registerBazaar(facilitator, catalog, {
+    ...(admin ? { auditStore: admin.store } : {}),
+    rotationMarker: { payTo: rotationMarkerPayTo, scheme: "exact", network },
+  });
 
   // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
   // limiting. /health is exempt so the Render health check cannot be throttled.
@@ -1600,6 +1615,7 @@ if (isDirectRun) {
     admin,
     payability,
     rpcUrl,
+    sponsorPub,
   );
 
   // Basic alerting (spec §6) — only meaningful with a console to read the

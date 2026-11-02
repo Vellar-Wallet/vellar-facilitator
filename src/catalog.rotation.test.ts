@@ -17,6 +17,17 @@ const NEW = "GNEWOWNERBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 const OTHER = "GOTHERCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
 const NONCE = "nonce-rotation-1";
 
+// The facilitator's own configured marker address — every test below settles
+// "as if" it paid this, through settledMarker(), unless it is deliberately
+// testing the #112 review fix itself (the "marker payTo" describe block).
+const MARKER_PAYTO = "GMARKERDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+const MARKER_SCHEME = "exact";
+const MARKER_NETWORK = "stellar:testnet";
+const EXPECTED_MARKER = { payTo: MARKER_PAYTO, scheme: MARKER_SCHEME, network: MARKER_NETWORK };
+/** What a REAL marker settlement actually paid — the `settled` arg every
+ *  legitimate authorizeRotation call below passes, matching EXPECTED_MARKER. */
+const SETTLED_MARKER = { payTo: MARKER_PAYTO, scheme: MARKER_SCHEME, network: MARKER_NETWORK };
+
 function disc(url = URL_V): DiscoveredResource {
   return {
     resourceUrl: url,
@@ -60,7 +71,7 @@ describe("voluntary rotation — the latch bypass", () => {
     const { store } = tmpStore();
     const catalog = await verifiedEntry(store);
 
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     const v = endpointNaming(NEW);
     const outcome = await catalog.tryDisplace(URL_V, NEW, reqs(NEW), disc(), v.fn);
@@ -85,7 +96,7 @@ describe("voluntary rotation — the latch bypass", () => {
   it("the marker bypasses the LATCH only — a probe that doesn't match is still refused", async () => {
     const { store } = tmpStore();
     const catalog = await verifiedEntry(store);
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     // NEW's own endpoint does not actually name NEW (misconfigured, or a
     // marker settled ahead of the real cutover).
@@ -99,7 +110,7 @@ describe("voluntary rotation — the latch bypass", () => {
   it("A->B marker cannot complete as A->C: C's own successful probe is irrelevant without C's own marker", async () => {
     const { store } = tmpStore();
     const catalog = await verifiedEntry(store);
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     const v = endpointNaming(OTHER); // OTHER genuinely controls ITS OWN endpoint
     const outcome = await catalog.tryDisplace(URL_V, OTHER, reqs(OTHER), disc(), v.fn);
@@ -112,7 +123,7 @@ describe("voluntary rotation — the latch bypass", () => {
   it("expired marker: refused, same as having none", async () => {
     const { store } = tmpStore();
     const catalog = await verifiedEntry(store);
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() - 1); // already expired
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() - 1, SETTLED_MARKER, EXPECTED_MARKER); // already expired
 
     const v = endpointNaming(NEW);
     expect(await catalog.tryDisplace(URL_V, NEW, reqs(NEW), disc(), v.fn)).toBe("skipped");
@@ -129,8 +140,8 @@ describe("voluntary rotation — the latch bypass", () => {
     // the moment OTHER's rotation commits.
     const { store } = tmpStore();
     const catalog = await verifiedEntry(store);
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, "nonce-new", 1, Date.now() + 1_000_000);
-    await catalog.authorizeRotation(URL_V, OLD, OLD, OTHER, "nonce-other", 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, "nonce-new", 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, OTHER, "nonce-other", 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     let resolveNewProbe: (v: "match") => void;
     const slowProbe = new Promise<"match">((r) => {
@@ -171,7 +182,7 @@ describe("voluntary rotation — the latch bypass", () => {
       5,
     );
 
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
     await catalog.tryDisplace(URL_V, NEW, reqs(NEW), disc(), endpointNaming(NEW).fn);
 
     const trust = (catalog.list().items[0] as unknown as { trust: { settlements: number } }).trust;
@@ -193,7 +204,7 @@ describe("voluntary rotation — the latch bypass", () => {
   it("authorizeRotation rejects newPayTo === oldPayTo", async () => {
     const { store } = tmpStore();
     const catalog = await verifiedEntry(store);
-    await catalog.authorizeRotation(URL_V, OLD, OLD, OLD, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, OLD, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     const v = endpointNaming(OLD);
     // No marker was recorded (newPayTo === oldPayTo is a no-op), so a
@@ -210,7 +221,7 @@ describe("voluntary rotation — the latch bypass", () => {
 
     // OTHER settles, but the extension CLAIMS to be rotating from OLD. The
     // authenticated payer (OTHER) does not match the claimed oldPayTo (OLD).
-    await catalog.authorizeRotation(URL_V, OTHER, OLD, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OTHER, OLD, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     const v = endpointNaming(NEW);
     expect(
@@ -226,7 +237,7 @@ describe("voluntary rotation — the latch bypass", () => {
 
     // OTHER settles and authentically pays as OTHER, but claims to be
     // rotating FROM OTHER even though OTHER never owned this resource.
-    await catalog.authorizeRotation(URL_V, OTHER, OTHER, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OTHER, OTHER, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     const v = endpointNaming(NEW);
     expect(await catalog.tryDisplace(URL_V, NEW, reqs(NEW), disc(), v.fn)).toBe("skipped");
@@ -240,7 +251,7 @@ describe("voluntary rotation — the latch bypass", () => {
     // three-way match only cares about current ownership, not verification
     // state) has no effect: the first checkpoint only fires when
     // everVerified.has(key), which is false here.
-    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000);
+    await catalog.authorizeRotation(URL_V, OLD, OLD, NEW, NONCE, 1, Date.now() + 1_000_000, SETTLED_MARKER, EXPECTED_MARKER);
 
     const outcome = await catalog.tryDisplace(URL_V, NEW, reqs(NEW), disc(), endpointNaming(NEW).fn);
     expect(outcome, "ordinary unverified displacement, unaffected by the marker's presence").toBe("displaced");

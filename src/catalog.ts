@@ -1255,14 +1255,32 @@ export class BazaarCatalog {
    * below, anyone could settle a tiny payment claiming to be "rotating" an
    * address they have never controlled.
    *
-   * The gate lives HERE, not at the call site, for the same reason G-4's gate
-   * lives in recordSettlement rather than at bazaar.ts: a caller forgetting
-   * to check is exactly how a vulnerability like this gets shipped.
+   * SECOND TRAP, found in review of #112: the three-way match above proves
+   * WHO paid, never WHAT they paid for or WHERE the money went. `/settle` is
+   * called with the BUYER's payload by whoever submits it — ordinarily the
+   * seller, on an ordinary purchase — so a malicious seller receiving a
+   * perfectly normal payment from owner A could attach
+   * `extensions.rotation { oldPayTo: A, newPayTo: <themselves> }` to A's own
+   * payload. The three-way match passes (A really did pay, and A really is
+   * the current owner), and the attacker gets a 72h authorization, purely by
+   * being the one relaying an unrelated purchase to `/settle`. `marker` below
+   * closes that: a rotation is only ever recorded for a settlement that paid
+   * the facilitator's OWN configured marker address, under the exact scheme,
+   * on the server's own network — never for an arbitrary resource purchase.
+   * `markerPayTo` undefined (no marker address configured) refuses every
+   * rotation, same fail-closed posture as the rest of this gate.
+   *
+   * The gate lives HERE, not only at the call site, for the same reason G-4's
+   * gate lives in recordSettlement rather than at bazaar.ts: a caller
+   * forgetting to check is exactly how a vulnerability like this gets
+   * shipped.
    *
    * No-op (not an error) whenever any of these hold, because none of them is
    * the caller's fault to handle — this fires from a fire-and-forget settle
    * hook, same contract as tryDisplace/reverify:
    *  - no store configured (a marker can only ever be read back through one)
+   *  - no marker address configured, or this settlement didn't pay it
+   *  - this settlement's scheme or network isn't the marker's own
    *  - the three addresses do not all agree
    *  - newPayTo === oldPayTo (nothing to rotate to)
    *  - the resource has no entry, or isn't currently bound to oldPayTo at all
@@ -1275,9 +1293,31 @@ export class BazaarCatalog {
     nonce: string,
     settledAt: number,
     expiresAt: number,
+    /** What this settlement actually paid — requirements.payTo/scheme/network
+     *  from the SAME settlement authenticatedPayer came from, never the
+     *  payload's self-reported `extensions.rotation` content. */
+    settled: { payTo: string; scheme: string; network: string },
+    /** The facilitator's own configured marker address/scheme/network.
+     *  `payTo` undefined (no marker address configured) refuses every
+     *  rotation outright. */
+    expectedMarker: { payTo: string | undefined; scheme: string; network: string },
   ): Promise<void> {
     if (!this.store) return;
     const key = BazaarCatalog.canonicalResourceKey(resourceUrl);
+    if (
+      !expectedMarker.payTo ||
+      settled.payTo !== expectedMarker.payTo ||
+      settled.scheme !== expectedMarker.scheme ||
+      settled.network !== expectedMarker.network
+    ) {
+      console.warn(
+        `[catalog] rotation authorization refused for ${key}: this settlement did not pay the configured ` +
+          `marker address (${expectedMarker.payTo ?? "<none configured>"}) under scheme ` +
+          `"${expectedMarker.scheme}" on network "${expectedMarker.network}" — got payTo ${settled.payTo}, ` +
+          `scheme "${settled.scheme}", network "${settled.network}"`,
+      );
+      return;
+    }
     const entry = this.entries.get(key);
     const currentOwner = entry?.boundPayTo[0];
     if (newPayTo === claimedOldPayTo) {

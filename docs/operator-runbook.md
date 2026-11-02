@@ -311,15 +311,35 @@ exactly the manual, out-of-band procedure described above.
 
 1. The merchant runs `examples/rotate-classic.mjs` (or the equivalent against
    their own client) with `OLD_OWNER_SECRET` set to the account that
-   currently owns the resource. This settles one small real payment to the
-   facilitator's sponsor address, carrying a `rotation` extension —
-   `{ resourceUrl, oldPayTo, newPayTo, nonce }`.
-2. The facilitator checks a **three-way match** before recording anything:
-   the authenticated payer of that settlement, the `oldPayTo` the payload
-   claims, and the resource's current bound owner must all be the same
-   address. A settlement from anyone else — including someone who merely
-   claims to be the old owner in the extension — records nothing. See
-   `BazaarCatalog.authorizeRotation`.
+   currently owns the resource, **and submits the settlement themselves,
+   directly to this facilitator's `/verify` + `/settle`.** This settles one
+   small real payment to the facilitator's own configured marker address,
+   carrying a `rotation` extension — `{ resourceUrl, oldPayTo, newPayTo,
+   nonce }`.
+
+   **Do not hand a signed marker payload to anyone else to submit on your
+   behalf.** Signing proves who paid; it says nothing about what
+   `requirements.payTo`/`scheme`/`network` the *submitter* presents alongside
+   that signature when they call `/settle`. The facilitator checks those
+   fields against its own configured marker address (below), not against
+   anything in the signature, so an intermediary holding your signed payload
+   controls what it actually settles as.
+2. The facilitator checks a **three-way match**, AND that this settlement
+   actually paid its own configured marker address, before recording
+   anything. The three-way match: the authenticated payer of this
+   settlement, the `oldPayTo` the payload claims, and the resource's current
+   bound owner must all be the same address — a settlement from anyone
+   else, including someone who merely claims to be the old owner in the
+   extension, records nothing. The marker check: `requirements.payTo`,
+   `scheme`, and `network` must all match the facilitator's own configured
+   marker address exactly — a rotation extension riding on an ORDINARY
+   resource purchase (e.g. a seller relaying a normal payment and attaching
+   a forged extension to it) is ignored and warn-logged before it ever
+   reaches the three-way match. See `registerBazaar`'s `onAfterSettle` hook
+   and `BazaarCatalog.authorizeRotation` — both doc comments explain why
+   this is checked in two places, and
+   `docs/proposal-voluntary-rotation.md`'s addendum for the full history of
+   why the marker check exists at all.
 3. Within the marker's 72-hour window, the merchant settles **one real
    payment from the new address** against the resource in the ordinary way.
    That settlement is what actually moves the binding: `tryDisplace` finds

@@ -156,6 +156,185 @@ describe("registerBazaar", () => {
   });
 });
 
+// Voluntary rotation's marker-payTo gate, fixed in review of #112:
+// extensions.rotation is unsigned client-echoed content, and the three-way
+// match inside authorizeRotation only proves WHO paid, never WHAT they paid
+// for. /settle is called with the buyer's payload by whoever submits it —
+// ordinarily the seller — so without this gate, a malicious seller relaying
+// an ORDINARY purchase from the resource's real owner could attach a forged
+// rotation extension and walk away with a 72h authorization. These tests
+// exercise the REAL onAfterSettle hook end to end (facilitator.settle(), not
+// a direct authorizeRotation call — that path is covered in
+// catalog.rotation.test.ts), so they catch a regression at the wiring level,
+// not just inside the method.
+describe("registerBazaar — voluntary rotation's marker-payTo gate (#112 fix)", () => {
+  const OWNER = "GOWNERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const SUCCESSOR = "GSUCCESSORBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  const MARKER_PAYTO = "GMARKERCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+  const ROTATION_MARKER = { payTo: MARKER_PAYTO, scheme: "exact", network: "stellar:testnet" };
+
+  function schemeAsPayer(payer: string): SchemeNetworkFacilitator {
+    return {
+      scheme: "exact",
+      caipFamily: "stellar:*",
+      getExtra: () => undefined,
+      getSigners: () => [],
+      verify: async () => ({ isValid: true, payer }),
+      settle: async () => ({
+        success: true,
+        transaction: "stub-tx-hash",
+        network: "stellar:testnet",
+        payer,
+      }),
+    } as unknown as SchemeNetworkFacilitator;
+  }
+
+  function rotationPayload(): PaymentPayload {
+    // No discovery extension — a marker settlement is never a Bazaar
+    // catalog entry (bazaar.ts's own comment on why rotation is checked
+    // before extractDiscoveryInfo).
+    return {
+      x402Version: 2,
+      payload: { transaction: "AAAA" },
+      extensions: {
+        rotation: { resourceUrl: "https://api.merchant.example/quote", oldPayTo: OWNER, newPayTo: SUCCESSOR, nonce: "n1" },
+      },
+    } as unknown as PaymentPayload;
+  }
+
+  /** requirements() for a settlement actually paying `payTo`. */
+  function reqsTo(payTo: string): PaymentRequirements {
+    return { ...requirements(), payTo } as PaymentRequirements;
+  }
+
+  async function verifiedOwnerCatalog() {
+    // A real store is required: authorizeRotation no-ops with none configured
+    // (its own doc comment — "a marker can only ever be read back through
+    // one"), which would make every test here pass for the wrong reason.
+    const { store } = tmpStore();
+    const catalog = await BazaarCatalog.create(store);
+    await catalog.upsertFromPayment(
+      {
+        resourceUrl: "https://api.merchant.example/quote",
+        x402Version: 2,
+        discoveryInfo: { input: { type: "http", method: "GET" } },
+      } as unknown as Parameters<typeof catalog.upsertFromPayment>[0],
+      reqsTo(OWNER),
+    );
+    await catalog.reverify("https://api.merchant.example/quote", OWNER, async () => "match");
+    expect(catalog.isEverVerified("https://api.merchant.example/quote")).toBe(true);
+    return catalog;
+  }
+
+  it("an ORDINARY purchase from the owner carrying a forged rotation extension records NO authorization", async () => {
+    const catalog = await verifiedOwnerCatalog();
+    const facilitator = new x402Facilitator().register("stellar:testnet", schemeAsPayer(OWNER));
+    registerBazaar(facilitator, catalog, { rotationMarker: ROTATION_MARKER });
+
+    // The owner really did pay — but for an ordinary resource (payTo is the
+    // MERCHANT's own address, not the marker's), and a rogue seller relaying
+    // it attached a rotation extension anyway.
+    await facilitator.settle(rotationPayload(), reqsTo(OWNER));
+
+    const outcome = await catalog.tryDisplace(
+      "https://api.merchant.example/quote",
+      SUCCESSOR,
+      reqsTo(SUCCESSOR),
+      { resourceUrl: "https://api.merchant.example/quote" } as unknown as Parameters<typeof catalog.tryDisplace>[3],
+      async () => "match",
+    );
+    expect(outcome, "no marker was ever recorded — the forged extension never reached authorizeRotation").toBe(
+      "skipped",
+    );
+  });
+
+  it("a real marker settlement, paid to the configured marker address, records the authorization", async () => {
+    const catalog = await verifiedOwnerCatalog();
+    const facilitator = new x402Facilitator().register("stellar:testnet", schemeAsPayer(OWNER));
+    registerBazaar(facilitator, catalog, { rotationMarker: ROTATION_MARKER });
+
+    await facilitator.settle(rotationPayload(), reqsTo(MARKER_PAYTO));
+    // authorizeRotation is fire-and-forget from the hook (same contract as
+    // tryDisplace/reverify) — settle() resolving does not guarantee the
+    // marker write has landed yet.
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outcome = await catalog.tryDisplace(
+      "https://api.merchant.example/quote",
+      SUCCESSOR,
+      reqsTo(SUCCESSOR),
+      { resourceUrl: "https://api.merchant.example/quote" } as unknown as Parameters<typeof catalog.tryDisplace>[3],
+      async () => "match",
+    );
+    expect(outcome, "a real marker authorization bypasses the latch").toBe("displaced");
+  });
+
+  it("a marker-shaped payment on the WRONG scheme is ignored", async () => {
+    const catalog = await verifiedOwnerCatalog();
+    // Registered under BOTH schemes purely so x402Facilitator.settle() has
+    // somewhere to dispatch "other" to — the gate under test lives in
+    // registerBazaar's hook, not in scheme dispatch.
+    const facilitator = new x402Facilitator()
+      .register("stellar:testnet", schemeAsPayer(OWNER))
+      .register("stellar:testnet", { ...schemeAsPayer(OWNER), scheme: "other" } as SchemeNetworkFacilitator);
+    registerBazaar(facilitator, catalog, { rotationMarker: ROTATION_MARKER });
+
+    await facilitator.settle(rotationPayload(), { ...reqsTo(MARKER_PAYTO), scheme: "other" } as PaymentRequirements);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outcome = await catalog.tryDisplace(
+      "https://api.merchant.example/quote",
+      SUCCESSOR,
+      reqsTo(SUCCESSOR),
+      { resourceUrl: "https://api.merchant.example/quote" } as unknown as Parameters<typeof catalog.tryDisplace>[3],
+      async () => "match",
+    );
+    expect(outcome, "payTo matched but scheme didn't — still refused").toBe("skipped");
+  });
+
+  it("a marker-shaped payment on the WRONG network is ignored", async () => {
+    const catalog = await verifiedOwnerCatalog();
+    // Registered under pubnet too, purely so settle() has somewhere to
+    // dispatch to — same reasoning as the wrong-scheme test above.
+    const facilitator = new x402Facilitator()
+      .register("stellar:testnet", schemeAsPayer(OWNER))
+      .register("stellar:pubnet", schemeAsPayer(OWNER));
+    registerBazaar(facilitator, catalog, { rotationMarker: ROTATION_MARKER });
+
+    await facilitator.settle(rotationPayload(), {
+      ...reqsTo(MARKER_PAYTO),
+      network: "stellar:pubnet",
+    } as PaymentRequirements);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outcome = await catalog.tryDisplace(
+      "https://api.merchant.example/quote",
+      SUCCESSOR,
+      reqsTo(SUCCESSOR),
+      { resourceUrl: "https://api.merchant.example/quote" } as unknown as Parameters<typeof catalog.tryDisplace>[3],
+      async () => "match",
+    );
+    expect(outcome, "payTo matched but network didn't — still refused").toBe("skipped");
+  });
+
+  it("with no rotationMarker configured, every rotation extension is ignored (fail closed)", async () => {
+    const catalog = await verifiedOwnerCatalog();
+    const facilitator = new x402Facilitator().register("stellar:testnet", schemeAsPayer(OWNER));
+    registerBazaar(facilitator, catalog); // no rotationMarker option at all
+
+    await facilitator.settle(rotationPayload(), reqsTo(MARKER_PAYTO));
+
+    const outcome = await catalog.tryDisplace(
+      "https://api.merchant.example/quote",
+      SUCCESSOR,
+      reqsTo(SUCCESSOR),
+      { resourceUrl: "https://api.merchant.example/quote" } as unknown as Parameters<typeof catalog.tryDisplace>[3],
+      async () => "match",
+    );
+    expect(outcome, "no marker address configured means voluntary rotation is entirely disabled").toBe("skipped");
+  });
+});
+
 // Operator Console audit logging (auditStore option) — a first catalog
 // accept writes catalog_upsert, a reject writes catalog_rejected, both via
 // the SAME outcome out-param EXTENSION-RESPONSES already reads (see
