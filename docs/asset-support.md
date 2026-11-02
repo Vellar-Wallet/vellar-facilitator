@@ -182,6 +182,25 @@ cached with a TTL: 5 minutes for a resolved `payable`/`not_payable` verdict,
 as a real answer, so a transient Horizon blip clears quickly rather than
 masking a real trustline for minutes.
 
+### Load control on a cold cache
+
+A single discovery page can carry up to 100 listings with 20 accepts entries
+each — 2,000 lookups with no bound at all. Three controls keep that from
+stalling a response or bursting Horizon:
+
+- **In-flight dedup.** Concurrent checks for the same `(payTo, asset)` —
+  whether from the same page or overlapping requests — share one Horizon/RPC
+  call rather than each starting their own.
+- **A concurrency cap (10).** At most 10 Horizon/RPC calls are ever in
+  flight at once for this resolver; the rest queue behind it.
+- **A 2-second wall-clock budget per discovery request.** Any `accepts`
+  entry not resolved within the budget reports `unknown` for THAT response —
+  never `not_payable`. The underlying lookup is **not cancelled**: it keeps
+  running (still inside the concurrency cap) and populates the cache, so a
+  cold page trades completeness for a bounded response time on its first
+  hit and warms from there. A second request shortly after a budget-limited
+  first one sees the real verdicts the first one couldn't wait for.
+
 ### `payable_only` filter
 
 `GET /discovery/resources` and `/discovery/search` both accept

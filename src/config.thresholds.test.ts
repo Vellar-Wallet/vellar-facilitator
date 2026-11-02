@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CATALOG_LIMITS } from "./catalog.js";
 import { loadConfig } from "./config.js";
 import { OWNERSHIP_LIMITS } from "./ownership.js";
+import { PAYABILITY_LIMITS } from "./payability.js";
 import { SERVER_LIMITS } from "./server.js";
 import { TRUST_LIMITS } from "./trust.js";
 import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
@@ -254,6 +255,25 @@ describe("documented rationale — module constants", () => {
   it("a discovery page cannot request the whole catalog", async () => {
     expect(CATALOG_LIMITS.defaultLimit).toBeLessThanOrEqual(CATALOG_LIMITS.maxLimit);
     expect(CATALOG_LIMITS.maxLimit).toBeLessThan(CATALOG_LIMITS.maxEntries);
+  });
+
+  it("a worst-case cold discovery page needs many MORE lookups than the concurrency cap serves at once", async () => {
+    // Documents WHY a budget exists at all, rather than asserting a made-up
+    // latency number: maxLimit listings x maxAccepts each, every (payTo,
+    // asset) pair distinct, is enough lookups that draining them all at
+    // maxConcurrentLookups per batch is not something a single request
+    // should wait out — which is the whole justification for
+    // annotationBudgetMs existing instead of just letting Promise.all run.
+    const worstCaseLookups = CATALOG_LIMITS.maxLimit * CATALOG_LIMITS.maxAccepts;
+    expect(worstCaseLookups).toBeGreaterThan(PAYABILITY_LIMITS.maxConcurrentLookups * 10);
+  });
+
+  it("an unknown payability verdict goes stale far sooner than a resolved one", async () => {
+    // Same shape as the asset-verdict assertion below: a verdict this
+    // deployment could not produce must not be held anywhere near as long
+    // as a real one, or one bad Horizon call reads as settled fact for
+    // minutes.
+    expect(PAYABILITY_LIMITS.unknownCacheTtlMs).toBeLessThan(PAYABILITY_LIMITS.defaultCacheTtlMs);
   });
 
   it("free-text caps stay ordered: description > serviceName > tag", async () => {

@@ -50,6 +50,28 @@ export const PAYABILITY_LIMITS = Object.freeze({
    * minutes of withholding a signal that may already be available again.
    */
   unknownCacheTtlMs: 30_000,
+  /**
+   * Max concurrent Horizon/RPC calls in flight for this resolver at once.
+   * A discovery page can have up to 100 listings x 20 accepts each
+   * (src/catalog.ts's MAX_LIMIT, MAX_ACCEPTS) — 2,000 lookups on a cold
+   * cache with no bound at all, which would either stall the response or
+   * burst Horizon's per-IP rate limit (the same limit src/config.ts:286-288
+   * already has to account for on the channel-balance-polling path). Scoped
+   * to this resolver alone: nothing on the /settle path makes a Horizon call
+   * through any shared limiter (fetchXlmBalanceStroops in server.ts is a
+   * plain unlimited fetch on its own polling interval), so there is nothing
+   * for payability's cap to starve or be starved by.
+   */
+  maxConcurrentLookups: 10,
+  /**
+   * Wall-clock budget for one annotatePayability pass. Past this, any entry
+   * still unresolved reports "unknown" for THIS response — never
+   * "not_payable", same as every other failure-shaped outcome here. The
+   * in-flight lookup is NOT cancelled: it keeps running (still inside the
+   * concurrency cap) and populates the cache, so a cold page warms across
+   * requests instead of re-paying the same cost on every single one.
+   */
+  annotationBudgetMs: 2_000,
 });
 
 export interface PayabilityResolverOptions {
@@ -65,6 +87,9 @@ export interface PayabilityResolverOptions {
   networkPassphrase: string;
   cacheTtlMs?: number;
   unknownCacheTtlMs?: number;
+  /** Max concurrent Horizon/RPC calls this resolver will have in flight at
+   *  once, across all callers sharing it. See PAYABILITY_LIMITS.maxConcurrentLookups. */
+  maxConcurrentLookups?: number;
   /** Injected for tests. */
   fetchFn?: typeof fetch;
   rpcServer?: Pick<rpc.Server, "simulateTransaction">;
@@ -154,16 +179,54 @@ async function resolveClassicIdentity(
   return { kind: "classic", code, issuer };
 }
 
+/**
+ * A plain counting semaphore — no dependency pulled in for something this
+ * small. `run` queues `fn` behind up to `max` others already in flight
+ * across however many concurrent callers share this instance; nothing here
+ * is scoped per-request, because the whole point is a GLOBAL ceiling on
+ * Horizon/RPC calls this resolver makes, regardless of how many discovery
+ * requests are asking at once.
+ */
+class ConcurrencyLimiter {
+  private active = 0;
+  private readonly queue: (() => void)[] = [];
+  constructor(private readonly max: number) {}
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.max) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.active++;
+    try {
+      return await fn();
+    } finally {
+      this.active--;
+      const next = this.queue.shift();
+      if (next) next();
+    }
+  }
+}
+
 export function createPayabilityResolver(options: PayabilityResolverOptions): PayabilityResolver {
   const cacheTtlMs = options.cacheTtlMs ?? PAYABILITY_LIMITS.defaultCacheTtlMs;
   const unknownCacheTtlMs = options.unknownCacheTtlMs ?? PAYABILITY_LIMITS.unknownCacheTtlMs;
+  const maxConcurrentLookups = options.maxConcurrentLookups ?? PAYABILITY_LIMITS.maxConcurrentLookups;
   const fetchFn = options.fetchFn ?? fetch;
   const rpcServer = options.rpcServer ?? new rpc.Server(options.rpcUrl);
+  const limiter = new ConcurrencyLimiter(maxConcurrentLookups);
 
   // Permanent — see ClassicIdentity's own doc comment for why no TTL applies.
   const identityCache = new Map<string, ClassicIdentity>();
   // TTL'd — trustline/authorization state is live and can change.
   const verdictCache = new Map<string, { verdict: Payability; at: number }>();
+  // IN-FLIGHT DEDUP. A second check() for the SAME (payTo, asset) while the
+  // first is still resolving awaits that same promise instead of starting a
+  // second Horizon/RPC call — load-bearing on a cold cache, where a page can
+  // repeat the same pair across several accepts entries or several
+  // concurrent requests before either one has had a chance to populate
+  // verdictCache. Cleared in a finally, win or lose, so a failed lookup
+  // doesn't wedge every future call for that pair behind a dead promise.
+  const inFlight = new Map<string, Promise<Payability>>();
 
   async function classicIdentityFor(asset: string): Promise<ClassicIdentity> {
     const cached = identityCache.get(asset);
@@ -235,9 +298,28 @@ export function createPayabilityResolver(options: PayabilityResolverOptions): Pa
         const ttl = cached.verdict === "unknown" ? unknownCacheTtlMs : cacheTtlMs;
         if (Date.now() - cached.at < ttl) return cached.verdict;
       }
-      const verdict = await resolve(payTo, asset);
-      verdictCache.set(key, { verdict, at: Date.now() });
-      return verdict;
+
+      const existing = inFlight.get(key);
+      if (existing) return existing;
+
+      // The limiter wraps the WHOLE resolve() — which can make up to two
+      // sequential network calls (classicIdentityFor's RPC simulation, then
+      // a Horizon trustline read) — not just one call inside it. Holding one
+      // slot for both is the simpler, still-correct bound: the goal is
+      // capping total concurrent Horizon/RPC load, and splitting the slot
+      // per sub-call would let one (payTo, asset) resolution occupy two
+      // slots at once for no benefit.
+      const promise = limiter
+        .run(() => resolve(payTo, asset))
+        .then((verdict) => {
+          verdictCache.set(key, { verdict, at: Date.now() });
+          return verdict;
+        })
+        .finally(() => {
+          inFlight.delete(key);
+        });
+      inFlight.set(key, promise);
+      return promise;
     },
   };
 }
@@ -248,15 +330,44 @@ export function createPayabilityResolver(options: PayabilityResolverOptions): Pa
  * trust layer: a listing can be fully owner-verified and still have a
  * not_payable accepts option (the merchant removed a trustline), and vice
  * versa, so this never clamps against or reads ownerVerified.
+ *
+ * WALL-CLOCK BUDGET, scoped to this one call — not to the resolver, which is
+ * long-lived across many requests and must not carry a per-request deadline
+ * between them. Past `budgetMs`, any check() still unresolved reports
+ * "unknown" for THIS page; it is never cancelled, so it keeps running
+ * (inside the resolver's own concurrency cap) and populates the resolver's
+ * cache for the next request. A cold page therefore trades completeness for
+ * a bounded response time on its first hit, and warms from there — never
+ * "unknown" forever, never a response that waits out a slow Horizon.
  */
 export async function annotatePayability(
   items: TrustedDiscoveryResource[],
   resolver: PayabilityResolver,
+  budgetMs: number = PAYABILITY_LIMITS.annotationBudgetMs,
 ): Promise<TrustedDiscoveryResource[]> {
+  const deadline = Date.now() + budgetMs;
+  async function checkWithinBudget(payTo: string, asset: string): Promise<Payability> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return "unknown";
+    const real = resolver.check(payTo, asset);
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<"unknown">((resolve) => {
+      timer = setTimeout(() => resolve("unknown"), remaining);
+    });
+    try {
+      return await Promise.race([real, timeout]);
+    } finally {
+      // The real lookup is deliberately NOT cancelled (see this function's
+      // own doc comment) — only the timer, which has no further purpose
+      // once either side of the race has settled.
+      clearTimeout(timer!);
+    }
+  }
+
   return Promise.all(
     items.map(async (item) => {
       const acceptsPayability = await Promise.all(
-        item.accepts.map((a) => (a.payTo ? resolver.check(a.payTo, a.asset) : Promise.resolve<Payability>("unknown"))),
+        item.accepts.map((a) => (a.payTo ? checkWithinBudget(a.payTo, a.asset) : Promise.resolve<Payability>("unknown"))),
       );
       // Explicit field-by-field, same discipline as trust.ts's own
       // annotateTrust — NOT a blind `...item.trust` spread. This runs either

@@ -365,3 +365,158 @@ describe("filterPayableOnly", () => {
     expect(filtered!.trust!.acceptsPayability).toEqual(["unknown"]);
   });
 });
+
+describe("createPayabilityResolver — concurrency cap and in-flight dedup", () => {
+  /** A controllable-delay Horizon fake that tracks peak concurrent calls. */
+  function trackedHorizon(delayMs: number) {
+    let active = 0;
+    let peak = 0;
+    const calls: string[] = [];
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      calls.push(String(url));
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, delayMs));
+      active--;
+      return horizonAccount([{ asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: ISSUER, is_authorized: true }]);
+    });
+    return { fetchFn, calls, peakActive: () => peak };
+  }
+
+  it("never exceeds maxConcurrentLookups Horizon calls at once", async () => {
+    const horizon = trackedHorizon(20);
+    const resolver = createPayabilityResolver({
+      rpcUrl: "http://rpc",
+      horizonUrl: "http://horizon",
+      networkPassphrase: "Test",
+      rpcServer: { simulateTransaction: simOk(`USDC:${ISSUER}`) },
+      fetchFn: horizon.fetchFn,
+      maxConcurrentLookups: 3,
+    });
+    // 10 DISTINCT payTo addresses (so none share a cache/in-flight key) racing
+    // one asset whose identity is already resolved once naturally as part of
+    // this loop, then 10 genuinely independent Horizon calls queue behind
+    // the cap of 3.
+    // Real, StrKey-valid distinct public keys — an invented-looking address
+    // is rejected by resolve()'s own StrKey.isValidEd25519PublicKey guard
+    // before ever reaching Horizon, which would make this test pass for the
+    // wrong reason (0 calls, not 10 queued-and-capped ones).
+    const payTos = [
+      "GA4QENI4GYN2K2BIXKZEJB6J4WL4FYA6PMHWYO4Z2FNAXKBM3IAKKCT2",
+      "GBXIUQGEAVOSTIERNLM6RX42TUPDDOR4455SBMZHFXYELUGKF3TOWARI",
+      "GBY4GT5YEVIAFORBCO5IHAIM4FM53CW6U6DZK3BJI5SCGCBDSY3XWD3Q",
+      "GB5DUTI5Y43UU23DUPMLRCT63IAJYSD7I534HULHVZQZY5L2CNZPNZMR",
+      "GC42PFIU5D6NXJ33QLONCPV5XRMPSXLIBRJROHSJJJ77UYER2RHX45B7",
+      "GD566MYBJWRT7QVTHZFYNZPHZKAQEOJNMM6J5E3M6CDJC25CBSUUOXV7",
+      "GBXG3IIIJRRC3WHTF7QLGWSIP4A4LEFUR2ISRHHFGIT2C7O4FZNWSOX3",
+      "GCNXSAE6A64WLJP6STSCZ54SVRE2J7ZVML6YRECUAPTOOPACINMVZIZO",
+      "GCFU2CFWVPOPQ67GSQMQVEVG2PZNDZHAKHCNFQ7VIKHMSUKUHR6ZVGZG",
+      "GBNEHCBFOBRU2FFMQ7DCPQHKIKH4QTK7AMS22EVKCU44FDJSFGSNIU62",
+    ];
+    await Promise.all(payTos.map((p) => resolver.check(p, USDC_SAC)));
+    expect(horizon.peakActive(), "must never exceed the configured cap").toBeLessThanOrEqual(3);
+    expect(horizon.calls.length).toBe(10);
+  });
+
+  it("concurrent checks for the SAME (payTo, asset) share one in-flight lookup, not N", async () => {
+    const horizon = trackedHorizon(20);
+    const resolver = createPayabilityResolver({
+      rpcUrl: "http://rpc",
+      horizonUrl: "http://horizon",
+      networkPassphrase: "Test",
+      rpcServer: { simulateTransaction: simOk(`USDC:${ISSUER}`) },
+      fetchFn: horizon.fetchFn,
+    });
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => resolver.check(CLASSIC_PAYTO, USDC_SAC)),
+    );
+    expect(results).toEqual(["payable", "payable", "payable", "payable", "payable"]);
+    expect(horizon.calls.length, "5 concurrent callers for the same pair, ONE Horizon call").toBe(1);
+  });
+
+  it("a failed in-flight lookup does not wedge later calls for the same pair", async () => {
+    let attempt = 0;
+    const fetchFn = vi.fn(async () => {
+      attempt++;
+      if (attempt === 1) throw new Error("down");
+      return horizonAccount([{ asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: ISSUER, is_authorized: true }]);
+    });
+    const resolver = createPayabilityResolver({
+      rpcUrl: "http://rpc",
+      horizonUrl: "http://horizon",
+      networkPassphrase: "Test",
+      rpcServer: { simulateTransaction: simOk(`USDC:${ISSUER}`) },
+      fetchFn,
+      unknownCacheTtlMs: 0,
+    });
+    expect(await resolver.check(CLASSIC_PAYTO, USDC_SAC)).toBe("unknown");
+    expect(await resolver.check(CLASSIC_PAYTO, USDC_SAC), "the in-flight entry must have cleared, not wedged").toBe(
+      "payable",
+    );
+  });
+});
+
+describe("annotatePayability — wall-clock budget", () => {
+  it("an entry still unresolved past the budget reports unknown for THIS pass", async () => {
+    const resolver: PayabilityResolver = {
+      check: () => new Promise((resolve) => setTimeout(() => resolve("payable"), 200)),
+    };
+    const [annotated] = await annotatePayability(
+      [item([{ payTo: "GA", asset: "CA" }])],
+      resolver,
+      20, // budget far shorter than the resolver's own 200ms
+    );
+    expect(annotated!.trust!.acceptsPayability).toEqual(["unknown"]);
+  });
+
+  it("the in-flight lookup is NOT cancelled — it finishes and warms the cache for the next pass", async () => {
+    const resolver = createPayabilityResolver({
+      rpcUrl: "http://rpc",
+      horizonUrl: "http://horizon",
+      networkPassphrase: "Test",
+      rpcServer: { simulateTransaction: simOk(`USDC:${ISSUER}`) },
+      fetchFn: vi.fn(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        return horizonAccount([{ asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: ISSUER, is_authorized: true }]);
+      }),
+    });
+
+    const first = await annotatePayability(
+      [item([{ payTo: CLASSIC_PAYTO, asset: USDC_SAC }])],
+      resolver,
+      10, // budget far shorter than the 50ms Horizon delay
+    );
+    expect(first[0]!.trust!.acceptsPayability, "the first pass times out — real verdict not back yet").toEqual([
+      "unknown",
+    ]);
+
+    // Let the background lookup actually finish and populate the cache.
+    await new Promise((r) => setTimeout(r, 100));
+
+    const second = await annotatePayability(
+      [item([{ payTo: CLASSIC_PAYTO, asset: USDC_SAC }])],
+      resolver,
+      2_000,
+    );
+    expect(
+      second[0]!.trust!.acceptsPayability,
+      "a later pass sees the real verdict the earlier one's budget cut off",
+    ).toEqual(["payable"]);
+  });
+
+  it("entries past the deadline within one pass resolve to unknown without waiting for earlier ones", async () => {
+    // Budget consumed by item 1 (slow) must not extend to item 2 — each
+    // checkWithinBudget call reads the SAME deadline, computed once.
+    const resolver: PayabilityResolver = {
+      check: (payTo) =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve("payable"), payTo === "SLOW" ? 100 : 5),
+        ),
+    };
+    const items = [item([{ payTo: "SLOW", asset: "CA" }]), item([{ payTo: "FAST", asset: "CB" }])];
+    const annotated = await annotatePayability(items, resolver, 30);
+    expect(annotated[0]!.trust!.acceptsPayability, "slow entry exceeds the budget").toEqual(["unknown"]);
+    // FAST (5ms) resolves well inside the 30ms budget regardless of what SLOW does.
+    expect(annotated[1]!.trust!.acceptsPayability).toEqual(["payable"]);
+  });
+});
