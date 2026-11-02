@@ -9,7 +9,7 @@ import type { Network, PaymentPayload, PaymentRequirements } from "@x402/core/ty
 import { loadConfig } from "./config.js";
 import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
-import { defaultRpcFor } from "./rpc-defaults.js";
+import { defaultRpcFor, horizonUrlFor } from "./rpc-defaults.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
@@ -1418,10 +1418,7 @@ if (isDirectRun) {
   // a failed check leaves settle allowed (fail open).
   const { Keypair } = await import("@stellar/stellar-sdk");
   const sponsorPub = Keypair.fromSecret(config.sponsorSecretKey).publicKey();
-  const horizonUrl =
-    config.network === "stellar:pubnet"
-      ? "https://horizon.stellar.org"
-      : "https://horizon-testnet.stellar.org";
+  const horizonUrl = horizonUrlFor(config.network);
   const balanceGuard = new BalanceGuard({
     fetchBalanceStroops: () => fetchXlmBalanceStroops(horizonUrl, sponsorPub),
     softFloorStroops: config.balance.softFloorStroops,
