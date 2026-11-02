@@ -471,6 +471,76 @@ describe("Layer 2 end-to-end against a real server (no mocks)", () => {
   });
 });
 
+// Dependabot triage (security/dependabot-triage, 2026-11): undici was bumped
+// 8.11.2 -> 8.12.3 to clear three CVEs, including a TLS certificate
+// validation bypass in Agent's connect options — the exact construct
+// pinnedDispatcher (ownership.ts) uses for the D2 DNS-rebinding guard above.
+// Every existing D2 test proves the pin reaches the vetted address; none of
+// them proves the INVERSE — that a real rebinding attempt (guard sees a
+// public answer, the hostname's actual connection target is loopback) is
+// refused rather than silently connecting to loopback. A regression in
+// undici@8.12.3's Agent.connect.lookup handling would pass every existing D2
+// test (they all use addresses that are never actually dialled, or dial the
+// SAME address the guard vetted) while this exact rebinding shape slips
+// through. This test makes that scenario concrete: a real local server is
+// listening on loopback the whole time, standing in for the rebinding
+// attacker's real target; the guard is told a public (RFC 5737 TEST-NET-3,
+// permanently unroutable) address is correct; verifyResourceOwnership must
+// end in "timeout" (the pinned connection to the dead public address can
+// never complete, and the AbortController fires) and the loopback server
+// must record ZERO requests — if the pin were silently ignored, the real
+// hostname resolution below would land on loopback and the loopback server
+// WOULD be hit, flipping the verdict to a false "match" against an
+// attacker-controlled answer.
+describe("verifyResourceOwnership — DNS-rebinding pin holds against a real loopback target (undici 8.12.3 regression guard)", () => {
+  it("connects to the guard-vetted public address, never to the real loopback target, and never returns match", async () => {
+    let loopbackHits = 0;
+    const loopbackChallenge = challengeHeader(["GATTACKER_CONTROLLED"]);
+    const loopbackServer = http.createServer((_req, res) => {
+      loopbackHits++;
+      // If the pin were bypassed and this server were reached, it would
+      // answer with a MATCHING challenge — the worst-case outcome, a false
+      // "match" fabricated by whatever answered at the rebound address.
+      res.writeHead(402, { "PAYMENT-REQUIRED": loopbackChallenge });
+      res.end();
+    });
+    await new Promise<void>((r) => loopbackServer.listen(0, "127.0.0.1", r));
+    const { port } = loopbackServer.address() as AddressInfo;
+
+    try {
+      // "localhost" specifically, not an arbitrary unresolvable name: its
+      // REAL OS resolution genuinely is loopback, which is exactly what
+      // makes this a rebinding shape rather than a dead-hostname shape — if
+      // the pin fell through to real resolution, "localhost" would
+      // successfully resolve TO the loopback server above, not fail to
+      // resolve at all.
+      const v = await verifyResourceOwnership(`http://localhost:${port}/quote`, "GATTACKER_CONTROLLED", {
+        // The guard's own resolution: a real, permanently unroutable public
+        // address (RFC 5737 TEST-NET-3) — passes assertPublicHttpsUrl's
+        // private/loopback checks, exactly as a successful rebinding
+        // attack's DNS answer to the GUARD would.
+        lookupFn: async () => ({ address: "203.0.113.1", family: 4 }),
+        timeoutMs: 800,
+        coldStartRetryDelaysMs: [],
+        // http:// + __insecureTestTransport, same as every other real-server
+        // test in this file (the loopback stand-in is a plain http server;
+        // the https-only check is a SEPARATE, already-unit-tested guard —
+        // see assertPublicHttpsUrl's own tests — not what this test is
+        // proving).
+        __insecureTestTransport: true,
+      });
+
+      expect(
+        v,
+        "pinned to a dead public address, the connection must fail — never silently succeed against loopback",
+      ).toBe("timeout");
+      expect(loopbackHits, "the real loopback target must never be contacted if the pin holds").toBe(0);
+    } finally {
+      await new Promise<void>((r) => loopbackServer.close(() => r()));
+    }
+  });
+});
+
 describe("pinned dispatch actually works with the default fetch (D2 regression guard)", () => {
   it("completes a real request through the pinned dispatcher", async () => {
     const server = http.createServer((_req, res) => {
