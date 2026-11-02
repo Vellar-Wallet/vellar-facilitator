@@ -1,4 +1,4 @@
-import { rpc } from "@stellar/stellar-sdk";
+import { Account, Keypair, Networks, Operation, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   capturedRpcStatus,
@@ -51,6 +51,28 @@ function withStubbedSend(
 }
 
 const server = () => new rpc.Server("https://rpc.invalid", { allowHttp: false });
+
+/** A real, syntactically valid signed transaction — Item 4's checkAlreadyLanded
+ *  reads its .hash(), which only exists on the real SDK class, never on the
+ *  plain object fakes the rest of this file uses elsewhere. Never submitted. */
+function realTx() {
+  const kp = Keypair.random();
+  const source = new Account(kp.publicKey(), "0");
+  return new TransactionBuilder(source, { fee: "100", networkPassphrase: Networks.TESTNET })
+    .addOperation(Operation.bumpSequence({ bumpTo: "1" }))
+    .setTimeout(30)
+    .build();
+}
+
+/** Stub rpc.Server.prototype.getTransaction alongside sendTransaction. */
+function withStubbedGetTransaction(impl: (hash: string) => Promise<{ status: string }>): () => void {
+  const proto = rpc.Server.prototype as unknown as Record<string, unknown>;
+  const original = proto.getTransaction;
+  proto.getTransaction = impl;
+  return () => {
+    proto.getTransaction = original;
+  };
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -266,13 +288,14 @@ describe("the patch announces itself", () => {
 });
 
 
+function seqStub(seq: Array<Record<string, unknown>>) {
+  let n = 0;
+  const calls = () => n;
+  const h = withStubbedSend(async () => seq[Math.min(n++, seq.length - 1)]!);
+  return { h, calls };
+}
+
 describe("submission retry — TRY_AGAIN_LATER only, bounded, falsifier-logged", () => {
-  function seqStub(seq: Array<Record<string, unknown>>) {
-    let n = 0;
-    const calls = () => n;
-    const h = withStubbedSend(async () => seq[Math.min(n++, seq.length - 1)]!);
-    return { h, calls };
-  }
   const send = () =>
     withRpcStatusCapture(async () => server().sendTransaction({} as never));
 
@@ -318,5 +341,131 @@ describe("submission retry — TRY_AGAIN_LATER only, bounded, falsifier-logged",
       expect(rpcStatus?.status).toBe("DUPLICATE");
       expect(h.logs.some((l) => l.includes("RETRY RETURNED DUPLICATE")), "loud").toBe(true);
     } finally { h.restore(); }
+  });
+});
+
+describe("Item 4 — verify before resubmitting, not just argue", () => {
+  const sendTx = (tx: ReturnType<typeof realTx>) =>
+    withRpcStatusCapture(async () => server().sendTransaction(tx));
+
+  it("every retry resubmits the IDENTICAL envelope — same hash across attempts", async () => {
+    // The double-settle guard this whole mechanism depends on: a rebuilt
+    // envelope (new sequence, different channel account) would make
+    // resubmission unsafe. Confirmed structurally in rpcstatus.ts (the SAME
+    // `tx` closure variable is passed to every original.call), asserted here
+    // behaviourally — every call the stub sees carries the same hash.
+    const tx = realTx();
+    const expectedHash = tx.hash().toString("hex");
+    const seenHashes: string[] = [];
+    const h = withStubbedSend(async (t) => {
+      seenHashes.push((t as typeof tx).hash().toString("hex"));
+      return { status: "TRY_AGAIN_LATER" };
+    });
+    const restoreGetTx = withStubbedGetTransaction(async () => ({ status: "NOT_FOUND" }));
+    try {
+      await sendTx(tx);
+      expect(seenHashes.length, "1 + SUBMIT_RETRY_MAX(2)").toBe(3);
+      expect(seenHashes.every((hash) => hash === expectedHash), "every attempt, the SAME hash").toBe(
+        true,
+      );
+    } finally {
+      h.restore();
+      restoreGetTx();
+    }
+  });
+
+  it("NOT_FOUND: genuinely unconfirmed — proceeds with the resubmission as before", async () => {
+    const tx = realTx();
+    const { h, calls } = seqStub([{ status: "TRY_AGAIN_LATER" }, { status: "PENDING", hash: "real" }]);
+    const restoreGetTx = withStubbedGetTransaction(async () => ({ status: "NOT_FOUND" }));
+    try {
+      const { value } = await sendTx(tx);
+      expect((value as { status: string }).status).toBe("PENDING");
+      expect(calls(), "resubmission still happened").toBe(2);
+    } finally {
+      h.restore();
+      restoreGetTx();
+    }
+  });
+
+  it("SUCCESS: a prior attempt already landed — stops retrying, hands back the real hash", async () => {
+    // MUTATION THAT MUST BREAK THIS: delete the checkAlreadyLanded call. The
+    // retry then resubmits an envelope that already landed, hitting a real
+    // txBadSeq/duplicate instead of reporting the true outcome.
+    const tx = realTx();
+    const expectedHash = tx.hash().toString("hex");
+    let sendCalls = 0;
+    const h = withStubbedSend(async () => {
+      sendCalls++;
+      return { status: "TRY_AGAIN_LATER" };
+    });
+    const restoreGetTx = withStubbedGetTransaction(async () => ({ status: "SUCCESS" }));
+    try {
+      const { value } = await sendTx(tx);
+      expect(sendCalls, "exactly one real submission attempt — the retry never resubmits").toBe(1);
+      expect((value as { status: string; hash: string }).status).toBe("PENDING");
+      expect(
+        (value as { hash: string }).hash,
+        "hands back the REAL hash so @x402/stellar's own pollForTransaction resolves the true outcome",
+      ).toBe(expectedHash);
+    } finally {
+      h.restore();
+      restoreGetTx();
+    }
+  });
+
+  it("FAILED: a prior attempt already landed (and failed on-chain) — stops retrying the same way", async () => {
+    const tx = realTx();
+    let sendCalls = 0;
+    const h = withStubbedSend(async () => {
+      sendCalls++;
+      return { status: "TRY_AGAIN_LATER" };
+    });
+    const restoreGetTx = withStubbedGetTransaction(async () => ({ status: "FAILED" }));
+    try {
+      const { value } = await sendTx(tx);
+      expect(sendCalls, "FAILED is still a landed outcome — stop retrying either way").toBe(1);
+      expect((value as { status: string }).status).toBe("PENDING");
+    } finally {
+      h.restore();
+      restoreGetTx();
+    }
+  });
+
+  it("a throwing getTransaction check degrades to pre-Item-4 behaviour, never blocks the retry", async () => {
+    const tx = realTx();
+    const { h, calls } = seqStub([{ status: "TRY_AGAIN_LATER" }, { status: "PENDING", hash: "real" }]);
+    const restoreGetTx = withStubbedGetTransaction(async () => {
+      throw new Error("rpc down");
+    });
+    try {
+      const { value } = await sendTx(tx);
+      expect((value as { status: string }).status, "the retry still ran despite the check failing").toBe(
+        "PENDING",
+      );
+      expect(calls()).toBe(2);
+    } finally {
+      h.restore();
+      restoreGetTx();
+    }
+  });
+
+  it("a fake tx with no real .hash() method degrades to pre-Item-4 behaviour", async () => {
+    // Every OTHER test in this file passes `{} as never` / plain objects as
+    // tx — confirms those tests still exercise the pre-Item-4 path rather
+    // than silently breaking because checkAlreadyLanded expects a hash().
+    const { h, calls } = seqStub([{ status: "TRY_AGAIN_LATER" }, { status: "PENDING", hash: "h" }]);
+    const restoreGetTx = withStubbedGetTransaction(async () => ({ status: "SUCCESS" }));
+    try {
+      const { value } = await withRpcStatusCapture(async () => server().sendTransaction({} as never));
+      expect(
+        (value as { status: string }).status,
+        "no hash() -> checkAlreadyLanded is a no-op -> resubmission proceeds normally",
+      ).toBe("PENDING");
+      expect(calls()).toBe(2);
+    } finally {
+      h.restore();
+      restoreGetTx();
+    }
   });
 });

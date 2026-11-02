@@ -81,7 +81,7 @@ would probably have worked.
 That is a defect **regardless** of what causes the status — and it is the
 library's behaviour, not ours.
 
-## Options, none taken
+## Options — A and B both shipped (2026-11-02)
 
 | | Change | Cost | Risk |
 | --- | --- | --- | --- |
@@ -90,10 +90,23 @@ library's behaviour, not ours.
 | **C** | Document "retry on this error" for buyers | Done — `using-it.md` | Leaves every client to rediscover it |
 | **D** | Report upstream | Free | Not in our control |
 
-**Recommended: B, then A only if the duplicate question is settled.** B is the
-honest version of the problem — the information exists and is thrown away — and
-it does not require deciding whether a retry is safe. C is already shipped, so
-buyers are not blocked either way.
+**Original recommendation: B, then A only if the duplicate question is
+settled.** That question is what blocked A — the identical-envelope argument
+("nothing to duplicate if it was never forwarded") was reasoning, not a
+check, and the RPC reference leaves `TRY_AGAIN_LATER` formally undefined.
+
+**Resolved 2026-11-02 (Item 4): verify instead of arguing.** Before each
+resubmission, `src/rpcstatus.ts` now calls `getTransaction(hash)` on the
+same RPC instance the submission went through. `SUCCESS`/`FAILED` means a
+prior attempt already landed despite the `TRY_AGAIN_LATER` status — the
+exact case the duplicate risk warned about — and the retry stops, handing
+the real hash back so `@x402/stellar`'s own confirmation polling resolves
+the true outcome instead of resubmitting into a guaranteed `txBadSeq` or
+duplicate. `NOT_FOUND` proceeds with the resubmission, which the identical-
+envelope argument still makes safe (confirmed structurally: every retry
+attempt submits the SAME `tx` object, never rebuilt — same hash, same
+source account, same sequence — asserted in `src/rpcstatus.test.ts`). Both
+A and B now ship together.
 
 ## Rate
 
