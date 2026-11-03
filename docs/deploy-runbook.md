@@ -286,6 +286,52 @@ The blueprint defines three services: `vellar-facilitator`, `vellar-seller-demo`
 
 ---
 
+## 7a. Deploying to Railway (`vellar-facilitator`, `vellar-facilitator-testnet`) — GitHub integration only
+
+**Never deploy either hosted Railway service with `railway up` or any other
+CLI upload.** An upload-based deploy carries no git metadata: Railway's own
+`railway status --json` reports `commitHash: null` for it, and `/health`'s
+`commit` field (§1, §8) stays empty even on a clean, successful deploy,
+because `RAILWAY_GIT_COMMIT_SHA` (§3, "Read outside `config.ts`") is only
+injected on a deploy Railway itself triggered from the linked GitHub repo.
+Found and confirmed live 2026-11-03: a `railway up` deploy of a verified,
+commit-pinned clean clone still came back with no way to confirm the running
+commit from the service afterward — the verification had to happen entirely
+**before** the upload, not after.
+
+Deploy only through Railway's GitHub integration:
+
+- **Manual, for an exact commit:** Railway dashboard → the service → 
+  Deployments → **Deploy commit**, and pick the commit directly. Confirm
+  afterward with `railway status --json` that `commitHash` matches.
+- **Automatic, on every push to `main`:** push normally, with "Wait for CI"
+  enabled on the service so a deploy only triggers once checks pass.
+
+Either path records `commitHash` on the deployment and lets `/health`
+self-report `commit`, which is what makes §12's `channelPool.total` /
+`commit` mismatch check (and this section's own recommended post-deploy
+check below) actually work.
+
+**Post-deploy, for either service:**
+
+```sh
+railway status --json | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+for e in d['environments']['edges']:
+    for si in e['node']['serviceInstances']['edges']:
+        n = si['node']
+        for dep in n.get('activeDeployments', []):
+            print(n['serviceName'], dep.get('meta', {}).get('commitHash'))
+"
+curl -s https://<your-instance>/health | python3 -c "import json,sys;print(json.load(sys.stdin).get('commit'))"
+```
+Both should name the same commit. If `commitHash` is `null`, the service was
+deployed by upload, not by the GitHub integration — redeploy through the
+dashboard instead.
+
+---
+
 ## 8. Post-deploy verification
 
 Run these in order. On the free tier allow up to 60 s for the first call.
