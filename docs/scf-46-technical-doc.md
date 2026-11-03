@@ -756,13 +756,18 @@ further:
    (`docs/deploy-runbook.md`, `9c9bad3`: prerequisites, environment
    variables read out of `config.ts`, sponsor and channel-account provisioning,
    post-deploy verification, and the operational gaps stated plainly).
-   Remaining: **a live trustline/payability check on every discovery
-   entry** — read-time confirmation that the listed `payTo` currently holds a
-   trustline for the priced asset, so a buyer is warned before attempting a
-   settlement that would fail on-chain (ownership verification answers "is
-   this listing theirs"; this answers "can they be paid right now");
-   **voluntary rotation for verified bindings** — proposed design at
-   `docs/proposal-voluntary-rotation.md`, not yet implemented. **A public
+   ~~A live trustline/payability check on every discovery entry~~ —
+   **delivered** (`src/payability.ts`): read-time confirmation that each
+   `accepts` entry's `payTo` currently holds a trustline for the priced
+   asset, so a buyer is warned before attempting a settlement that would
+   fail on-chain (ownership verification answers "is this listing theirs";
+   this answers "can they be paid right now"). Three-valued, per-accepts-
+   entry, cached; an optional `payable_only` discovery filter never silently
+   promotes an `unknown` verdict either way.
+   ~~Voluntary rotation for verified bindings~~ — **delivered**
+   (`docs/proposal-voluntary-rotation.md`): a merchant who still holds their
+   old signing key rotates a verified binding with one marker settlement;
+   the lost-key case stays the manual operator procedure. **A public
    transaction explorer is live** at
    [`explorer.vellar.xyz`](https://explorer.vellar.xyz) — a separate repo
    (`Vellar-Wallet/vellar-explorer`), independently built and operated,

@@ -17,9 +17,11 @@ import {
   type AuditLogRow,
   type CatalogStore,
   type KillSwitchState,
+  type RotationAuthorization,
   type SettlementAggregates,
   type StoredEntryRow,
   type StoredOwnership,
+  type StoredSpendReservation,
 } from "./store.js";
 
 /** A store on a fresh temp file. Survives across BazaarCatalog instances, so it
@@ -79,6 +81,41 @@ export class FailingStore implements CatalogStore {
   }
   displaceOwnership(resourceKey: string, newPayTo: string, at: number): Promise<void> {
     return this.inner.displaceOwnership(resourceKey, newPayTo, at);
+  }
+  recordRotationAuthorization(auth: {
+    resourceKey: string;
+    oldPayTo: string;
+    newPayTo: string;
+    nonce: string;
+    settledAt: number;
+    expiresAt: number;
+  }): Promise<void> {
+    return this.inner.recordRotationAuthorization(auth);
+  }
+  lookupRotationAuthorization(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+  ): Promise<RotationAuthorization | undefined> {
+    return this.inner.lookupRotationAuthorization(resourceKey, oldPayTo, newPayTo);
+  }
+  consumeRotationAuthorizationAndDisplace(
+    resourceKey: string,
+    oldPayTo: string,
+    newPayTo: string,
+    nonce: string,
+    now: number,
+  ): Promise<boolean> {
+    return this.inner.consumeRotationAuthorizationAndDisplace(resourceKey, oldPayTo, newPayTo, nonce, now);
+  }
+  saveSpendReservation(reservation: StoredSpendReservation): Promise<void> {
+    return this.inner.saveSpendReservation(reservation);
+  }
+  loadOpenSpendReservations(sinceAt: number): Promise<StoredSpendReservation[]> {
+    return this.inner.loadOpenSpendReservations(sinceAt);
+  }
+  deleteElapsedSpendReservations(beforeAt: number): Promise<void> {
+    return this.inner.deleteElapsedSpendReservations(beforeAt);
   }
   saveEmbedding(resourceKey: string, embedding: number[]): Promise<void> {
     return this.inner.saveEmbedding(resourceKey, embedding);

@@ -219,7 +219,7 @@ HTTP history API + public RPC — no cross-repo code dependency._
   because a hosted facilitator overclaimed compatibility it didn't have
   (technical-doc.md §2); do not repeat that mistake here.
 
-## Phase 6 — Voluntary rotation for verified bindings (proposed 2026-08-17)
+## Phase 6 — Voluntary rotation for verified bindings (proposed 2026-08-17, shipped 2026-11-02)
 
 _Added after the HISTORICAL freeze at the top of this file — this section is
 live planning, not archive. Closes half of O-17
@@ -232,19 +232,36 @@ not yet written up as its own proposal._
 
 Full design and implementation plan: `docs/proposal-voluntary-rotation.md`.
 
-- [ ] `rotation_authorization` table + store methods (record / lookup /
-      consume), alongside the existing `ownership` table
-- [ ] `BazaarCatalog` in-memory tracking + the one-line bypass in
-      `tryDisplace`, with mutation-guarded tests (expired, already-consumed,
-      and wrong-owner markers must all still be refused)
-- [ ] Settle-time hook in `bazaar.ts`, gated on the three-way match
+- [x] `rotation_authorization` table + store methods (record / lookup /
+      consume), alongside the existing `ownership` table. The consume is an
+      interactive transaction, not `batch()` — the one write in `store.ts`
+      that has to branch on an intermediate row count — with a bounded
+      SQLITE_BUSY retry for two concurrent callers racing one marker.
+- [x] `BazaarCatalog` in-memory tracking + the bypass in `tryDisplace`, at
+      BOTH latch checkpoints (the pre-probe gate and the post-probe
+      re-check), with mutation-guarded tests (expired, already-consumed, and
+      wrong-owner markers are all refused; a concurrent rotation to a
+      DIFFERENT successor correctly defeats a stale marker's in-flight
+      attempt)
+- [x] Settle-time hook in `bazaar.ts`, gated on the three-way match
       (authenticated `result.payer` == claimed `oldPayTo` == current
-      `entry.ownerPayTo`) — the one place a shortcut becomes a
+      `entry.boundPayTo[0]`) — the one place a shortcut becomes a
       vulnerability, so its own dedicated test
-- [ ] `examples/rotate-classic.mjs` — proves the mechanism needs no new
+      (`catalog.rotation.test.ts`'s forged/wrong-owner cases)
+- [x] `examples/rotate-classic.mjs` — proves the mechanism needs no new
       client code for a classic old-owner
-- [ ] `operator-runbook.md` addition distinguishing this self-service path
-      from §1, which stays the lost-key/emergency procedure
+- [x] `operator-runbook.md` §1a — distinguishes this self-service path from
+      §1, which stays the lost-key/emergency procedure
+
+**Stats carry over on a voluntary rotation** (confirmed during review, not
+in the original proposal): unlike an ordinary unverified→verified
+displacement, which resets `trust.settlements` because the merchant is a
+different party, a voluntary rotation is the SAME merchant changing address
+— the old owner authorized it. Resetting here would discard a real history
+for no reason. `catalog.rotation.test.ts` asserts both: rotation carries
+stats, ordinary displacement still resets them.
+
+**Expiry window: 72 hours**, per the original proposal.
 
 ## Phase 7 — Ecosystem transaction explorer (proposed 2026-08-17)
 

@@ -3,13 +3,13 @@ import rateLimit from "@fastify/rate-limit";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
+import { Networks, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { getNetworkPassphrase } from "@x402/stellar";
 import type { Network, PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { loadConfig } from "./config.js";
 import { buildFacilitator, withChannelAcquisitionCapture, type BuiltFacilitator } from "./facilitator.js";
 import { LibsqlCatalogStore } from "./store.js";
-import { defaultRpcFor } from "./rpc-defaults.js";
+import { defaultRpcFor, horizonUrlFor, networkPassphraseFor } from "./rpc-defaults.js";
 import { installRpcStatusCapture, withRpcStatusCapture } from "./rpcstatus.js";
 import { withSkewRetry } from "./retry.js";
 import { BazaarCatalog } from "./catalog.js";
@@ -19,8 +19,10 @@ import {
   annotateTrust,
   filterVerifiedOnly,
   rerankVerifiedFirst,
+  type TrustedDiscoveryResource,
   type TrustResolver,
 } from "./trust.js";
+import { annotatePayability, filterPayableOnly, type PayabilityResolver } from "./payability.js";
 import { createSpendPolicy, type SpendPolicy } from "./policy.js";
 import { BalanceGuard } from "./balance.js";
 import { createChannelMonitor } from "./channelMonitor.js";
@@ -73,6 +75,12 @@ interface ListQuery {
   offset?: string;
   /** Trust-layer filter: "true" keeps only verification-verified entries. */
   verified_only?: string;
+  /** Payability filter: "true" drops not_payable accepts entries (keeping
+   *  payable and unknown ones visible), and drops a listing entirely only if
+   *  nothing remains. See filterPayableOnly's own doc comment for why this
+   *  has no honest-refusal 400 the way verified_only does — there is no
+   *  deployment-level "unavailable" state for this check. */
+  payable_only?: string;
   /** Vellar extension (not an x402 spec filter): keep only listings with an
    *  accepts entry for this exact asset. Validated by parseAssetFilter. */
   asset?: string;
@@ -187,8 +195,45 @@ export async function buildServer(
    * both exist.
    */
   admin?: AdminOptions,
+  /**
+   * Item 2 — live payability check. Appended at the end rather than grouped
+   * near `trust` above, to avoid reordering every existing positional call
+   * site across the test suite. Undefined behaves exactly like `trust`
+   * undefined does: discovery responses carry no payability annotation and
+   * payable_only is simply never applied, rather than refusing anything —
+   * there is no "unavailable" state for this check to refuse against (see
+   * payability.ts's own doc comment on filterPayableOnly).
+   */
+  payability?: PayabilityResolver,
+  /**
+   * G-10 — Soroban RPC URL, for the fire-and-forget spend-reservation
+   * reconciliation after a settlement submits. Appended at the end for the
+   * same reason as `payability` above. Undefined means reconciliation
+   * never runs: a reservation stays at its real SUBMITTED fee (adjusted by
+   * `submittedFee`, which needs no RPC call) rather than the flat estimate
+   * — still a real improvement over pre-G-10 accounting, just not adjusted
+   * a second time down to the exact fee_charged.
+   */
+  rpcUrl?: string,
+  /**
+   * Voluntary rotation's marker address (docs/proposal-voluntary-rotation.md,
+   * fixed in review of #112): the ONLY payTo a settlement's
+   * `extensions.rotation` is ever honored against. Appended at the end for
+   * the same reason as `payability`/`rpcUrl` above. Undefined disables
+   * voluntary rotation entirely — `extensions.rotation` is ignored and
+   * warn-logged on every settlement, same fail-closed posture as the rest
+   * of this gate (see registerBazaar's own doc comment on why). The
+   * production call site passes the sponsor's own public key, derived once
+   * in the isDirectRun boot block below.
+   */
+  rotationMarkerPayTo?: string,
 ) {
   const { facilitator, pool } = built;
+  // G-10 — one shared RPC client for reconciliation's getTransaction calls.
+  // Lazily undefined when rpcUrl is not provided, matching every other
+  // optional capability in this function (trust, payability, admin): the
+  // reconciliation step below simply never fires rather than throwing.
+  const facilitatorRpcServer = rpcUrl ? new rpc.Server(rpcUrl) : undefined;
   const bodyLimit = hardening.bodyLimitBytes ?? DEFAULT_BODY_LIMIT;
   // /settle idempotency guard (2026-09-19 incident: a dashboard double-click
   // fired two independent /settle calls carrying the SAME signed transaction
@@ -260,7 +305,10 @@ export async function buildServer(
   // `req.ip` is the proxy address, which is only ever used as the fallback when
   // no X-Forwarded-For header is present at all, i.e. a direct connection.
   const app = Fastify({ logger: true, bodyLimit });
-  registerBazaar(facilitator, catalog, admin ? { auditStore: admin.store } : {});
+  registerBazaar(facilitator, catalog, {
+    ...(admin ? { auditStore: admin.store } : {}),
+    rotationMarker: { payTo: rotationMarkerPayTo, scheme: "exact", network },
+  });
 
   // Fix 2: security headers (helmet), an explicit CORS policy, and per-IP rate
   // limiting. /health is exempt so the Render health check cannot be throttled.
@@ -395,15 +443,16 @@ export async function buildServer(
     // verified yet", which every entry reads as while VERIFICATION_API_URL is
     // unset. Omitted at zero so a healthy catalog stays quiet.
     ...(catalog.unverifiableCount > 0 ? { unverifiableEntries: catalog.unverifiableCount } : {}),
-    // Which build is actually serving. Render injects RENDER_GIT_COMMIT.
+    // Which build is actually serving. Railway injects RAILWAY_GIT_COMMIT_SHA;
+    // Render (kept for anyone self-hosting there) injects RENDER_GIT_COMMIT.
     // Without this the only way to answer "is the deploy current?" is to
     // fingerprint behaviour — probing for security headers or an error-message
     // shape — which is archaeology, only works when a release happens to change
     // something externally visible, and let a stale build go unnoticed twice.
     // Now it is a string comparison against `git rev-parse --short HEAD`.
     // Omitted rather than faked when unset, so local runs do not claim a build.
-    ...(process.env.RENDER_GIT_COMMIT
-      ? { commit: process.env.RENDER_GIT_COMMIT.slice(0, 7) }
+    ...((process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RENDER_GIT_COMMIT)
+      ? { commit: (process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RENDER_GIT_COMMIT)!.slice(0, 7) }
       : {}),
     // F3: surfaced so an operator sees a frozen catalog rather than wondering
     // why discovery stopped growing. Settlement is unaffected while frozen.
@@ -796,6 +845,7 @@ export async function buildServer(
       // whichever attempt actually settled.
       let result;
       let rpcStatus;
+      let submittedFee: { hash: string; stroops: number } | undefined;
       let acquiredAddress: string | undefined;
       let catalogOutcome: CatalogOutcome | undefined;
       try {
@@ -842,6 +892,7 @@ export async function buildServer(
         }
         result = captured.value.value.value;
         rpcStatus = captured.value.rpcStatus;
+        submittedFee = captured.value.submittedFee;
         catalogOutcome = captured.value.value.catalogOutcome;
       } catch (err) {
         policy?.refundUnspent(reservation);
@@ -881,8 +932,43 @@ export async function buildServer(
       // submission (verification/signing/send), meaning ZERO sponsor XLM was spent.
       // A non-empty hash means it was submitted and fees were charged, even if the
       // transaction then failed, so that reservation correctly stands.
+      //
+      // This also covers txBadSeq and an exhausted TRY_AGAIN_LATER retry: both
+      // arrive with an empty `transaction` (the library's own
+      // `status !== "PENDING"` check sets it to "" before ever assigning a
+      // hash — src/rpcstatus.ts's Item 4 fix already resolved the ambiguous
+      // "did it actually land" case INLINE, during the retry loop, so a
+      // TRY_AGAIN_LATER that survives to here is confirmed never-forwarded,
+      // not merely assumed to be).
       if (policy && result.success === false && !result.transaction) {
         policy.refundUnspent(reservation);
+      }
+      // G-10 — a transaction that WAS submitted (success, or a post-submission
+      // ledger failure — either way a real fee was charged) gets its
+      // reservation corrected down from the flat estimate to the REAL
+      // submitted fee immediately (awaited: this is exactly the
+      // submit-to-reconcile gap the durability requirement is about), then
+      // reconciled to the real fee_charged in the background once
+      // getTransaction confirms the outcome (fire-and-forget: the buyer
+      // already has their answer, and the spend ledger catching up a few
+      // hundred ms later costs nothing a buyer can observe — same
+      // fire-and-forget discipline as bazaar.ts's tryDisplace/reverify).
+      if (policy && result.transaction && submittedFee) {
+        await policy.adjustReservation(reservation, submittedFee.stroops);
+        void reconcileSpendReservation({
+          policy,
+          reservation,
+          hash: submittedFee.hash,
+          // Approximately "now" is correct here: this reservation was
+          // created moments ago, in THIS same request, not reloaded from a
+          // restart — the age-based unreconcilable check inside
+          // reconcileSpendReservation only matters for the boot-time reload
+          // path, where the real original `at` is what SpendPolicy.boot()
+          // re-seeds from storage.
+          reservedAt: Date.now(),
+          rpcServer: facilitatorRpcServer,
+          log: (msg) => request.log.warn(msg),
+        });
       }
       // Surface what the RPC actually said. Without this a caller sees
       // `settle_exact_stellar_transaction_submission_failed` and cannot tell
@@ -1128,21 +1214,26 @@ export async function buildServer(
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.offset !== undefined ? { offset: Number(q.offset) } : {}),
     });
-    if (!trust) return response;
-    let items = await annotateTrust(
-      response.items,
-      trust,
-      (url) => catalog.isVerifiedOwner(url),
-      (url) => catalog.isEverVerified(url),
-    );
-    if (q.verified_only === "true") {
-      const before = items.length;
-      items = filterVerifiedOnly(items);
+    if (!trust && !payability) return response;
+    let items: TrustedDiscoveryResource[] = trust
+      ? await annotateTrust(
+          response.items,
+          trust,
+          (url) => catalog.isVerifiedOwner(url),
+          (url) => catalog.isEverVerified(url),
+        )
+      : response.items;
+    if (payability) items = await annotatePayability(items, payability);
+    let before = items.length;
+    if (q.verified_only === "true") items = filterVerifiedOnly(items);
+    if (q.payable_only === "true") items = filterPayableOnly(items);
+    if (q.verified_only === "true" || q.payable_only === "true") {
       // `total` must describe what the caller can actually page through. The
-      // catalog computes it before the trust layer exists, so a verified_only
-      // filter applied afterwards used to leave `items: []` sitting next to
-      // `total: 1` — a response that contradicts itself, which invites a client
-      // to distrust every other number in it. Reduced by what this page dropped.
+      // catalog computes it before either filter exists, so applying one
+      // afterwards used to leave `items: []` sitting next to `total: 1` — a
+      // response that contradicts itself, which invites a client to distrust
+      // every other number in it. Reduced by what this page dropped, across
+      // BOTH filters combined (either can drop a listing the other kept).
       const dropped = before - items.length;
       return {
         ...response,
@@ -1173,18 +1264,21 @@ export async function buildServer(
       ...(q.limit !== undefined ? { limit: Number(q.limit) } : {}),
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
     });
-    if (!trust) return response;
+    if (!trust && !payability) return response;
     // Annotate, then verified-first within the relevance ranking (stable), or
     // hard-filter when the caller asked for verified_only.
-    let resources = await annotateTrust(
-      response.resources,
-      trust,
-      (url) => catalog.isVerifiedOwner(url),
-      (url) => catalog.isEverVerified(url),
-    );
-    resources = q.verified_only === "true"
-      ? filterVerifiedOnly(resources)
-      : rerankVerifiedFirst(resources);
+    let resources: TrustedDiscoveryResource[] = trust
+      ? await annotateTrust(
+          response.resources,
+          trust,
+          (url) => catalog.isVerifiedOwner(url),
+          (url) => catalog.isEverVerified(url),
+        )
+      : response.resources;
+    if (payability) resources = await annotatePayability(resources, payability);
+    resources =
+      q.verified_only === "true" ? filterVerifiedOnly(resources) : rerankVerifiedFirst(resources);
+    if (q.payable_only === "true") resources = filterPayableOnly(resources);
     return { ...response, resources };
   });
 
@@ -1400,8 +1494,37 @@ if (isDirectRun) {
     // Now the one shared map, so this cannot drift from upto.ts and bond.ts.
     rpcUrl: config.rpcUrl ?? defaultRpcFor(config.network),
   });
-  // Per-settle spend is estimated at the fee ceiling (worst case) since the real
-  // simulated fee is not exposed on the verify response — over-counting fails safe.
+  // Item 2 — live payability check (BUILD-PLAN). Same shared-map discipline
+  // as trust's rpcUrl above: Horizon's URL and the network passphrase both
+  // come from rpc-defaults.ts, not a local re-derivation.
+  //
+  // Unlike trust's rpcUrl, which is OPTIONAL there (undefined just skips the
+  // live wasm-hash cross-check, a degraded-but-valid mode), payability has no
+  // RPC-less mode at all — without it, name() can never be simulated and
+  // every asset resolves to "unknown" forever. defaultRpcFor returning
+  // undefined is already documented as unreachable in production (it only
+  // happens for a network with no configured default, which config.network's
+  // own type never allows); fail loudly here rather than silently build a
+  // resolver that can never do its job.
+  const rpcUrl = config.rpcUrl ?? defaultRpcFor(config.network);
+  if (!rpcUrl) {
+    throw new Error(
+      `No RPC URL available for network "${config.network}" — set STELLAR_RPC_URL explicitly`,
+    );
+  }
+  const { createPayabilityResolver } = await import("./payability.js");
+  const payability = createPayabilityResolver({
+    rpcUrl,
+    horizonUrl: horizonUrlFor(config.network),
+    networkPassphrase: networkPassphraseFor(config.network),
+  });
+  // Initial reservation is still the fee-ceiling estimate (worst case, since
+  // the real fee is not known until facilitator.settle() actually submits —
+  // see policy.ts's own header comment), but G-10 adjusts it down to the
+  // real tx.fee immediately after, then to the real fee_charged once
+  // confirmed. `store` persists reservations so a crash between submit and
+  // reconcile cannot lose or double-count spend; omitted (no CATALOG_DB_URL)
+  // means exactly pre-G-10 in-memory-only behaviour.
   const policy = createSpendPolicy({
     network: config.network,
     rateWindowMs: config.spend.rateWindowMs,
@@ -1411,16 +1534,15 @@ if (isDirectRun) {
     perUrlMax: config.spend.perUrlMax,
     perPayToMax: config.spend.perPayToMax,
     unboundPoolMax: config.spend.unboundPoolMax,
+    ...(store ? { store } : {}),
   });
+  await policy.boot();
   // Fix 3: sponsor balance guard. Derive the sponsor public key and poll its XLM
   // balance from Horizon. The first check is not awaited (startup is not blocked);
   // a failed check leaves settle allowed (fail open).
   const { Keypair } = await import("@stellar/stellar-sdk");
   const sponsorPub = Keypair.fromSecret(config.sponsorSecretKey).publicKey();
-  const horizonUrl =
-    config.network === "stellar:pubnet"
-      ? "https://horizon.stellar.org"
-      : "https://horizon-testnet.stellar.org";
+  const horizonUrl = horizonUrlFor(config.network);
   const balanceGuard = new BalanceGuard({
     fetchBalanceStroops: () => fetchXlmBalanceStroops(horizonUrl, sponsorPub),
     softFloorStroops: config.balance.softFloorStroops,
@@ -1491,6 +1613,9 @@ if (isDirectRun) {
     config.network,
     bondEscrow,
     admin,
+    payability,
+    rpcUrl,
+    sponsorPub,
   );
 
   // Basic alerting (spec §6) — only meaningful with a console to read the
@@ -1623,4 +1748,112 @@ async function fetchXlmBalanceStroops(horizonUrl: string, publicKey: string): Pr
   if (!native?.balance) throw new Error("no native balance on sponsor account");
   // Horizon reports XLM with 7 decimals; convert to integer stroops.
   return Math.round(Number(native.balance) * 10_000_000);
+}
+
+/**
+ * G-10 — the RPC's transaction-history retention window, measured LIVE
+ * against both DEFAULT_RPC endpoints (rpc-defaults.ts) this facilitator
+ * actually uses, via a plain JSON-RPC `getHealth` POST to each:
+ *
+ *   testnet -> ledgerRetentionWindow: 120960
+ *             oldestLedgerCloseTime 1793049912, latestLedgerCloseTime 1793654760
+ *             (604848s / 120959 ledgers = ~5.00s/ledger = 7.00 days)
+ *   pubnet  -> ledgerRetentionWindow: 120960 (same value)
+ *
+ * Both measured 2026-11-02. The official docs disagree with each other
+ * across versions (24h in one page, 7 days in the current reference, 2h on
+ * a third-party provider's docs) — this number came from asking the actual
+ * endpoints, not from picking a doc to trust. A conservative MARGIN below
+ * the measured 7 days, not the exact figure: retention is an operator
+ * setting on someone else's infrastructure and could legitimately be
+ * shorter on a future provider change; treating "maybe not found yet" as
+ * "definitely past retention" too early would mark a reservation
+ * unreconcilable while a real answer was still available.
+ */
+const RPC_RETENTION_WINDOW_MS = 5 * 24 * 60 * 60 * 1000; // 5 days — margin below the measured 7
+
+/**
+ * Reconcile one spend reservation against the real on-chain outcome.
+ * Fire-and-forget at BOTH call sites (immediately after a settlement
+ * submits, and at boot for reservations SpendPolicy.boot() re-seeded) —
+ * never awaited by anything that could fail a request because of it.
+ *
+ * NOT_FOUND is retried with backoff for a SHORT window (this reconciles a
+ * transaction @x402/stellar's own pollForTransaction already waited on
+ * before returning, so an immediate NOT_FOUND is almost always propagation
+ * lag, not a real gap) before falling back to the reservation's AGE to
+ * decide "keep trying later" from "past the RPC's retention window,
+ * genuinely unreconcilable" — never the other way around, and never
+ * guessed from a single NOT_FOUND.
+ */
+async function reconcileSpendReservation(opts: {
+  policy: SpendPolicy;
+  reservation: number | undefined;
+  hash: string;
+  reservedAt: number;
+  rpcServer: rpc.Server | undefined;
+  log: (msg: string) => void;
+  now?: () => number;
+  delayFn?: (ms: number) => Promise<void>;
+}): Promise<void> {
+  if (!opts.rpcServer || opts.reservation === undefined) return;
+  const now = opts.now ?? Date.now;
+  const delay = opts.delayFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const NOT_FOUND_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+
+  for (const waitMs of [0, ...NOT_FOUND_RETRY_DELAYS_MS]) {
+    if (waitMs > 0) await delay(waitMs);
+    let txResult;
+    try {
+      txResult = await opts.rpcServer.getTransaction(opts.hash);
+    } catch (err) {
+      opts.log(
+        `[policy] reconciliation getTransaction(${opts.hash.slice(0, 12)}…) failed: ` +
+          `${String((err as Error)?.message ?? err)} — will retry`,
+      );
+      continue;
+    }
+    if (txResult.status === "SUCCESS" || txResult.status === "FAILED") {
+      let feeCharged: number;
+      try {
+        feeCharged = Number(
+          (txResult as { resultXdr: { feeCharged(): { toString(): string } } }).resultXdr
+            .feeCharged()
+            .toString(),
+        );
+      } catch (err) {
+        opts.log(
+          `[policy] could not decode feeCharged for ${opts.hash.slice(0, 12)}… ` +
+            `(${String((err as Error)?.message ?? err)}) — reservation stays at its submitted-fee estimate`,
+        );
+        return;
+      }
+      await opts.policy.adjustReservation(opts.reservation, feeCharged, "reconciled");
+      return;
+    }
+    // NOT_FOUND. Fall through to the next retry delay, unless the
+    // reservation is already old enough that NOT_FOUND means "past
+    // retention" rather than "not propagated yet".
+    if (now() - opts.reservedAt > RPC_RETENTION_WINDOW_MS) {
+      await opts.policy.adjustReservation(
+        opts.reservation,
+        opts.policy.reservedStroops(opts.reservation) ?? 0,
+        "unreconcilable",
+      );
+      return;
+    }
+  }
+  // Exhausted the short retry budget, still NOT_FOUND, and not yet past
+  // retention: genuinely "not confirmed yet" rather than "gone". Nothing
+  // further happens here — the reservation stays 'open' at its submitted-
+  // fee amount, and if it survives a restart, SpendPolicy.boot() will
+  // re-seed it and a LATER reconciliation (triggered by whatever boot-time
+  // caller exists for that path) gets another chance with a now-much-older
+  // reservedAt, which is what actually decides unreconcilable — not this
+  // short-lived retry budget giving up.
+  opts.log(
+    `[policy] reconciliation for ${opts.hash.slice(0, 12)}… still NOT_FOUND after ${
+      NOT_FOUND_RETRY_DELAYS_MS.length
+    } retries — leaving the reservation open at its submitted-fee estimate; a later reconciliation attempt will retry`,
+  );
 }

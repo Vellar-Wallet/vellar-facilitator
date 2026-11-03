@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CATALOG_LIMITS } from "./catalog.js";
 import { loadConfig } from "./config.js";
 import { OWNERSHIP_LIMITS } from "./ownership.js";
+import { PAYABILITY_LIMITS } from "./payability.js";
 import { SERVER_LIMITS } from "./server.js";
 import { TRUST_LIMITS } from "./trust.js";
 import { fakeChannelAccountSecretKeys } from "./testChannelPoolKeys.js";
@@ -256,6 +257,25 @@ describe("documented rationale — module constants", () => {
     expect(CATALOG_LIMITS.maxLimit).toBeLessThan(CATALOG_LIMITS.maxEntries);
   });
 
+  it("a worst-case cold discovery page needs many MORE lookups than the concurrency cap serves at once", async () => {
+    // Documents WHY a budget exists at all, rather than asserting a made-up
+    // latency number: maxLimit listings x maxAccepts each, every (payTo,
+    // asset) pair distinct, is enough lookups that draining them all at
+    // maxConcurrentLookups per batch is not something a single request
+    // should wait out — which is the whole justification for
+    // annotationBudgetMs existing instead of just letting Promise.all run.
+    const worstCaseLookups = CATALOG_LIMITS.maxLimit * CATALOG_LIMITS.maxAccepts;
+    expect(worstCaseLookups).toBeGreaterThan(PAYABILITY_LIMITS.maxConcurrentLookups * 10);
+  });
+
+  it("an unknown payability verdict goes stale far sooner than a resolved one", async () => {
+    // Same shape as the asset-verdict assertion below: a verdict this
+    // deployment could not produce must not be held anywhere near as long
+    // as a real one, or one bad Horizon call reads as settled fact for
+    // minutes.
+    expect(PAYABILITY_LIMITS.unknownCacheTtlMs).toBeLessThan(PAYABILITY_LIMITS.defaultCacheTtlMs);
+  });
+
   it("free-text caps stay ordered: description > serviceName > tag", async () => {
     // These bound what reaches an LLM agent's context (F1). The ordering is the
     // claim: a description is prose, a serviceName is a label, a tag is a word.
@@ -283,6 +303,14 @@ describe("documented rationale — module constants", () => {
 //
 // Raise the unbound pool, or drop the hard floor, and that stops being true.
 // These assertions fail if either happens, which is the point.
+//
+// UNCHANGED BY G-10 (2026-11-02). Both assertions below are about
+// maxTransactionFeeStroops — the flat 500,000-stroop estimate's WORST-CASE
+// theoretical capacity (globalPerWindow = ceiling / flat estimate) — not
+// about real accounted spend. G-10 corrects what gets BOOKED after a
+// settlement submits; it does not change the configured flat estimate
+// checkSettle() still reserves before anything about the real transaction
+// is known, so this arithmetic is exactly as valid as before.
 describe("documented rationale — G-8 stays bounded by the sponsor balance", () => {
   const c = loadConfig(base);
 

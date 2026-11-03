@@ -54,7 +54,24 @@ export interface CapturedRpcStatus {
   latestLedger?: number;
 }
 
-const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus }>();
+/**
+ * G-10 — the fee actually submitted, captured UNCONDITIONALLY (unlike
+ * CapturedRpcStatus, which only records non-PENDING outcomes): the spend
+ * policy needs this on every settlement, success or failure, to reserve the
+ * real transaction's own fee instead of the flat MAX_TX_FEE_STROOPS
+ * estimate. Read directly off the `tx` object passed into sendTransaction —
+ * `TransactionBase.fee`, the SAME object about to be submitted, so this is
+ * exactly what the network will be asked to charge, never a guess and never
+ * a second simulation of a possibly-different transaction.
+ */
+export interface CapturedSubmittedFee {
+  /** The hex transaction hash, so a caller can later getTransaction() it. */
+  hash: string;
+  /** TransactionBase.fee, in stroops — the max the network may charge. */
+  stroops: number;
+}
+
+const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus; submittedFee?: CapturedSubmittedFee }>();
 
 /**
  * Submission retry — TRY_AGAIN_LATER only, twice, six seconds apart.
@@ -66,12 +83,37 @@ const store = new AsyncLocalStorage<{ captured?: CapturedRpcStatus }>();
  * attempt. The one terminal failure class (txBadSeq) arrives as ERROR and is
  * never retried here.
  *
- * WHY RESUBMITTING THE SAME ENVELOPE IS SAFE. Not-forwarded means there is
- * nothing on the network to duplicate. The falsifier is OBSERVABLE: if a retry
- * ever returns DUPLICATE, the first attempt WAS forwarded despite the status —
- * evidence against the diagnosis, worth more than the payment. It is logged
- * loudly and passed through unchanged, so behaviour on that path is exactly
- * pre-retry behaviour: the settle fails, nothing is spent twice, we learn.
+ * WHY RESUBMITTING THE SAME ENVELOPE IS SAFE. `original.call(this, tx)` is
+ * called again with the SAME `tx` object captured in this closure — never
+ * rebuilt, never re-signed, same hash, same source account, same sequence
+ * number. A network can only ever include one transaction per hash, so
+ * resubmitting the identical envelope is safe BY CONSTRUCTION regardless of
+ * whether the first attempt actually landed; it is "a rebuilt envelope with a
+ * new sequence or a different channel-pool account" that would be unsafe,
+ * and that case cannot occur here because nothing between attempts touches
+ * `tx`.
+ *
+ * ITEM 4 (2026-11-02) — VERIFY, don't just argue. The point above was
+ * previously an argument, not a check: TRY_AGAIN_LATER was read as proof of
+ * "not forwarded", but the RPC reference itself leaves it undefined
+ * (docs/diagnosis-settle-failures.md's own "NOT ESTABLISHED" line), and a
+ * slow/lagging RPC node answering TRY_AGAIN_LATER for a transaction another
+ * node already accepted was never ruled out. Before EACH resubmission this
+ * now calls `getTransaction(hash)` first:
+ *   - SUCCESS or FAILED -> it already landed. Stop retrying (resubmitting now
+ *     would hit `txBadSeq`/a real duplicate for no reason) and return the
+ *     REAL outcome instead of the stale TRY_AGAIN_LATER from the status that
+ *     prompted this retry.
+ *   - NOT_FOUND -> genuinely unconfirmed from this RPC's point of view; the
+ *     identical-envelope argument above is what makes resubmitting it safe.
+ *     (NOT_FOUND can also mean "past the RPC's retention window" — not
+ *     reachable here, since this loop's entire lifetime is ~12s and nothing
+ *     is that old yet. That case belongs to Item 3's reconciliation step,
+ *     which runs much later and is where it is actually handled.)
+ * A failure to even perform this check (getTransaction itself throwing) must
+ * not block the retry it was meant to protect — see the try/catch around it
+ * below. Losing the check degrades to the old argued-not-verified behaviour,
+ * not to a stuck settlement.
  *
  * WHY SIX SECONDS. Adapted from Turnpike's measured lesson on the same RPC
  * fleet (Apache-2.0, credited): sub-ledger spacing re-samples the same
@@ -114,10 +156,15 @@ export function __setRpcRetryDelayForTest(fn?: (ms: number) => Promise<void>): v
  */
 export async function withRpcStatusCapture<T>(
   fn: () => Promise<T>,
-): Promise<{ value: T; rpcStatus: CapturedRpcStatus | undefined }> {
+): Promise<{
+  value: T;
+  rpcStatus: CapturedRpcStatus | undefined;
+  submittedFee: CapturedSubmittedFee | undefined;
+}> {
   return store.run({}, async () => {
     const value = await fn();
-    return { value, rpcStatus: store.getStore()?.captured };
+    const slot = store.getStore();
+    return { value, rpcStatus: slot?.captured, submittedFee: slot?.submittedFee };
   });
 }
 
@@ -125,6 +172,13 @@ export async function withRpcStatusCapture<T>(
  *  `withRpcStatusCapture`; undefined everywhere else, by design. */
 export function capturedRpcStatus(): CapturedRpcStatus | undefined {
   return store.getStore()?.captured;
+}
+
+/** The submitted fee recorded so far in the CURRENT scope — see
+ *  CapturedSubmittedFee's own doc comment. Same validity rule as
+ *  capturedRpcStatus(). */
+export function capturedSubmittedFee(): CapturedSubmittedFee | undefined {
+  return store.getStore()?.submittedFee;
 }
 
 function decodeErrorCode(sendResult: Record<string, unknown>): string | undefined {
@@ -149,6 +203,63 @@ function decodeErrorCode(sendResult: Record<string, unknown>): string | undefine
   return undefined;
 }
 
+/**
+ * ITEM 4's actual check. Called from inside the retry loop, right before a
+ * resubmission, with `this` the SAME `rpc.Server` instance the real
+ * `sendTransaction` call is a method on — `getTransaction` is just another
+ * method on it, no second client, no new endpoint.
+ *
+ * Returns a `sendTransaction`-SHAPED result when the transaction already
+ * landed, so the caller can use it exactly like a real submission response.
+ * Specifically: `{ status: "PENDING", hash }` when SUCCESS/FAILED, because
+ * that is what makes @x402/stellar's OWN subsequent `pollForTransaction`
+ * call (.../facilitator/index.js:356-358, which polls `sendResult.hash`
+ * right back through `getTransaction`) immediately see the real landed
+ * outcome and report it correctly — no need to re-derive or fake a success/
+ * failure result ourselves, just hand the library the hash it already knows
+ * how to resolve.
+ *
+ * Returns `undefined` for NOT_FOUND (genuinely unconfirmed — proceed with
+ * the resubmission) and for any failure to even perform the check (a
+ * diagnostic must never block the retry it exists to protect).
+ */
+async function checkAlreadyLanded(
+  server: unknown,
+  tx: unknown,
+  log: (msg: string) => void,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    const hashable = tx as { hash?: () => Buffer } | undefined;
+    if (typeof hashable?.hash !== "function") return undefined;
+    const hash = hashable.hash().toString("hex");
+    const getTx = (server as { getTransaction?: (h: string) => Promise<{ status?: string }> })
+      ?.getTransaction;
+    if (typeof getTx !== "function") return undefined;
+    const txResult = await getTx.call(server, hash);
+    if (txResult?.status === "SUCCESS" || txResult?.status === "FAILED") {
+      log(
+        `[rpcstatus] TRY_AGAIN_LATER retry skipped: getTransaction(${hash.slice(0, 12)}…) already ` +
+          `reports ${txResult.status} — a prior attempt landed despite the status. Handing the real ` +
+          `hash back instead of resubmitting.`,
+      );
+      return { status: "PENDING", hash };
+    }
+    // NOT_FOUND (or anything else unrecognised): genuinely unconfirmed from
+    // this RPC's point of view, or past its retention window — neither is
+    // reachable meaningfully within this loop's ~12s lifetime (see this
+    // function's own doc comment above the retry loop). Proceed with the
+    // resubmission exactly as before Item 4 existed.
+    return undefined;
+  } catch (err) {
+    log(
+      `[rpcstatus] getTransaction check before retry failed (${String(
+        (err as Error)?.message ?? err,
+      )}) — proceeding with the resubmission as before Item 4 existed`,
+    );
+    return undefined;
+  }
+}
+
 let installed = false;
 
 /**
@@ -169,6 +280,26 @@ export function installRpcStatusCapture(log: (msg: string) => void = console.war
     return;
   }
   proto.sendTransaction = async function patched(this: unknown, tx: unknown) {
+    // G-10 — capture the real fee unconditionally, before the first attempt.
+    // Identical across every retry in this function (same `tx`, see the
+    // retry loop's own doc comment), so one read here is enough. Never
+    // blocks or fails the submission: a malformed `tx` simply means nothing
+    // is captured, same "diagnostics never break a settlement" rule as the
+    // status capture below.
+    try {
+      const hashable = tx as { hash?: () => Buffer; fee?: string } | undefined;
+      if (typeof hashable?.hash === "function" && typeof hashable.fee === "string") {
+        const stroops = Number(hashable.fee);
+        if (Number.isFinite(stroops)) {
+          const slot = store.getStore();
+          if (slot) slot.submittedFee = { hash: hashable.hash().toString("hex"), stroops };
+        }
+      }
+    } catch {
+      /* Diagnostics must never break a settlement — see decodeErrorCode's
+         sibling reasoning below. */
+    }
+
     let result = await original.call(this, tx);
 
     for (let attempt = 1; attempt <= SUBMIT_RETRY_MAX && result?.status === "TRY_AGAIN_LATER"; attempt++) {
@@ -177,6 +308,17 @@ export function installRpcStatusCapture(log: (msg: string) => void = console.war
           `retry ${attempt}/${SUBMIT_RETRY_MAX} after ${SUBMIT_RETRY_DELAY_MS}ms`,
       );
       await delayFn(SUBMIT_RETRY_DELAY_MS);
+
+      // ITEM 4 — verify before resubmitting, not just argue. See this
+      // function's own doc comment above for the full reasoning. A failure
+      // to even perform this check must not block the retry it exists to
+      // protect, so it degrades to the pre-Item-4 behaviour on any throw.
+      const landed = await checkAlreadyLanded(this, tx, log);
+      if (landed) {
+        result = landed;
+        break;
+      }
+
       result = await original.call(this, tx);
       if (result?.status === "DUPLICATE") {
         // The retry safety argument's falsifier — see the block comment above.

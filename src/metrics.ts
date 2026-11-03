@@ -197,3 +197,22 @@ const reverifyPending = new Gauge({
 export function setReverifyPending(count: number): void {
   reverifyPending.set(count);
 }
+
+// ---------------------------------------------------------------------------
+// 12. vellar_spend_unreconcilable_total — counter
+// G-10: a reservation this deployment could not reconcile against a real
+// getTransaction answer (NOT_FOUND past the RPC's own retention window —
+// only reachable after a restart that outlasted it). The reservation keeps
+// its last-known amount rather than guessing, which is correct but SILENT
+// by default; this is what makes "something was down for a week" visible
+// instead of a number nobody ever investigates.
+// ---------------------------------------------------------------------------
+const spendUnreconcilableTotal = new Counter({
+  name: "vellar_spend_unreconcilable_total",
+  help: "Total spend reservations that could not be reconciled against a real on-chain outcome (RPC retention window exceeded).",
+  registers: [registry],
+});
+
+export function incrementSpendUnreconcilableTotal(): void {
+  spendUnreconcilableTotal.inc();
+}

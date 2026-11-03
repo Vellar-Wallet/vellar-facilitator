@@ -294,6 +294,77 @@ payment, and the merchant's money are unaffected throughout.
 > becomes frequent enough to hurt, the right fix is to carry an operator-signed
 > rotation authorization on the payload — not to trust the challenge again.
 
+### 1a. Self-service rotation (no operator needed) — the case this procedure no longer covers
+
+This box's own closing line asked for "an operator-signed rotation
+authorization on the payload." `docs/proposal-voluntary-rotation.md` is that,
+built: not operator-signed, but **owner-signed** — the old owner proves
+continuity by paying as themselves, which is a stronger proof than an
+operator's say-so and needs no one awake at 2am.
+
+**This narrows §1 to one case.** Everything above this box still applies
+in full to **Case 2 — the lost key**: the merchant can no longer sign as the
+old owner at all, so there is nothing for a marker to authorize. That stays
+exactly the manual, out-of-band procedure described above.
+
+**Case 1 — the merchant still holds the old key** does not need you:
+
+1. The merchant runs `examples/rotate-classic.mjs` (or the equivalent against
+   their own client) with `OLD_OWNER_SECRET` set to the account that
+   currently owns the resource, **and submits the settlement themselves,
+   directly to this facilitator's `/verify` + `/settle`.** This settles one
+   small real payment to the facilitator's own configured marker address,
+   carrying a `rotation` extension — `{ resourceUrl, oldPayTo, newPayTo,
+   nonce }`.
+
+   **Do not hand a signed marker payload to anyone else to submit on your
+   behalf.** Signing proves who paid; it says nothing about what
+   `requirements.payTo`/`scheme`/`network` the *submitter* presents alongside
+   that signature when they call `/settle`. The facilitator checks those
+   fields against its own configured marker address (below), not against
+   anything in the signature, so an intermediary holding your signed payload
+   controls what it actually settles as.
+2. The facilitator checks a **three-way match**, AND that this settlement
+   actually paid its own configured marker address, before recording
+   anything. The three-way match: the authenticated payer of this
+   settlement, the `oldPayTo` the payload claims, and the resource's current
+   bound owner must all be the same address — a settlement from anyone
+   else, including someone who merely claims to be the old owner in the
+   extension, records nothing. The marker check: `requirements.payTo`,
+   `scheme`, and `network` must all match the facilitator's own configured
+   marker address exactly — a rotation extension riding on an ORDINARY
+   resource purchase (e.g. a seller relaying a normal payment and attaching
+   a forged extension to it) is ignored and warn-logged before it ever
+   reaches the three-way match. See `registerBazaar`'s `onAfterSettle` hook
+   and `BazaarCatalog.authorizeRotation` — both doc comments explain why
+   this is checked in two places, and
+   `docs/proposal-voluntary-rotation.md`'s addendum for the full history of
+   why the marker check exists at all.
+3. Within the marker's 72-hour window, the merchant settles **one real
+   payment from the new address** against the resource in the ordinary way.
+   That settlement is what actually moves the binding: `tryDisplace` finds
+   the live marker, bypasses the one-way latch for that one attempt, and
+   still runs the ordinary Layer-2 probe — the resource's own 402 challenge
+   must name the new address — before anything changes. A marker alone moves
+   nothing; it only authorizes the attempt.
+4. **Settlement stats carry over.** Unlike an ordinary (unverified→verified)
+   displacement, a voluntary rotation does not reset `trust.settlements` —
+   the old owner authorized this successor, so it is the same merchant
+   changing address, not a new party taking over an abandoned URL.
+
+**Why this does not reopen the hole the box above warns about.** The
+automation that box refuses would accept "the current challenge names the new
+address" as sufficient on its own — which a domain takeover can also produce.
+Voluntary rotation requires that PLUS a real settlement signed by the old
+key, which a domain buyer or a compromised endpoint never has. Two proofs,
+neither sufficient alone, same shape as TOFU + Layer 2 everywhere else in
+this document.
+
+**If the marker settles but the rotation never completes** (new owner never
+settles within 72 hours, or their endpoint's 402 does not yet name them): the
+marker simply expires, unconsumed. Nothing was changed, nothing needs
+cleaning up, and the merchant can simply settle a fresh marker.
+
 ---
 
 ## 2. "The service is healthy but `/discovery/resources` is empty"
@@ -666,13 +737,69 @@ Requirements, in full, are in
   the entire trap;
 - **≥ 12 of them**, concurrent, inside 60s (sequential tops out at 6 per window
   at the measured ~8s per settle, and can never reach the threshold);
-- **there is no enforce flag** — `policy.ts:112` keys enforcement off
-  `network === "stellar:pubnet"`. On testnet, assert on the structured log
-  `{ payTo, wouldReject }` (`server.ts:216`); for the actual 503, run a local
-  instance with `STELLAR_NETWORK=pubnet` against testnet RPC;
+- **there is no enforce flag** — `policy.ts:198` (the `enforced` getter) keys
+  enforcement off `network === "stellar:pubnet"`. On testnet, assert on the
+  structured log `{ payTo, wouldReject }` (`server.ts:805-808`); for the actual
+  503, run a local instance with `STELLAR_NETWORK=pubnet` against testnet RPC;
 - **assert on the response body, never on a success count.** A tripped budget is
   `503 {error: "settlement_refused"}`. A sequence collision is a submission error
   containing `tx_bad_seq`. They are indistinguishable by count alone.
+
+(Line references above checked against the current `feat/mainnet-readiness`
+HEAD as of 2026-11-02 — re-grep before trusting them again; this file moved
+twice already during that branch's own G-10 work.)
+
+## 7a. Demonstrating F12 against mainnet — prepare only, do not run
+
+The procedure above is for testnet, where F12 cannot refuse anything. Mainnet
+is different in two ways that change the demonstration rather than just its
+target host:
+
+1. **F12 actually enforces there.** `enforced` (`policy.ts:198`) is `true` on
+   `network === "stellar:pubnet"`, so a real `503 {error: "settlement_refused"}`
+   is observable directly against the live instance — no local
+   `STELLAR_NETWORK=pubnet` workaround needed.
+2. **The shared-source-account trap does not apply.** The testnet walkthrough's
+   1-success/10-failure result came from twelve settles sharing one
+   `SIM_SOURCE_ACCOUNT` and racing on its sequence number.
+   `examples/buyer-classic.mjs`'s own header note records that the official
+   x402 SDK scheme no longer uses `SIM_SOURCE_ACCOUNT` — sequence numbers come
+   from each payer's own account — and settlement-side concurrency is
+   isolated by the facilitator's channel pool (`CHANNEL_POOL_SIZE`,
+   `src/config.ts:444`; sized for 50 true-concurrent settles per
+   `docs/channel-pool-design.md` §2, only 2 of which the 11 real mainnet
+   settlements ever used — see `docs/mainnet-evidence.md`). A `tx_bad_seq`
+   collision is therefore not expected on a mainnet run, and must not be
+   treated as a stand-in for a refusal if one somehow occurs anyway — same
+   rule as below, just less likely to matter.
+
+A full prepare-only specification, written as commented-out steps so every
+detail is concrete, is at
+[`examples/demonstrate-f12-mainnet.mjs`](../examples/demonstrate-f12-mainnet.mjs).
+It is **not runnable as written and must not be run without a deliberate
+decision to fund real accounts** — summary:
+
+- **13 funded mainnet payer accounts** (11 to clear the default `perUrlMax`
+  of 10, one more to confirm the refusal isn't a rate-problem tail per
+  `walkthrough-results.md` §W-2 item 2's reasoning, one held in reserve for a
+  pre-flight sanity settle). ~0.5 XLM + 0.20 USDC each is generous headroom
+  for a single 0.10 USDC settle — the smallest amount already proven live in
+  `docs/mainnet-evidence.md`. The facilitator's sponsor pays the real network
+  fee via fee-bump; payers need no fee budget of their own.
+- **One shared resource URL**, all 13 payers settling against it, so they
+  share one `perUrlMax` bucket.
+- **12 of the 13 fired concurrently** (`Promise.allSettled`, not `Promise.all`
+  — one rejection must not blind the rest), inside the 60s `rateWindowMs`
+  (`policy.ts:474`'s default) — the budget's window, not an arbitrary choice.
+- **Proof the control fired, mainnet-specific**: the response bodies first
+  (10 `2xx`, the rest `503 settlement_refused`); the `{ payTo, wouldReject }`
+  and `settlement_refused` log lines for the same window; the `/metrics`
+  diff — `vellar_settle_total{outcome="success"}` up by exactly 10,
+  `vellar_settle_total{outcome="failure"}` and
+  `vellar_settle_errors_total{reason=...}` up by the refused count, and
+  `vellar_spend_unreconcilable_total` **not** moving (a G-10 regression, not
+  an F12 signal, if it does); then Horizon confirmation of all 10 successful
+  tx hashes, so the denominator is real settlements, never requests sent.
 
 ## Related
 

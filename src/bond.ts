@@ -79,12 +79,7 @@ import {
   rpc,
   xdr,
 } from "@stellar/stellar-sdk";
-import { DEFAULT_RPC } from "./rpc-defaults.js";
-
-const PASSPHRASES: Record<string, string> = {
-  "stellar:testnet": "Test SDF Network ; September 2015",
-  "stellar:pubnet": "Public Global Stellar Network ; September 2015",
-};
+import { DEFAULT_RPC, networkPassphraseFor } from "./rpc-defaults.js";
 
 
 /** Only the codes register_settlement can actually return, per
@@ -209,7 +204,7 @@ export async function registerSettlement(
   }
 
   const admin = Keypair.fromSecret(opts.adminSecretKey);
-  const passphrase = PASSPHRASES[opts.network]!;
+  const passphrase = networkPassphraseFor(opts.network);
   const server =
     deps?.server ?? (new rpc.Server(opts.rpcUrl ?? DEFAULT_RPC[opts.network]!) as unknown as BondEscrowRpcLike);
 

@@ -143,7 +143,8 @@ uncaught at boot), a key equal to `SPONSOR_SECRET_KEY`, or a duplicate.
 
 | Name | Read by | Purpose |
 | --- | --- | --- |
-| `RENDER_GIT_COMMIT` | `src/server.ts` | Injected by Render; surfaces as `commit` on `/health`. |
+| `RAILWAY_GIT_COMMIT_SHA` | `src/server.ts` | Injected by Railway (both hosted instances); surfaces as `commit` on `/health`. Checked before `RENDER_GIT_COMMIT`. |
+| `RENDER_GIT_COMMIT` | `src/server.ts` | Injected by Render; fallback for anyone self-hosting there. |
 | `SUBMIT_RETRY_MAX` | `src/rpcstatus.ts` | Clamped 0–2. `0` is the settle-probe control arm. |
 | `SKEW_RETRY_MAX` | `src/retry.ts` | Ledger-skew retry budget. |
 | `FACILITATOR_URL` | `src/mcp.ts`, examples | Which facilitator the MCP server / examples target. |

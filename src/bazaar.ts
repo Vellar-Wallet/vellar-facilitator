@@ -6,6 +6,13 @@ import { verifyResourceOwnership, type OwnershipVerdict } from "./ownership.js";
 import type { CatalogStore } from "./store.js";
 import { logAuditEvent } from "./admin.js";
 
+/** How long a voluntary-rotation marker stays consumable after settlement.
+ *  Long enough to actually complete a rotation (re-point DNS, redeploy the
+ *  endpoint to prove control from the new address) without leaving a
+ *  forgotten marker live indefinitely. docs/proposal-voluntary-rotation.md
+ *  §4 proposed this value; confirmed, not re-derived. */
+const ROTATION_AUTHORIZATION_EXPIRY_MS = 72 * 60 * 60 * 1000;
+
 /**
  * RFP gap #2 — EXTENSION-RESPONSES. What the cataloging hook below actually
  * decided, for a caller (server.ts's /settle handler) that has no other way
@@ -83,6 +90,21 @@ export interface RegisterBazaarOptions {
    *  "absent means off" posture as every other Operator Console wiring
    *  point. */
   auditStore?: CatalogStore;
+  /**
+   * Voluntary rotation (docs/proposal-voluntary-rotation.md), fixed in review
+   * of #112: the facilitator's OWN designated marker address, scheme, and
+   * network. `extensions.rotation` on a settlement is only ever treated as a
+   * real marker when that settlement's `requirements.payTo`/`scheme`/
+   * `network` match this exactly — otherwise an ordinary purchase a
+   * malicious seller relays to /settle could carry a forged rotation
+   * extension and hijack a verified listing purely by being the one
+   * submitting someone else's payment (see authorizeRotation's own doc
+   * comment for the full attack). `payTo` undefined (the default — no
+   * CATALOG_DB_URL-backed deployment sets one yet) disables voluntary
+   * rotation entirely: every `extensions.rotation` is ignored and
+   * warn-logged, same fail-closed posture as the rest of this gate.
+   */
+  rotationMarker?: { payTo: string | undefined; scheme: string; network: string };
 }
 
 /**
@@ -111,10 +133,88 @@ export function registerBazaar(
   facilitator.registerExtension(BAZAAR);
   const verifyOwnership = options.verifyOwnership ?? verifyResourceOwnership;
   const auditStore = options.auditStore;
+  const rotationMarker = options.rotationMarker;
 
   facilitator.onAfterSettle(async ({ paymentPayload, requirements, result }) => {
     try {
       if (!result.success) return;
+
+      // Voluntary rotation (docs/proposal-voluntary-rotation.md). Checked
+      // BEFORE extractDiscoveryInfo, deliberately: a marker settlement pays
+      // the facilitator's OWN designated marker address and carries NO
+      // Bazaar discovery extension, so it would never survive the
+      // `if (!discovered) return` below. This is not a discovery-catalog
+      // concern at all — it reads its own extension key directly off the
+      // settled payload, independent of whether Bazaar's extension is
+      // present.
+      //
+      // GATE, fixed in review of #112: `extensions.rotation` is UNSIGNED
+      // client-echoed content, exactly as forgeable as any other extension
+      // payload. Without checking what this settlement actually paid FOR,
+      // `/settle` is called with the buyer's payload by whoever submits
+      // it — ordinarily the seller — so a malicious seller relaying an
+      // ordinary purchase from owner A could attach a forged
+      // `extensions.rotation { oldPayTo: A, newPayTo: <themselves> }` to A's
+      // own payload and walk away with a 72h authorization, despite A never
+      // intending to rotate anything. Checked HERE, before
+      // authorizeRotation is even called, so a rotation extension on any
+      // payment other than a real marker settlement is ignored and
+      // warn-logged rather than silently dropped — authorizeRotation itself
+      // re-checks the same three fields (its own doc comment explains why
+      // the gate lives in both places), so this is defense in depth, not
+      // the only check.
+      //
+      // Fire-and-forget, same contract as tryDisplace/reverify below: this
+      // must never delay or fail the settle response, which has already gone
+      // on-chain by the time this hook runs.
+      const rotation = paymentPayload.extensions?.rotation;
+      if (rotation && typeof rotation === "object") {
+        if (
+          !rotationMarker?.payTo ||
+          requirements.payTo !== rotationMarker.payTo ||
+          requirements.scheme !== rotationMarker.scheme ||
+          requirements.network !== rotationMarker.network
+        ) {
+          console.warn(
+            `[bazaar] rotation extension ignored: this settlement paid ${requirements.payTo} ` +
+              `(scheme "${requirements.scheme}", network "${requirements.network}"), not the configured ` +
+              `marker address (${rotationMarker?.payTo ?? "<none configured>"}, scheme ` +
+              `"${rotationMarker?.scheme ?? "<none>"}", network "${rotationMarker?.network ?? "<none>"}") — ` +
+              `only a real marker settlement may carry a rotation extension`,
+          );
+        } else {
+          const r = rotation as Record<string, unknown>;
+          // `resourceUrl`, not a pre-canonicalized key — authorizeRotation
+          // canonicalizes internally, the same contract every other entry
+          // point into the catalog (upsertFromPayment, tryDisplace) already
+          // uses. A client sending an already-canonical key would still work
+          // (canonicalization is idempotent), but the field name states the
+          // actual contract rather than an implementation detail.
+          if (
+            typeof r.resourceUrl === "string" &&
+            typeof r.oldPayTo === "string" &&
+            typeof r.newPayTo === "string" &&
+            typeof r.nonce === "string"
+          ) {
+            void catalog
+              .authorizeRotation(
+                r.resourceUrl,
+                result.payer,
+                r.oldPayTo,
+                r.newPayTo,
+                r.nonce,
+                Date.now(),
+                Date.now() + ROTATION_AUTHORIZATION_EXPIRY_MS,
+                { payTo: requirements.payTo, scheme: requirements.scheme, network: requirements.network },
+                rotationMarker,
+              )
+              .catch((err) => {
+                console.warn(`[bazaar] rotation authorization failed for ${r.resourceUrl}:`, err);
+              });
+          }
+        }
+      }
+
       const discovered = extractDiscoveryInfo(paymentPayload, requirements);
       if (!discovered) {
         // A real, distinct outcome — not "capture never ran". The hook DID

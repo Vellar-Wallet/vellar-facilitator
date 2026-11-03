@@ -56,11 +56,24 @@ describe("/health carries enough to detect a spin-down", () => {
     await app.close();
   });
 
-  it("reports the deployed commit when the platform provides one", async () => {
-    // Render injects RENDER_GIT_COMMIT. Without this, "what is actually
-    // deployed?" can only be answered by fingerprinting behaviour — which is
-    // how a stale build went unnoticed twice in one session, and only works
-    // when a release happens to change something externally visible.
+  it("reports the deployed commit from Railway's variable", async () => {
+    // Both hosted instances run on Railway now, which injects
+    // RAILWAY_GIT_COMMIT_SHA (a full 40-char SHA), not Render's variable.
+    // Without this, "what is actually deployed?" can only be answered by
+    // fingerprinting behaviour — which is how a stale build went unnoticed
+    // twice in one session, and only works when a release happens to change
+    // something externally visible.
+    process.env.RAILWAY_GIT_COMMIT_SHA = "abc1234def5678";
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect(body.commit, "must be short enough to eyeball against git rev-parse").toBe("abc1234");
+    await app.close();
+    delete process.env.RAILWAY_GIT_COMMIT_SHA;
+  });
+
+  it("falls back to Render's variable when Railway's is unset", async () => {
+    // Kept for anyone self-hosting on Render rather than the two Railway
+    // instances this repo actually runs today.
     process.env.RENDER_GIT_COMMIT = "abc1234def5678";
     const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
@@ -69,7 +82,19 @@ describe("/health carries enough to detect a spin-down", () => {
     delete process.env.RENDER_GIT_COMMIT;
   });
 
-  it("omits commit entirely when not deployed on a platform that sets it", async () => {
+  it("prefers Railway's variable when both are set", async () => {
+    process.env.RAILWAY_GIT_COMMIT_SHA = "railway789abcd";
+    process.env.RENDER_GIT_COMMIT = "render1234567";
+    const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
+    const body = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect(body.commit).toBe("railway");
+    await app.close();
+    delete process.env.RAILWAY_GIT_COMMIT_SHA;
+    delete process.env.RENDER_GIT_COMMIT;
+  });
+
+  it("omits commit entirely when not deployed on a platform that sets either variable", async () => {
+    delete process.env.RAILWAY_GIT_COMMIT_SHA;
     delete process.env.RENDER_GIT_COMMIT;
     const app = await buildServer(buildFacilitator(testConfig), await BazaarCatalog.create());
     const body = (await app.inject({ method: "GET", url: "/health" })).json();
