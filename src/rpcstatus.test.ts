@@ -287,6 +287,65 @@ describe("the patch announces itself", () => {
   });
 });
 
+// ============================================================================
+// Dependabot triage (security/dependabot-triage, 2026-11): @stellar/stellar-sdk
+// was bumped 16.2.0 -> 16.4.1 to clear the axios/follow-redirects CVEs
+// transitively pulled in by it. Every other test in this file installs the
+// patch over a REPLACED rpc.Server.prototype.sendTransaction (withStubbedSend
+// above), which proves the wrapper's own logic but not that it still finds
+// and wraps the REAL method on the version actually installed — a rename or
+// signature change in sendTransaction itself would pass every test above
+// unchanged, because they never touch the original implementation at all.
+//
+// This test installs over the UNMODIFIED prototype method and only stubs the
+// network underneath it (server.httpClient, the SDK's own public, documented
+// axios instance — see its own doc comment: "server.httpClient.interceptors
+// .request.use(...)" is supported usage). sendTransaction's real body,
+// _sendTransaction's real body, and jsonrpc.postObject's real body all run
+// exactly as @stellar/stellar-sdk@16.4.1 ships them; only the HTTP response
+// is substituted.
+// ============================================================================
+describe("capture against the REAL, unstubbed prototype method (16.4.1 regression guard)", () => {
+  it("intercepts a non-PENDING sendTransaction result with the SDK's own sendTransaction running unmodified", async () => {
+    // MUTATION THAT MUST BREAK THIS: nothing in rpcstatus.ts — this test
+    // instead breaks if @stellar/stellar-sdk renames sendTransaction,
+    // changes _sendTransaction's call shape, or stops using httpClient.post
+    // for submission. That is exactly the silent-degradation class this
+    // file exists to catch, now proven against the real method body rather
+    // than a hand-shaped stand-in.
+    __resetRpcStatusCaptureForTest();
+    const logs: string[] = [];
+    installRpcStatusCapture((m) => logs.push(m));
+    __setRpcRetryDelayForTest(async () => {});
+
+    const realServer = new rpc.Server("https://rpc.invalid", { allowHttp: false });
+    // The SDK's own public httpClient (a real axios instance) is the one
+    // seam its sendTransaction/_sendTransaction chain actually calls through
+    // — stubbing it here leaves sendTransaction itself completely untouched.
+    const postSpy = vi.spyOn(realServer.httpClient, "post").mockResolvedValue({
+      data: { result: { status: "TRY_AGAIN_LATER", latestLedger: 4085901 } },
+    } as never);
+
+    try {
+      const { rpcStatus } = await withRpcStatusCapture(async () => {
+        // Stands in for @x402/stellar: calls the REAL sendTransaction and
+        // discards its response, same as production code does.
+        await realServer.sendTransaction({ toXDR: () => "AAAA" } as never);
+        return { success: false, errorReason: "settle_exact_stellar_transaction_submission_failed" };
+      });
+
+      expect(postSpy, "the real sendTransaction must have reached the real HTTP layer").toHaveBeenCalled();
+      expect(
+        rpcStatus,
+        "the RPC's answer must survive @x402/stellar discarding it, with sendTransaction itself unmodified",
+      ).toEqual({ status: "TRY_AGAIN_LATER", latestLedger: 4085901 });
+    } finally {
+      postSpy.mockRestore();
+      __resetRpcStatusCaptureForTest();
+      __setRpcRetryDelayForTest();
+    }
+  });
+});
 
 function seqStub(seq: Array<Record<string, unknown>>) {
   let n = 0;
