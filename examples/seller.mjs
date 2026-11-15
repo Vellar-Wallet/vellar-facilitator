@@ -313,8 +313,9 @@ function isLocalFacilitator(url) {
 // PORT first: Render (and most PaaS) inject it and health-check that port, so
 // binding SELLER_PORT there would fail the deploy. SELLER_PORT still wins
 // locally when PORT is unset, so `docs/guide.md`'s walkthrough is unchanged.
-// This is the ONLY deployment concession in this file — the 402 challenge, the
-// discovery declaration and the payment path are untouched.
+// This and the Vercel branch at the bottom (no listen, export the app) are the
+// ONLY deployment concessions in this file — the 402 challenge, the discovery
+// declaration and the payment path are untouched.
 const PORT = Number(process.env.PORT || process.env.SELLER_PORT || 4031);
 
 const coreServer = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL }))
@@ -2102,8 +2103,17 @@ app.get(
   ),
 );
 
-app.listen(PORT, () => {
-  console.error(`[seller] paid API on ${publicBase()}/quote  (bound to port ${PORT})`);
+// On Vercel the platform owns the socket and invokes the exported app per request
+// (examples/api/seller.mjs), so binding a port there would be a second listener
+// nothing can reach. Everywhere else (Railway, the local walkthrough) it listens
+// exactly as before. VERCEL is set by the platform on every deployment.
+const ON_VERCEL = Boolean(process.env.VERCEL);
+
+const announce = () => {
+  console.error(
+    `[seller] paid API on ${publicBase()}/quote  ` +
+      (ON_VERCEL ? "(serverless, no port bound)" : `(bound to port ${PORT})`),
+  );
   if (!process.env.PUBLIC_BASE_URL) {
     console.error(
       "[seller] WARNING: PUBLIC_BASE_URL is unset, so this seller advertises localhost. " +
@@ -2118,4 +2128,9 @@ app.listen(PORT, () => {
     `[seller] also serving: /inspect/:address (${PRICE_ATOMIC_002_USDC} atomic), ` +
       `/stroops /hash /timestamp /base64 /word-count /uuid (${PRICE_ATOMIC_001_USDC} atomic each)`,
   );
-});
+};
+
+if (ON_VERCEL) announce();
+else app.listen(PORT, announce);
+
+export default app;

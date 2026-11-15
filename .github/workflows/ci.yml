@@ -21,10 +21,18 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            examples/package-lock.json
 
       # Reproducible install from the lockfile; fails if package-lock is stale.
       - name: Install
         run: npm ci
+
+      # examples/ is its own package (express, qrcode, marked, ...). The seller's
+      # Vercel-entry test imports the real seller.mjs, so it needs those installed.
+      - name: Install examples
+        run: npm ci --prefix examples
 
       - name: Typecheck
         run: npm run typecheck
