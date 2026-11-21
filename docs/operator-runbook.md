@@ -557,13 +557,13 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
 
    ```sh
    curl -sS -o /dev/null -w '%{http_code}\n' --max-time 30 \
-     https://vellar-seller-demo-testnet-production.up.railway.app/quote     # expect 402
+     https://vellar-seller-demo-testnet.vercel.app/quote     # expect 402
    ```
 
 2. Confirm it advertises its PUBLIC address, not localhost — **one request**:
 
    ```sh
-   curl -sS https://vellar-seller-demo-testnet-production.up.railway.app/whoami | python3 -m json.tool
+   curl -sS https://vellar-seller-demo-testnet.vercel.app/whoami | python3 -m json.tool
    ```
 
    `verifiable: true` is the precondition. `resourceUrl` must be public https;
@@ -573,7 +573,7 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
    The longer form, if you want to see the challenge itself:
 
    ```sh
-   curl -sS -D- -o /dev/null https://vellar-seller-demo-testnet-production.up.railway.app/quote \
+   curl -sS -D- -o /dev/null https://vellar-seller-demo-testnet.vercel.app/quote \
      | grep -i '^payment-required:' | sed 's/^payment-required: //' | tr -d '\r' \
      | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["resource"]["url"], d["accepts"][0]["payTo"])'
    ```
@@ -585,7 +585,7 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
 3. Run the gate with the payTo from step 2:
 
    ```sh
-   LIVE_SELLER_URL=https://vellar-seller-demo-testnet-production.up.railway.app/quote \
+   LIVE_SELLER_URL=https://vellar-seller-demo-testnet.vercel.app/quote \
    LIVE_SELLER_PAYTO=<payTo from step 2> \
    npx vitest run src/ownership.live.test.ts
    ```

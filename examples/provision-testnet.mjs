@@ -426,7 +426,7 @@ ${
   USE_USDC
     ? `
   Quickest: pay the hosted testnet demo seller (USDC):
-       RESOURCE_URL=https://vellar-seller-demo-testnet-production.up.railway.app/quote \\
+       RESOURCE_URL=https://vellar-seller-demo-testnet.vercel.app/quote \\
        node buyer-classic.mjs
 
   Or run your own seller locally:
