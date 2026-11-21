@@ -90,7 +90,15 @@ try {
   payload = await client.createPaymentPayload(required);
 } catch (err) {
   console.error(`[buyer] could not build the payment: ${err?.message ?? err}`);
-  console.error("  Common causes: no trustline to the asset, or an empty balance.");
+  if (/XDR Read Error|unknown .* member/i.test(String(err?.message ?? err))) {
+    console.error(
+      "  This is an SDK/network version mismatch, not a funding problem: your\n" +
+        "  @stellar/stellar-sdk is too old for the network's current XDR. Run\n" +
+        "  `npm install` in examples/ again (the lock pins a compatible version).",
+    );
+  } else {
+    console.error("  Common causes: no trustline to the asset, or an empty balance.");
+  }
   process.exit(2);
 }
 

@@ -9,7 +9,7 @@
     "buyer": "node buyer.mjs"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^16.0.1",
+    "@stellar/stellar-sdk": "^16.4.1",
     "@x402/core": "^2.20.0",
     "@x402/extensions": "^2.20.0",
     "@x402/stellar": "^2.20.0",

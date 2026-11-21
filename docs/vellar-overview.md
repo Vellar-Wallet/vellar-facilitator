@@ -441,7 +441,7 @@ step and starting the next. Both numbers are reported rather than the flattering
 one. Settled `aa1e0395…5ddd`, ledger 4570443, fee paid by the sponsor.
 
 **The demo seller** (`examples/seller.mjs`, live at
-`vellar-seller-demo-testnet.vercel.app`) serves **19 paid routes across 12 domains**, image generation, design, document processing, version control, developer
+`vellar-seller-demo-testnet-production.up.railway.app`) serves **19 paid routes across 12 domains**, image generation, design, document processing, version control, developer
 tooling, content generation, data transformation, security, scheduling,
 measurement, meteorology, and Stellar utilities. Every route declares full
 Bazaar metadata, which is what makes the search evaluation in §4.2 possible.
