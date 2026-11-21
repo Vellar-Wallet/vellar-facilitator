@@ -407,17 +407,15 @@ SELLER_PORT=4031
 
 # Buyer — classic keypair (works with buyer-classic.mjs)
 PAYER_SECRET=${payer.secret()}
+# Simulate-only, never charged, never signs. MUST differ from the payer.
+# Needed by buyer.mjs (smart account) ONLY — buyer-classic.mjs ignores it.
+SIM_SOURCE_ACCOUNT=${simSource.publicKey()}
 ${
   walletId
     ? `
 # Buyer — smart account (works with buyer.mjs); pair with your AGENT_SECRET
 WALLET_CONTRACT_ID=${walletId}
-AGENT_PUBLIC=${agentPublic}
-# Simulate-only, never charged, never signs. MUST differ from the payer.
-# Needed by buyer.mjs ONLY. Leave it out of .env.recording if you're only
-# using buyer-classic.mjs — it ignores this var but warns on every run if
-# it's set (harmless, just noisy).
-SIM_SOURCE_ACCOUNT=${simSource.publicKey()}`
+AGENT_PUBLIC=${agentPublic}`
     : `
 # No smart account was created. Re-run with AGENT_PUBLIC=G… if you want one.`
 }
@@ -431,11 +429,6 @@ Next:
        RESOURCE_URL=http://127.0.0.1:4031/quote \\
        PAYER_SECRET=${payer.secret()} \\
        node buyer-classic.mjs
-
-  Using a hosted demo seller instead of running your own? Skip step 1 and
-  point RESOURCE_URL at its public /quote endpoint instead of 127.0.0.1 —
-  your facilitator must match whichever one that seller's FACILITATOR_URL
-  points to, or /verify and /settle will fail against the wrong catalog.
 
   Roughly 1 settle in 3 fails on testnet with an empty transaction — retry it.
   Nothing is spent when that happens.
