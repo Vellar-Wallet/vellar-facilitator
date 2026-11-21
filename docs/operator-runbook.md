@@ -551,19 +551,23 @@ reproduces.
 
 So this is a **manual gate before any release that touches `src/ownership.ts`**.
 
+The two demo sellers moved from Railway to Vercel Hobby (#116); the Railway
+services are deliberately left offline rather than torn down. If a step below
+still points at `…railway.app`, that's stale — use the `…vercel.app` host.
+
 ### Steps
 
 1. Confirm the seller answers:
 
    ```sh
    curl -sS -o /dev/null -w '%{http_code}\n' --max-time 30 \
-     https://vellar-seller-demo-testnet-production.up.railway.app/quote     # expect 402
+     https://vellar-seller-demo-testnet.vercel.app/quote     # expect 402
    ```
 
 2. Confirm it advertises its PUBLIC address, not localhost — **one request**:
 
    ```sh
-   curl -sS https://vellar-seller-demo-testnet-production.up.railway.app/whoami | python3 -m json.tool
+   curl -sS https://vellar-seller-demo-testnet.vercel.app/whoami | python3 -m json.tool
    ```
 
    `verifiable: true` is the precondition. `resourceUrl` must be public https;
@@ -573,19 +577,19 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
    The longer form, if you want to see the challenge itself:
 
    ```sh
-   curl -sS -D- -o /dev/null https://vellar-seller-demo-testnet-production.up.railway.app/quote \
+   curl -sS -D- -o /dev/null https://vellar-seller-demo-testnet.vercel.app/quote \
      | grep -i '^payment-required:' | sed 's/^payment-required: //' | tr -d '\r' \
      | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["resource"]["url"], d["accepts"][0]["payTo"])'
    ```
 
-   The URL must be `https://…railway.app/quote`. If it reads
+   The URL must be `https://…vercel.app/quote`. If it reads
    `http://localhost:…`, `PUBLIC_BASE_URL` is unset on the seller service —
    fix that before going further, or the test verifies nothing real.
 
 3. Run the gate with the payTo from step 2:
 
    ```sh
-   LIVE_SELLER_URL=https://vellar-seller-demo-testnet-production.up.railway.app/quote \
+   LIVE_SELLER_URL=https://vellar-seller-demo-testnet.vercel.app/quote \
    LIVE_SELLER_PAYTO=<payTo from step 2> \
    npx vitest run src/ownership.live.test.ts
    ```
