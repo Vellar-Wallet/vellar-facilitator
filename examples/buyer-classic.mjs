@@ -51,12 +51,10 @@ if (!payerSecret) {
   process.exit(1);
 }
 
-if (process.env.SIM_SOURCE_ACCOUNT) {
-  console.error(
-    "[buyer] note: SIM_SOURCE_ACCOUNT is set and is no longer used — the official\n" +
-      "        client simulates from the SDK's null account. Ignoring it.",
-  );
-}
+// SIM_SOURCE_ACCOUNT is ignored here (the official client simulates from the
+// SDK's null account). provision-testnet.mjs still writes it to .env.recording
+// because buyer.mjs and upto-buyer.mjs need it, so stay quiet about it rather
+// than print a warning on every run.
 
 const signer = createEd25519Signer(payerSecret, NETWORK);
 const client = new x402Client().register(NETWORK, new ExactStellarScheme(signer, { url: RPC_URL }));
@@ -92,7 +90,15 @@ try {
   payload = await client.createPaymentPayload(required);
 } catch (err) {
   console.error(`[buyer] could not build the payment: ${err?.message ?? err}`);
-  console.error("  Common causes: no trustline to the asset, or an empty balance.");
+  if (/XDR Read Error|unknown .* member/i.test(String(err?.message ?? err))) {
+    console.error(
+      "  This is an SDK/network version mismatch, not a funding problem: your\n" +
+        "  @stellar/stellar-sdk is too old for the network's current XDR. Run\n" +
+        "  `npm install` in examples/ again (the lock pins a compatible version).",
+    );
+  } else {
+    console.error("  Common causes: no trustline to the asset, or an empty balance.");
+  }
   process.exit(2);
 }
 
