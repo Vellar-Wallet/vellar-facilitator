@@ -428,6 +428,10 @@ ${
   Quickest: pay the hosted testnet demo seller (USDC):
        RESOURCE_URL=https://vellar-seller-demo-testnet.vercel.app/quote \\
        node buyer-classic.mjs
+  (The hosted seller settles through its own facilitator; that is fine
+  for buyer-classic, which never talks to a facilitator directly. If you
+  point other tools at a facilitator, it must match the seller's
+  FACILITATOR_URL, or /verify and /settle will fail.)
 
   Or run your own seller locally:
 `
