@@ -51,12 +51,10 @@ if (!payerSecret) {
   process.exit(1);
 }
 
-if (process.env.SIM_SOURCE_ACCOUNT) {
-  console.error(
-    "[buyer] note: SIM_SOURCE_ACCOUNT is set and is no longer used — the official\n" +
-      "        client simulates from the SDK's null account. Ignoring it.",
-  );
-}
+// SIM_SOURCE_ACCOUNT is ignored here (the official client simulates from the
+// SDK's null account). provision-testnet.mjs still writes it to .env.recording
+// because buyer.mjs and upto-buyer.mjs need it, so stay quiet about it rather
+// than print a warning on every run.
 
 const signer = createEd25519Signer(payerSecret, NETWORK);
 const client = new x402Client().register(NETWORK, new ExactStellarScheme(signer, { url: RPC_URL }));

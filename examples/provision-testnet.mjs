@@ -408,7 +408,7 @@ SELLER_PORT=4031
 # Buyer — classic keypair (works with buyer-classic.mjs)
 PAYER_SECRET=${payer.secret()}
 # Simulate-only, never charged, never signs. MUST differ from the payer.
-# Needed by buyer.mjs (smart account) ONLY — buyer-classic.mjs ignores it.
+# Needed by buyer.mjs and upto-buyer.mjs — buyer-classic.mjs ignores it.
 SIM_SOURCE_ACCOUNT=${simSource.publicKey()}
 ${
   walletId
@@ -420,14 +420,24 @@ AGENT_PUBLIC=${agentPublic}`
 # No smart account was created. Re-run with AGENT_PUBLIC=G… if you want one.`
 }
 
-Next:
-  1. Start the seller:
+Next (after you paste the block above into examples/.env.recording —
+this script does not write that file for you):
+${
+  USE_USDC
+    ? `
+  Quickest: pay the hosted testnet demo seller (USDC):
+       RESOURCE_URL=https://vellar-seller-demo-testnet-production.up.railway.app/quote \\
+       node buyer-classic.mjs
+
+  Or run your own seller locally:
+`
+    : ""
+}  1. Start the seller:
        PAYTO=${merchant.publicKey()} \\
        ASSET=${sacId} \\
        node seller.mjs
-  2. Pay it (classic keypair — the values above are already in .env.recording):
+  2. Pay it (classic keypair; PAYER_SECRET is read from .env.recording):
        RESOURCE_URL=http://127.0.0.1:4031/quote \\
-       PAYER_SECRET=${payer.secret()} \\
        node buyer-classic.mjs
 
   Roughly 1 settle in 3 fails on testnet with an empty transaction — retry it.
