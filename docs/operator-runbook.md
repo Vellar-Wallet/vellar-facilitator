@@ -578,7 +578,7 @@ So this is a **manual gate before any release that touches `src/ownership.ts`**.
      | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["resource"]["url"], d["accepts"][0]["payTo"])'
    ```
 
-   The URL must be `https://…railway.app/quote`. If it reads
+   The URL must be `https://…vercel.app/quote`. If it reads
    `http://localhost:…`, `PUBLIC_BASE_URL` is unset on the seller service —
    fix that before going further, or the test verifies nothing real.
 
