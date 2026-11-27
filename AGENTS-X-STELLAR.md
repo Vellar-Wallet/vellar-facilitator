@@ -335,16 +335,23 @@ The discovery server runs from this repo, so run `npm install` at the repo root 
 | Server | Tool | What it does |
 | --- | --- | --- |
 | Discovery | `x402_search_resources` | Search the catalog by meaning, e.g. "motivational quote" |
-| Discovery | `x402_list_resources` | List catalog entries |
+| Discovery | `x402_list_resources` | List catalog entries, filtered by type, payTo, network or verified status |
 | Payer | `x402_quote(resource_url)` | Show the price without paying, and whether it would pay |
-| Payer | `x402_pay(resource_url, max_amount)` | Pay, and return the content plus the settlement hash |
+| Payer | `x402_pay(resource_url, max_amount)` | Pay a URL you name, and return the content plus the settlement hash |
+| Payer | `x402_pay_and_call(query, max_amount)` | Search for what you describe, pay the cheapest match it can pay, and return the content, all in one call |
 | Payer | `x402_session_budget()` | Show spend so far and what is left |
+
+`x402_pay` and `x402_pay_and_call` spend real funds (testnet funds here). Only the catalog's settled routes are listed: on the demo seller that is `/quote`, because a route appears only after a real payment settles through it.
 
 ### 4. Try it
 
 Ask your agent something like:
 
 > Find a paid quote service on the x402 catalog, tell me what it costs, then pay for one quote with a maximum of 0.1 USDC and show me the settlement hash.
+
+Or, in one step:
+
+> Use x402_pay_and_call to get me a motivational quote, max 0.1 USDC, and show the settlement hash.
 
 Then check the hash on [stellar.expert (testnet)](https://stellar.expert/explorer/testnet).
 
