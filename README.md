@@ -6,6 +6,10 @@ An x402 payment facilitator for Stellar with **Bazaar discovery**: verify and
 settle HTTP-402 payments for any seller, and let agents find payable resources
 without hardcoded integrations.
 
+> **New here? Start with [`AGENTS-X-STELLAR.md`](./AGENTS-X-STELLAR.md):** a
+> hands-on guide to making an agent pay on Stellar testnet, debugging every
+> failure, and connecting an AI agent over MCP.
+
 > **Status: live on Stellar testnet and mainnet.** 11 x402 settlements
 > confirmed on mainnet (Sept 17-21, 2026; see
 > [`docs/mainnet-evidence.md`](./docs/mainnet-evidence.md) for the full
